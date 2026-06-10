@@ -131,7 +131,7 @@ class PhoronixScraper(BaseScraper):
     async def fetch(self, client: httpx.AsyncClient) -> List[ScrapedItem]:
         items = []
         try:
-            resp = await client.get("https://www.phoronix.com/phoronix.rss")
+            resp = await client.get("https://www.phoronix.com/rss.php")
             soup = BeautifulSoup(resp.text, 'xml')
             for entry in soup.find_all('item')[:10]:
                 items.append({
@@ -147,6 +147,107 @@ class PhoronixScraper(BaseScraper):
         except Exception as e:
             logger.error(f"Error scraping {self.source_name}: {e}")
         return items
+
+class SimplifyGithubScraper(BaseScraper):
+    source_name = "Simplify"
+    
+    async def fetch(self, client: httpx.AsyncClient) -> List[ScrapedItem]:
+        items = []
+        try:
+            # Similar to Pitt CSC but for Simplify repo
+            resp = await client.get("https://raw.githubusercontent.com/SimplifyJobs/Summer2025-Internships/dev/README.md")
+            lines = resp.text.split('\n')
+            for line in lines:
+                if "|" in line and "http" in line:
+                    parts = [p.strip() for p in line.split('|')]
+                    if len(parts) > 3 and "http" in parts[3]:
+                        items.append({
+                            "title": f"{parts[2]} at {parts[1]}",
+                            "source_platform": self.source_name,
+                            "item_type": ItemType.INTERNSHIP,
+                            "url": parts[3].split('(')[1].split(')')[0] if '(' in parts[3] else parts[3],
+                            "content_text": f"Location: {parts[4] if len(parts) > 4 else 'Remote/N/A'}",
+                            "timestamp": datetime.now(),
+                            "discipline": "Software Engineering",
+                            "relevance_score": None
+                        })
+        except Exception as e:
+            logger.error(f"Error scraping {self.source_name}: {e}")
+        return items
+
+class LassondeNewsScraper(BaseScraper):
+    source_name = "Lassonde News"
+    
+    async def fetch(self, client: httpx.AsyncClient) -> List[ScrapedItem]:
+        # Persistent 403 Forbidden - Providing Mock Data to ensure a functional demo
+        return [
+            {
+                "title": "[MOCK] Lassonde Researchers Develop New AI for Climate Prediction",
+                "source_platform": self.source_name,
+                "item_type": ItemType.ARTICLE,
+                "url": "https://lassonde.yorku.ca/news/",
+                "content_text": "A breakthrough study by Lassonde School of Engineering professors has led to a more accurate model for predicting local weather patterns.",
+                "timestamp": datetime.now(),
+                "discipline": "Software Engineering",
+                "relevance_score": None
+            },
+            {
+                "title": "[MOCK] Engineering Student Team Wins International Robotics Competition",
+                "source_platform": self.source_name,
+                "item_type": ItemType.ARTICLE,
+                "url": "https://lassonde.yorku.ca/news/",
+                "content_text": "The Lassonde Robotics team took first place in the global challenge held in Berlin last week.",
+                "timestamp": datetime.now(),
+                "discipline": "Mechanical Engineering",
+                "relevance_score": None
+            }
+        ]
+
+class ExperienceYorkScraper(BaseScraper):
+    source_name = "Experience York"
+    
+    async def fetch(self, client: httpx.AsyncClient) -> List[ScrapedItem]:
+        # Gated Content - Providing Mock Data as agreed
+        return [
+            {
+                "title": "[MOCK] Software Developer Intern (Summer 2025)",
+                "source_platform": self.source_name,
+                "item_type": ItemType.INTERNSHIP,
+                "url": "https://experience.yorku.ca/myAccount/career/postings.htm",
+                "content_text": "Engineering and Computer Science focus. Log in to Experience York to apply.",
+                "timestamp": datetime.now(),
+                "discipline": "Software Engineering",
+                "relevance_score": None
+            },
+            {
+                "title": "[MOCK] Business Analyst Intern",
+                "source_platform": self.source_name,
+                "item_type": ItemType.INTERNSHIP,
+                "url": "https://experience.yorku.ca/myAccount/career/postings.htm",
+                "content_text": "Lassonde Professional Internship Program listing.",
+                "timestamp": datetime.now(),
+                "discipline": "Business",
+                "relevance_score": None
+            }
+        ]
+
+class LumaScraper(BaseScraper):
+    source_name = "Luma"
+    
+    async def fetch(self, client: httpx.AsyncClient) -> List[ScrapedItem]:
+        # Gated/Community specific - Providing Mock Data
+        return [
+            {
+                "title": "[MOCK] YorkU Tech Mixer",
+                "source_platform": self.source_name,
+                "item_type": ItemType.EVENT,
+                "url": "https://lu.ma/yorku-tech",
+                "content_text": "Networking event for Lassonde and Schulich students.",
+                "timestamp": datetime.now(),
+                "discipline": "General",
+                "relevance_score": None
+            }
+        ]
 
 # Note: Experience York, Luma, and Simplify would ideally use Playwright for dynamic content.
 # This template demonstrates the BS4/Requests flow which works for their public feeds/SEO pages.
@@ -182,12 +283,20 @@ async def run_pipeline(target_major: str):
     scrapers = [
         HackerNewsScraper(),
         PittCSCGithubScraper(),
-        PhoronixScraper()
+        PhoronixScraper(),
+        SimplifyGithubScraper(),
+        LassondeNewsScraper(),
+        ExperienceYorkScraper(),
+        LumaScraper()
     ]
     
     all_items = []
     
-    async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+    async with httpx.AsyncClient(
+        timeout=10.0, 
+        follow_redirects=True,
+        headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
+    ) as client:
         # Concurrent fetching
         tasks = [scraper.fetch(client) for scraper in scrapers]
         results = await asyncio.gather(*tasks)

@@ -1,13 +1,13 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 from scraper_pipeline import run_pipeline
 
 app = FastAPI()
 
-# Enable CORS for frontend integration
+# Configure CORS for frontend access
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], # In production, restrict this to your frontend URL
+    allow_origins=["http://localhost:3000"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -18,9 +18,9 @@ async def hello():
     return {"message": "Hello from FastAPI"}
 
 @app.get("/api/feed")
-async def get_feed(major: str = "Software Engineering"):
+async def get_feed(major: str = Query("Software Engineering")):
     """
-    Triggers the scraper pipeline and returns the personalized feed.
+    Returns a prioritized feed of articles, jobs, and events.
     """
     feed = await run_pipeline(major)
-    return feed
+    return feed[:30] # Return top 30 items
