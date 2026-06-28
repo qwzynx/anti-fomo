@@ -1,4 +1,10 @@
 import asyncio
+import sys
+
+# Set event loop policy on Windows to support subprocesses (needed for Playwright)
+if sys.platform == 'win32':
+    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+
 import json
 import logging
 from datetime import datetime
@@ -7,6 +13,8 @@ from enum import Enum
 
 import httpx
 from bs4 import BeautifulSoup
+import os
+from playwright.async_api import async_playwright
 
 # --- Configuration & Types ---
 
@@ -102,23 +110,25 @@ class PittCSCGithubScraper(BaseScraper):
     async def fetch(self, client: httpx.AsyncClient) -> List[ScrapedItem]:
         items = []
         try:
-            # Simplified: Scraping the Readme or a specific JSON if available
-            # In a real scenario, use the GitHub API for reliability
-            resp = await client.get("https://raw.githubusercontent.com/pittcsc/Summer2025-Internships/dev/README.md")
-            lines = resp.text.split('\n')
-            for line in lines:
-                if "|" in line and "http" in line:
-                    # Basic parser for Markdown table rows
-                    parts = [p.strip() for p in line.split('|')]
-                    if len(parts) > 3 and "http" in parts[3]:
+            resp = await client.get("https://raw.githubusercontent.com/pittcsc/Summer2026-Internships/dev/README.md")
+            soup = BeautifulSoup(resp.text, 'html.parser')
+            for row in soup.find_all('tr'):
+                tds = row.find_all('td')
+                if len(tds) >= 4:
+                    company_a = tds[0].find('a')
+                    company = company_a.text.strip() if company_a else tds[0].text.strip()
+                    role = tds[1].text.strip()
+                    
+                    app_link = tds[3].find('a')
+                    if app_link and app_link.get('href'):
                         items.append({
-                            "title": f"Internship at {parts[1]}",
+                            "title": f"Internship at {company}",
                             "source_platform": self.source_name,
                             "item_type": ItemType.INTERNSHIP,
-                            "url": parts[3].split('(')[1].split(')')[0] if '(' in parts[3] else parts[3],
-                            "content_text": f"Role: {parts[2]}",
+                            "url": app_link['href'],
+                            "content_text": f"Role: {role}",
                             "timestamp": datetime.now(),
-                            "discipline": "Software Engineering", # Predetermined for this source
+                            "discipline": "Software Engineering",
                             "relevance_score": None
                         })
         except Exception as e:
@@ -154,19 +164,24 @@ class SimplifyGithubScraper(BaseScraper):
     async def fetch(self, client: httpx.AsyncClient) -> List[ScrapedItem]:
         items = []
         try:
-            # Similar to Pitt CSC but for Simplify repo
-            resp = await client.get("https://raw.githubusercontent.com/SimplifyJobs/Summer2025-Internships/dev/README.md")
-            lines = resp.text.split('\n')
-            for line in lines:
-                if "|" in line and "http" in line:
-                    parts = [p.strip() for p in line.split('|')]
-                    if len(parts) > 3 and "http" in parts[3]:
+            resp = await client.get("https://raw.githubusercontent.com/SimplifyJobs/Summer2026-Internships/dev/README.md")
+            soup = BeautifulSoup(resp.text, 'html.parser')
+            for row in soup.find_all('tr'):
+                tds = row.find_all('td')
+                if len(tds) >= 4:
+                    company_a = tds[0].find('a')
+                    company = company_a.text.strip() if company_a else tds[0].text.strip()
+                    role = tds[1].text.strip()
+                    location = tds[2].text.strip()
+                    
+                    app_link = tds[3].find('a')
+                    if app_link and app_link.get('href'):
                         items.append({
-                            "title": f"{parts[2]} at {parts[1]}",
+                            "title": f"{role} at {company}",
                             "source_platform": self.source_name,
                             "item_type": ItemType.INTERNSHIP,
-                            "url": parts[3].split('(')[1].split(')')[0] if '(' in parts[3] else parts[3],
-                            "content_text": f"Location: {parts[4] if len(parts) > 4 else 'Remote/N/A'}",
+                            "url": app_link['href'],
+                            "content_text": f"Location: {location}",
                             "timestamp": datetime.now(),
                             "discipline": "Software Engineering",
                             "relevance_score": None
@@ -252,6 +267,156 @@ class LumaScraper(BaseScraper):
 # Note: Experience York, Luma, and Simplify would ideally use Playwright for dynamic content.
 # This template demonstrates the BS4/Requests flow which works for their public feeds/SEO pages.
 
+class TLDRTechScraper(BaseScraper):
+    source_name = "TLDR Tech"
+    
+    async def fetch(self, client: httpx.AsyncClient) -> List[ScrapedItem]:
+        items = []
+        try:
+            resp = await client.get("https://tldr.tech/tech")
+            soup = BeautifulSoup(resp.text, 'html.parser')
+            for h3 in soup.find_all('h3'):
+                a_tag = h3.find_parent('a')
+                if not a_tag:
+                    a_tag = h3.find('a') if h3.name == 'h3' else None
+                if not a_tag and h3.parent.name == 'a':
+                    a_tag = h3.parent
+                if a_tag:
+                    title = h3.text.strip()
+                    url = a_tag.get('href', '')
+                    if url.startswith('/'):
+                        url = f"https://tldr.tech{url}"
+                    items.append({
+                        "title": title,
+                        "source_platform": self.source_name,
+                        "item_type": ItemType.ARTICLE,
+                        "url": url,
+                        "content_text": "",
+                        "timestamp": datetime.now(),
+                        "discipline": "Software Engineering",
+                        "relevance_score": None
+                    })
+        except Exception as e:
+            logger.error(f"Error scraping {self.source_name}: {e}")
+        return items
+
+class HNTopLinksScraper(BaseScraper):
+    source_name = "HN Top Links"
+    
+    async def fetch(self, client: httpx.AsyncClient) -> List[ScrapedItem]:
+        items = []
+        try:
+            resp = await client.get("https://hntoplinks.com/")
+            soup = BeautifulSoup(resp.text, 'html.parser')
+            for story in soup.find_all(class_='story'):
+                title_elem = story.find(class_='story-title')
+                if title_elem:
+                    title = title_elem.text.strip()
+                    url = title_elem.get('href', '')
+                    items.append({
+                        "title": title,
+                        "source_platform": self.source_name,
+                        "item_type": ItemType.ARTICLE,
+                        "url": url,
+                        "content_text": "",
+                        "timestamp": datetime.now(),
+                        "discipline": "Software Engineering",
+                        "relevance_score": None
+                    })
+        except Exception as e:
+            logger.error(f"Error scraping {self.source_name}: {e}")
+        return items
+
+class DailyDevScraper(BaseScraper):
+    source_name = "Daily.dev"
+    
+    async def fetch(self, client: httpx.AsyncClient) -> List[ScrapedItem]:
+        items = []
+        try:
+            async with async_playwright() as p:
+                browser = await p.chromium.launch(headless=True)
+                page = await browser.new_page()
+                await page.goto("https://app.daily.dev/tags/software-engineering", timeout=15000)
+                await page.wait_for_timeout(4000)
+                
+                links = await page.eval_on_selector_all('a', 'elements => elements.map(e => ({text: e.innerText, href: e.href}))')
+                for l in links:
+                    text = l['text'].strip().replace('\n', ' ')
+                    url = l['href']
+                    if url and '/posts/' in url and len(text) > 15:
+                        items.append({
+                            "title": text,
+                            "source_platform": self.source_name,
+                            "item_type": ItemType.ARTICLE,
+                            "url": url,
+                            "content_text": "",
+                            "timestamp": datetime.now(),
+                            "discipline": "Software Engineering",
+                            "relevance_score": None
+                        })
+                        if len(items) >= 15:
+                            break
+                await browser.close()
+        except Exception as e:
+            logger.error(f"Error scraping {self.source_name}: {e}")
+            items.append({
+                "title": "[MOCK] Top 10 React Libraries in 2026",
+                "source_platform": self.source_name,
+                "item_type": ItemType.ARTICLE,
+                "url": "https://daily.dev",
+                "content_text": "Mock data due to fetch error.",
+                "timestamp": datetime.now(),
+                "discipline": "Software Engineering",
+                "relevance_score": None
+            })
+        return items
+
+class HandshakeScraper(BaseScraper):
+    source_name = "Handshake"
+    
+    async def fetch(self, client: httpx.AsyncClient) -> List[ScrapedItem]:
+        items = []
+        email = os.environ.get("HANDSHAKE_EMAIL")
+        password = os.environ.get("HANDSHAKE_PASSWORD")
+        
+        if not email or not password:
+            logger.info(f"{self.source_name}: Credentials not found. Returning mock data.")
+            return [
+                {
+                    "title": "[MOCK] Junior Developer at Local Startup",
+                    "source_platform": self.source_name,
+                    "item_type": ItemType.JOB,
+                    "url": "https://joinhandshake.com/",
+                    "content_text": "Requires Handshake credentials in environment variables.",
+                    "timestamp": datetime.now(),
+                    "discipline": "Software Engineering",
+                    "relevance_score": None
+                }
+            ]
+        try:
+            async with async_playwright() as p:
+                browser = await p.chromium.launch(headless=True)
+                page = await browser.new_page()
+                await page.goto("https://app.joinhandshake.com/login", timeout=15000)
+                await page.fill("input[type='email']", email)
+                await page.click("button:has-text('Next')")
+                await page.wait_for_timeout(3000)
+                items.append({
+                    "title": "[MOCK - Partially Auth] Handshake Scraper Execution",
+                    "source_platform": self.source_name,
+                    "item_type": ItemType.JOB,
+                    "url": "https://joinhandshake.com/",
+                    "content_text": "SSO handling is complex, placeholder added.",
+                    "timestamp": datetime.now(),
+                    "discipline": "Software Engineering",
+                    "relevance_score": None
+                })
+                await browser.close()
+        except Exception as e:
+            logger.error(f"Error scraping {self.source_name}: {e}")
+        return items
+
+
 # --- Prioritization Layer ---
 
 def get_personalized_feed(items: List[ScrapedItem], user_major: str) -> List[ScrapedItem]:
@@ -279,15 +444,57 @@ def get_personalized_feed(items: List[ScrapedItem], user_major: str) -> List[Scr
 
 # --- Main Pipeline ---
 
+async def run_scraper_pipeline_to_db(db):
+    """
+    Runs all scrapers, classifies their disciplines, and upserts them into the database.
+    """
+    from database import save_scraped_items
+    scrapers = [
+        HackerNewsScraper(),
+        PittCSCGithubScraper(),
+        PhoronixScraper(),
+        SimplifyGithubScraper(),
+        LumaScraper(),
+        TLDRTechScraper(),
+        HNTopLinksScraper(),
+        DailyDevScraper()
+    ]
+    
+    all_items = []
+    
+    async with httpx.AsyncClient(
+        timeout=10.0, 
+        follow_redirects=True,
+        headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
+    ) as client:
+        # Concurrent fetching
+        tasks = [scraper.fetch(client) for scraper in scrapers]
+        results = await asyncio.gather(*tasks)
+        
+        for result_list in results:
+            all_items.extend(result_list)
+            
+    # Process items
+    for item in all_items:
+        if not item['discipline']:
+            item['discipline'] = classify_item(item, MAJORS)
+        if item['relevance_score'] is None:
+            item['relevance_score'] = 0.0
+            
+    # Save/Upsert to database
+    save_scraped_items(db, all_items)
+    return all_items
+
 async def run_pipeline(target_major: str):
     scrapers = [
         HackerNewsScraper(),
         PittCSCGithubScraper(),
         PhoronixScraper(),
         SimplifyGithubScraper(),
-        LassondeNewsScraper(),
-        ExperienceYorkScraper(),
-        LumaScraper()
+        LumaScraper(),
+        TLDRTechScraper(),
+        HNTopLinksScraper(),
+        DailyDevScraper()
     ]
     
     all_items = []
@@ -322,3 +529,4 @@ if __name__ == "__main__":
     
     # Output top 15 results as JSON
     print(json.dumps(feed[:15], indent=2, default=str))
+
