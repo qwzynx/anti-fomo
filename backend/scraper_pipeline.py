@@ -7,7 +7,10 @@ if sys.platform == 'win32':
 
 import json
 import logging
+import re
+import time
 from datetime import datetime
+from email.utils import parsedate_to_datetime
 from typing import List, Dict, Any, Optional, TypedDict
 from enum import Enum
 
@@ -39,10 +42,7 @@ class ScrapedItem(TypedDict):
 
 # Academic Disciplines
 MAJORS = {
-    "Software Engineering": ["coding", "software", "programming", "python", "java", "api", "web", "cloud", "devops", "intern", "engineer"],
-    "Mechanical Engineering": ["robotics", "cad", "thermodynamics", "manufacturing", "automotive", "mechanics"],
-    "Civil Engineering": ["structural", "construction", "transportation", "urban", "infrastructure", "surveying"],
-    "Business": ["marketing", "finance", "startup", "management", "consulting", "economics"]
+    "Software Engineering": ["coding", "software", "programming", "python", "java", "api", "web", "cloud", "devops", "intern", "engineer"]
 }
 
 # --- Categorization Engine ---
@@ -112,13 +112,16 @@ class PittCSCGithubScraper(BaseScraper):
         try:
             resp = await client.get("https://raw.githubusercontent.com/pittcsc/Summer2026-Internships/dev/README.md")
             soup = BeautifulSoup(resp.text, 'html.parser')
-            for row in soup.find_all('tr'):
+            # Newest listings are added at the top; keep the freshest rows
+            for row in soup.find_all('tr')[:150]:
                 tds = row.find_all('td')
                 if len(tds) >= 4:
                     company_a = tds[0].find('a')
                     company = company_a.text.strip() if company_a else tds[0].text.strip()
                     role = tds[1].text.strip()
-                    
+                    if company == '↳':  # continuation row: same company as above
+                        company = items[-1]['title'].removeprefix('Internship at ') if items else 'Unknown'
+
                     app_link = tds[3].find('a')
                     if app_link and app_link.get('href'):
                         items.append({
@@ -149,8 +152,8 @@ class PhoronixScraper(BaseScraper):
                     "source_platform": self.source_name,
                     "item_type": ItemType.ARTICLE,
                     "url": entry.link.text,
-                    "content_text": entry.description.text,
-                    "timestamp": datetime.now(), # RSS usually has pubDate, but using now for brevity
+                    "content_text": _strip_html(entry.description.text),
+                    "timestamp": _rss_date(entry),
                     "discipline": None,
                     "relevance_score": None
                 })
@@ -166,13 +169,16 @@ class SimplifyGithubScraper(BaseScraper):
         try:
             resp = await client.get("https://raw.githubusercontent.com/SimplifyJobs/Summer2026-Internships/dev/README.md")
             soup = BeautifulSoup(resp.text, 'html.parser')
-            for row in soup.find_all('tr'):
+            # Newest listings are added at the top; keep the freshest rows
+            for row in soup.find_all('tr')[:150]:
                 tds = row.find_all('td')
                 if len(tds) >= 4:
                     company_a = tds[0].find('a')
                     company = company_a.text.strip() if company_a else tds[0].text.strip()
                     role = tds[1].text.strip()
                     location = tds[2].text.strip()
+                    if company == '↳' and items:  # continuation row: same company as above
+                        company = items[-1]['title'].rsplit(' at ', 1)[-1]
                     
                     app_link = tds[3].find('a')
                     if app_link and app_link.get('href'):
@@ -190,33 +196,45 @@ class SimplifyGithubScraper(BaseScraper):
             logger.error(f"Error scraping {self.source_name}: {e}")
         return items
 
+def _rss_date(entry) -> datetime:
+    """Parse an RSS <pubDate> into a naive datetime, falling back to now()."""
+    tag = entry.find('pubDate')
+    if tag and tag.text:
+        try:
+            return parsedate_to_datetime(tag.text.strip()).replace(tzinfo=None)
+        except (ValueError, TypeError):
+            pass
+    return datetime.now()
+
+def _strip_html(text: str) -> str:
+    return BeautifulSoup(text or "", 'html.parser').get_text(" ", strip=True)
+
 class LassondeNewsScraper(BaseScraper):
     source_name = "Lassonde News"
-    
+
+    # The site 403s generic clients; a full browser User-Agent (set on the
+    # shared httpx client) is required for the WordPress feed to respond.
     async def fetch(self, client: httpx.AsyncClient) -> List[ScrapedItem]:
-        # Persistent 403 Forbidden - Providing Mock Data to ensure a functional demo
-        return [
-            {
-                "title": "[MOCK] Lassonde Researchers Develop New AI for Climate Prediction",
-                "source_platform": self.source_name,
-                "item_type": ItemType.ARTICLE,
-                "url": "https://lassonde.yorku.ca/news/",
-                "content_text": "A breakthrough study by Lassonde School of Engineering professors has led to a more accurate model for predicting local weather patterns.",
-                "timestamp": datetime.now(),
-                "discipline": "Software Engineering",
-                "relevance_score": None
-            },
-            {
-                "title": "[MOCK] Engineering Student Team Wins International Robotics Competition",
-                "source_platform": self.source_name,
-                "item_type": ItemType.ARTICLE,
-                "url": "https://lassonde.yorku.ca/news/",
-                "content_text": "The Lassonde Robotics team took first place in the global challenge held in Berlin last week.",
-                "timestamp": datetime.now(),
-                "discipline": "Mechanical Engineering",
-                "relevance_score": None
-            }
-        ]
+        items = []
+        try:
+            # Note: /news/feed/ is a WordPress *comments* feed; the site-wide
+            # /feed/ carries the actual news posts.
+            resp = await client.get("https://lassonde.yorku.ca/feed/")
+            soup = BeautifulSoup(resp.text, 'xml')
+            for entry in soup.find_all('item')[:15]:
+                items.append({
+                    "title": entry.title.text.strip(),
+                    "source_platform": self.source_name,
+                    "item_type": ItemType.ARTICLE,
+                    "url": entry.link.text.strip(),
+                    "content_text": _strip_html(entry.description.text if entry.description else ""),
+                    "timestamp": _rss_date(entry),
+                    "discipline": None,
+                    "relevance_score": None
+                })
+        except Exception as e:
+            logger.error(f"Error scraping {self.source_name}: {e}")
+        return items
 
 class ExperienceYorkScraper(BaseScraper):
     source_name = "Experience York"
@@ -233,69 +251,113 @@ class ExperienceYorkScraper(BaseScraper):
                 "timestamp": datetime.now(),
                 "discipline": "Software Engineering",
                 "relevance_score": None
-            },
-            {
-                "title": "[MOCK] Business Analyst Intern",
-                "source_platform": self.source_name,
-                "item_type": ItemType.INTERNSHIP,
-                "url": "https://experience.yorku.ca/myAccount/career/postings.htm",
-                "content_text": "Lassonde Professional Internship Program listing.",
-                "timestamp": datetime.now(),
-                "discipline": "Business",
-                "relevance_score": None
             }
         ]
 
 class LumaScraper(BaseScraper):
     source_name = "Luma"
-    
-    async def fetch(self, client: httpx.AsyncClient) -> List[ScrapedItem]:
-        # Gated/Community specific - Providing Mock Data
-        return [
-            {
-                "title": "[MOCK] YorkU Tech Mixer",
-                "source_platform": self.source_name,
-                "item_type": ItemType.EVENT,
-                "url": "https://lu.ma/yorku-tech",
-                "content_text": "Networking event for Lassonde and Schulich students.",
-                "timestamp": datetime.now(),
-                "discipline": "General",
-                "relevance_score": None
-            }
-        ]
+    city_page = "https://lu.ma/toronto"
 
-# Note: Experience York, Luma, and Simplify would ideally use Playwright for dynamic content.
-# This template demonstrates the BS4/Requests flow which works for their public feeds/SEO pages.
-
-class TLDRTechScraper(BaseScraper):
-    source_name = "TLDR Tech"
-    
+    # lu.ma city pages are Next.js and ship the upcoming-events list inside
+    # the __NEXT_DATA__ script tag, so no headless browser is needed.
     async def fetch(self, client: httpx.AsyncClient) -> List[ScrapedItem]:
         items = []
         try:
-            resp = await client.get("https://tldr.tech/tech")
-            soup = BeautifulSoup(resp.text, 'html.parser')
-            for h3 in soup.find_all('h3'):
-                a_tag = h3.find_parent('a')
-                if not a_tag:
-                    a_tag = h3.find('a') if h3.name == 'h3' else None
-                if not a_tag and h3.parent.name == 'a':
-                    a_tag = h3.parent
-                if a_tag:
-                    title = h3.text.strip()
-                    url = a_tag.get('href', '')
-                    if url.startswith('/'):
-                        url = f"https://tldr.tech{url}"
-                    items.append({
-                        "title": title,
-                        "source_platform": self.source_name,
-                        "item_type": ItemType.ARTICLE,
-                        "url": url,
-                        "content_text": "",
-                        "timestamp": datetime.now(),
-                        "discipline": "Software Engineering",
-                        "relevance_score": None
-                    })
+            resp = await client.get(self.city_page)
+            m = re.search(r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>', resp.text, re.S)
+            if not m:
+                logger.warning(f"{self.source_name}: __NEXT_DATA__ not found on {self.city_page}")
+                return items
+            data = json.loads(m.group(1))
+            entries = data['props']['pageProps']['initialData']['data'].get('events', [])
+            for entry in entries[:20]:
+                ev = entry.get('event', {})
+                if not ev.get('name'):
+                    continue
+                geo = ev.get('geo_address_info') or {}
+                where = geo.get('city_state') or ("Online" if ev.get('location_type') != 'offline' else "")
+                start = ev.get('start_at')
+                try:
+                    ts = datetime.fromisoformat(start.replace('Z', '+00:00')).replace(tzinfo=None) if start else datetime.now()
+                except ValueError:
+                    ts = datetime.now()
+                items.append({
+                    "title": ev['name'],
+                    "source_platform": self.source_name,
+                    "item_type": ItemType.EVENT,
+                    "url": f"https://lu.ma/{ev.get('url', '')}",
+                    "content_text": f"{where} — starts {start or 'TBA'}".strip(" —"),
+                    "timestamp": ts,
+                    "discipline": None,
+                    "relevance_score": None
+                })
+        except Exception as e:
+            logger.error(f"Error scraping {self.source_name}: {e}")
+        return items
+
+class LevelsFyiScraper(BaseScraper):
+    source_name = "Levels.fyi"
+
+    async def fetch(self, client: httpx.AsyncClient) -> List[ScrapedItem]:
+        items = []
+        try:
+            resp = await client.get("https://www.levels.fyi/js/internshipData.json")
+            data = resp.json()
+            current_year = str(datetime.now().year)
+            # The dataset is historical; keep only current-year, still-open postings
+            fresh = [d for d in data if d.get('yr') == current_year and not d.get('appNotOpen')]
+            for d in fresh[:25]:
+                salary = f"${d['monthlySalary']}/month" if d.get('monthlySalary') else "Compensation N/A"
+                items.append({
+                    "title": f"{d.get('title', 'Intern')} at {d.get('company', 'Unknown')}",
+                    "source_platform": self.source_name,
+                    "item_type": ItemType.INTERNSHIP,
+                    "url": d.get('link') or "https://www.levels.fyi/internships/",
+                    "content_text": f"{d.get('season', '')} {d.get('yr', '')} · {d.get('loc', 'Location N/A')} · {salary}",
+                    "timestamp": datetime.now(),
+                    "discipline": None,
+                    "relevance_score": None
+                })
+        except Exception as e:
+            logger.error(f"Error scraping {self.source_name}: {e}")
+        return items
+
+class TLDRTechScraper(BaseScraper):
+    source_name = "TLDR Tech"
+
+    async def fetch(self, client: httpx.AsyncClient) -> List[ScrapedItem]:
+        items = []
+        try:
+            # Find the latest issue from the archives, then scrape its full
+            # article blocks (title + summary), skipping sponsor slots.
+            archive = await client.get("https://tldr.tech/tech/archives")
+            dates = re.findall(r'href="/tech/(\d{4}-\d{2}-\d{2})"', archive.text)
+            if not dates:
+                logger.warning(f"{self.source_name}: no issues found in archive")
+                return items
+            latest = max(dates)
+            issue = await client.get(f"https://tldr.tech/tech/{latest}")
+            soup = BeautifulSoup(issue.text, 'html.parser')
+            issue_date = datetime.strptime(latest, "%Y-%m-%d")
+            for article in soup.find_all('article'):
+                h3 = article.find('h3')
+                a_tag = article.find('a', href=True)
+                if not h3 or not a_tag:
+                    continue
+                title = h3.get_text(strip=True)
+                if '(sponsor)' in title.lower():
+                    continue
+                summary_div = article.find('div', class_='newsletter-html')
+                items.append({
+                    "title": title,
+                    "source_platform": self.source_name,
+                    "item_type": ItemType.ARTICLE,
+                    "url": a_tag['href'],
+                    "content_text": summary_div.get_text(" ", strip=True) if summary_div else "",
+                    "timestamp": issue_date,
+                    "discipline": None,
+                    "relevance_score": None
+                })
         except Exception as e:
             logger.error(f"Error scraping {self.source_name}: {e}")
         return items
@@ -359,16 +421,6 @@ class DailyDevScraper(BaseScraper):
                 await browser.close()
         except Exception as e:
             logger.error(f"Error scraping {self.source_name}: {e}")
-            items.append({
-                "title": "[MOCK] Top 10 React Libraries in 2026",
-                "source_platform": self.source_name,
-                "item_type": ItemType.ARTICLE,
-                "url": "https://daily.dev",
-                "content_text": "Mock data due to fetch error.",
-                "timestamp": datetime.now(),
-                "discipline": "Software Engineering",
-                "relevance_score": None
-            })
         return items
 
 class HandshakeScraper(BaseScraper):
@@ -433,93 +485,101 @@ def get_personalized_feed(items: List[ScrapedItem], user_major: str) -> List[Scr
         # 2. Item Type Weight
         if item['item_type'] in [ItemType.JOB, ItemType.INTERNSHIP]:
             score += 5.0
+        elif item['item_type'] == ItemType.EVENT:
+            score += 4.0
         
         # 3. Recency Weight (Placeholder)
         # score += (some_decay_function_of_timestamp)
 
         item['relevance_score'] = score
 
-    # Sort by score descending
-    return sorted(items, key=lambda x: x['relevance_score'], reverse=True)
+    ranked = sorted(items, key=lambda x: x['relevance_score'], reverse=True)
+
+    # Diversify: cap how many items a single source can place up front so one
+    # large source (e.g. an internship repo) can't flood the whole feed.
+    MAX_PER_SOURCE = 8
+    per_source = {}
+    head, tail = [], []
+    for item in ranked:
+        src = item['source_platform']
+        per_source[src] = per_source.get(src, 0) + 1
+        (head if per_source[src] <= MAX_PER_SOURCE else tail).append(item)
+    return head + tail
 
 # --- Main Pipeline ---
+
+def get_scrapers() -> List[BaseScraper]:
+    return [
+        HackerNewsScraper(),
+        PittCSCGithubScraper(),
+        PhoronixScraper(),
+        SimplifyGithubScraper(),
+        LassondeNewsScraper(),
+        LumaScraper(),
+        LevelsFyiScraper(),
+        TLDRTechScraper(),
+        HNTopLinksScraper(),
+        DailyDevScraper()
+    ]
+
+async def fetch_all_items() -> List[ScrapedItem]:
+    """
+    Runs all scrapers concurrently, dedupes by URL, and classifies disciplines.
+    """
+    all_items = []
+
+    async with httpx.AsyncClient(
+        timeout=20.0,
+        follow_redirects=True,
+        headers={"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"}
+    ) as client:
+        tasks = [scraper.fetch(client) for scraper in get_scrapers()]
+        results = await asyncio.gather(*tasks)
+
+        for result_list in results:
+            all_items.extend(result_list)
+
+    seen_urls = set()
+    deduped = []
+    for item in all_items:
+        if item['url'] in seen_urls:
+            continue
+        seen_urls.add(item['url'])
+        if not item['discipline']:
+            item['discipline'] = classify_item(item, MAJORS)
+        deduped.append(item)
+
+    return deduped
+
+# Scrapes are slow (Playwright); cache results so the home page, internship
+# hub, and widgets share one scrape instead of re-fetching per request.
+_CACHE_TTL_SECONDS = 600
+_cache: Dict[str, Any] = {"items": None, "at": 0.0}
+
+async def fetch_all_items_cached(force: bool = False) -> List[ScrapedItem]:
+    if not force and _cache["items"] and time.time() - _cache["at"] < _CACHE_TTL_SECONDS:
+        return _cache["items"]
+    items = await fetch_all_items()
+    if items:
+        _cache["items"] = items
+        _cache["at"] = time.time()
+    return items
 
 async def run_scraper_pipeline_to_db(db):
     """
     Runs all scrapers, classifies their disciplines, and upserts them into the database.
     """
     from database import save_scraped_items
-    scrapers = [
-        HackerNewsScraper(),
-        PittCSCGithubScraper(),
-        PhoronixScraper(),
-        SimplifyGithubScraper(),
-        LumaScraper(),
-        TLDRTechScraper(),
-        HNTopLinksScraper(),
-        DailyDevScraper()
-    ]
-    
-    all_items = []
-    
-    async with httpx.AsyncClient(
-        timeout=10.0, 
-        follow_redirects=True,
-        headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
-    ) as client:
-        # Concurrent fetching
-        tasks = [scraper.fetch(client) for scraper in scrapers]
-        results = await asyncio.gather(*tasks)
-        
-        for result_list in results:
-            all_items.extend(result_list)
-            
-    # Process items
+    all_items = await fetch_all_items()
     for item in all_items:
-        if not item['discipline']:
-            item['discipline'] = classify_item(item, MAJORS)
         if item['relevance_score'] is None:
             item['relevance_score'] = 0.0
-            
-    # Save/Upsert to database
     save_scraped_items(db, all_items)
     return all_items
 
 async def run_pipeline(target_major: str):
-    scrapers = [
-        HackerNewsScraper(),
-        PittCSCGithubScraper(),
-        PhoronixScraper(),
-        SimplifyGithubScraper(),
-        LumaScraper(),
-        TLDRTechScraper(),
-        HNTopLinksScraper(),
-        DailyDevScraper()
-    ]
-    
-    all_items = []
-    
-    async with httpx.AsyncClient(
-        timeout=10.0, 
-        follow_redirects=True,
-        headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
-    ) as client:
-        # Concurrent fetching
-        tasks = [scraper.fetch(client) for scraper in scrapers]
-        results = await asyncio.gather(*tasks)
-        
-        for result_list in results:
-            all_items.extend(result_list)
-            
-    # Process items
-    for item in all_items:
-        if not item['discipline']:
-            item['discipline'] = classify_item(item, MAJORS)
-            
-    # Rank items
-    personalized_feed = get_personalized_feed(all_items, target_major)
-    
-    return personalized_feed
+    all_items = await fetch_all_items_cached()
+    return get_personalized_feed(all_items, target_major)
 
 if __name__ == "__main__":
     USER_MAJOR = "Software Engineering"
