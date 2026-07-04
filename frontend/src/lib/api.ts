@@ -31,6 +31,8 @@ export interface ScrapedItem {
   timestamp: string;
   discipline: string;
   relevance_score: number;
+  location?: string | null;
+  location_tags?: string[];
 }
 
 export function domainOf(url: string): string {

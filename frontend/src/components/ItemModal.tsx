@@ -124,6 +124,24 @@ export default function ItemModal({
             {sourceBlurb(item)} · {new Date(item.timestamp).toLocaleString()}
           </p>
 
+          {item.location && (
+            <div className="mb-4 rounded-xl bg-zinc-50 p-4 dark:bg-zinc-800/60">
+              <p className="text-xs font-bold uppercase tracking-wide text-zinc-400 mb-1">📍 Locations</p>
+              <p className="text-sm text-zinc-700 dark:text-zinc-300">
+                {item.location.split("|").map((l) => l.trim()).filter(Boolean).join(" · ")}
+              </p>
+              {item.location_tags && item.location_tags.length > 0 && (
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  {item.location_tags.map((t) => (
+                    <span key={t} className="rounded-md bg-white px-2 py-0.5 text-[11px] font-semibold text-zinc-600 shadow-sm dark:bg-zinc-700 dark:text-zinc-300">
+                      {t}
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
           <p className="whitespace-pre-line text-[15px] leading-relaxed text-zinc-700 dark:text-zinc-300">
             {item.content_text || "No further details were scraped for this item — open the source for the full picture."}
           </p>

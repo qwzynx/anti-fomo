@@ -9,6 +9,19 @@ import { API_BASE, EclassUpdate, ScrapedItem, api, getToken, timeAgo } from "../
 
 const DISCIPLINES = ["All", "Software Engineering"];
 const NEWS_SOURCES = ["Hacker News", "Phoronix", "TLDR Tech", "HN Top Links", "Daily.dev"];
+const TYPE_OPTIONS = ["All", "Internships", "Events", "Articles"] as const;
+const TYPE_MAP: Record<string, string[]> = {
+  Internships: ["Internship", "Job"],
+  Events: ["Event"],
+  Articles: ["Article"],
+};
+const FRESHNESS = [
+  { label: "Any time", hours: Infinity },
+  { label: "Last 24 hours", hours: 24 },
+  { label: "Past week", hours: 24 * 7 },
+  { label: "Past month", hours: 24 * 30 },
+] as const;
+const SORTS = ["Relevance", "Newest first"] as const;
 
 interface UpdatesResponse {
   fetched_at: string | null;
@@ -24,6 +37,10 @@ export default function Home() {
   const [selected, setSelected] = useState<ScrapedItem | null>(null);
   const [deadlines, setDeadlines] = useState<EclassUpdate[] | null>(null);
   const [signedIn, setSignedIn] = useState(false);
+  const [itemType, setItemType] = useState<(typeof TYPE_OPTIONS)[number]>("All");
+  const [sourceFilter, setSourceFilter] = useState("All");
+  const [freshness, setFreshness] = useState<(typeof FRESHNESS)[number]["label"]>("Any time");
+  const [sort, setSort] = useState<(typeof SORTS)[number]>("Relevance");
 
   useEffect(() => {
     async function fetchFeed() {
@@ -71,13 +88,31 @@ export default function Home() {
     [items]
   );
 
-  const filteredItems = items.filter((item) => {
-    const matchesSearch =
-      item.title.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      (item.content_text && item.content_text.toLowerCase().includes(searchTerm.toLowerCase()));
-    const matchesDiscipline = selectedDiscipline === "All" || item.discipline === selectedDiscipline;
-    return matchesSearch && matchesDiscipline;
-  });
+  const allSources = useMemo(
+    () => Array.from(new Set(items.map((i) => i.source_platform))).sort(),
+    [items]
+  );
+
+  const filteredItems = useMemo(() => {
+    const maxAge = FRESHNESS.find((f) => f.label === freshness)?.hours ?? Infinity;
+    const cutoff = Date.now() - maxAge * 3600 * 1000;
+
+    const result = items.filter((item) => {
+      const matchesSearch =
+        item.title.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        (item.content_text && item.content_text.toLowerCase().includes(searchTerm.toLowerCase()));
+      if (!matchesSearch) return false;
+      if (selectedDiscipline !== "All" && item.discipline !== selectedDiscipline) return false;
+      if (itemType !== "All" && !TYPE_MAP[itemType].includes(item.item_type)) return false;
+      if (sourceFilter !== "All" && item.source_platform !== sourceFilter) return false;
+      if (maxAge !== Infinity && new Date(item.timestamp).getTime() < cutoff) return false;
+      return true;
+    });
+
+    return sort === "Newest first"
+      ? [...result].sort((a, b) => b.timestamp.localeCompare(a.timestamp))
+      : result; // API order is already relevance-ranked
+  }, [items, searchTerm, selectedDiscipline, itemType, sourceFilter, freshness, sort]);
 
   return (
     <div className="flex flex-col min-h-screen bg-zinc-50 font-sans dark:bg-black text-zinc-900 dark:text-zinc-100">
@@ -179,6 +214,55 @@ export default function Home() {
               ))}
             </select>
           </div>
+        </div>
+
+        {/* Filter bar */}
+        <div className="mb-4 flex flex-wrap items-center gap-2">
+          <select
+            value={itemType}
+            onChange={(e) => setItemType(e.target.value as typeof itemType)}
+            className="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-xl px-3 py-2 text-sm font-medium outline-none focus:ring-2 focus:ring-indigo-500"
+          >
+            {TYPE_OPTIONS.map((t) => (
+              <option key={t} value={t}>📦 {t === "All" ? "All types" : t}</option>
+            ))}
+          </select>
+          <select
+            value={sourceFilter}
+            onChange={(e) => setSourceFilter(e.target.value)}
+            className="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-xl px-3 py-2 text-sm font-medium outline-none focus:ring-2 focus:ring-indigo-500"
+          >
+            <option value="All">🌐 All sources</option>
+            {allSources.map((s) => (
+              <option key={s} value={s}>{s}</option>
+            ))}
+          </select>
+          <select
+            value={freshness}
+            onChange={(e) => setFreshness(e.target.value as typeof freshness)}
+            className="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-xl px-3 py-2 text-sm font-medium outline-none focus:ring-2 focus:ring-indigo-500"
+          >
+            {FRESHNESS.map((f) => (
+              <option key={f.label} value={f.label}>⏱️ {f.label}</option>
+            ))}
+          </select>
+          <select
+            value={sort}
+            onChange={(e) => setSort(e.target.value as typeof sort)}
+            className="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-xl px-3 py-2 text-sm font-medium outline-none focus:ring-2 focus:ring-indigo-500"
+          >
+            {SORTS.map((s) => (
+              <option key={s} value={s}>📊 {s}</option>
+            ))}
+          </select>
+          {(itemType !== "All" || sourceFilter !== "All" || freshness !== "Any time" || sort !== "Relevance") && (
+            <button
+              onClick={() => { setItemType("All"); setSourceFilter("All"); setFreshness("Any time"); setSort("Relevance"); }}
+              className="text-xs font-semibold text-indigo-600 hover:underline dark:text-indigo-400"
+            >
+              Reset
+            </button>
+          )}
         </div>
 
         <div className="mb-8 overflow-x-auto scrollbar-hide">

@@ -31,6 +31,7 @@ class DBScrapedItem(Base):
     timestamp = Column(DateTime, default=datetime.utcnow)
     discipline = Column(String(128), nullable=True)
     relevance_score = Column(Float, nullable=True)
+    location = Column(Text, nullable=True)
 
     # Composite unique constraint for Title + Source Platform
     __table_args__ = (
@@ -49,6 +50,9 @@ class User(Base):
     # eClass link state: credentials are never stored, only the Playwright
     # session state file on disk (see eclass_scraper.state_path_for).
     eclass_linked_at = Column(DateTime, nullable=True)
+    # Moodle user id from eClass, set when the account was created through
+    # the "Sign in with YorkU" popup flow.
+    yorku_user_id = Column(Integer, unique=True, nullable=True, index=True)
 
 class EclassUpdate(Base):
     __tablename__ = "eclass_updates"
@@ -65,6 +69,19 @@ class EclassUpdate(Base):
 
 def init_db():
     Base.metadata.create_all(bind=engine)
+    # Lightweight migrations: create_all does not add columns to existing
+    # tables, so add newer columns in place (no-op if they already exist).
+    from sqlalchemy import text
+    with engine.connect() as conn:
+        for ddl in (
+            "ALTER TABLE scraped_items ADD COLUMN location TEXT",
+            "ALTER TABLE users ADD COLUMN yorku_user_id INTEGER",
+        ):
+            try:
+                conn.execute(text(ddl))
+                conn.commit()
+            except Exception:
+                conn.rollback()
 
 def get_db():
     db = SessionLocal()
@@ -100,7 +117,8 @@ def save_scraped_items(db, items):
             content_text=item['content_text'],
             timestamp=ts,
             discipline=item['discipline'],
-            relevance_score=item['relevance_score']
+            relevance_score=item['relevance_score'],
+            location=item.get('location')
         )
 
         update_set = {
@@ -108,7 +126,8 @@ def save_scraped_items(db, items):
             'content_text': stmt.excluded.content_text,
             'discipline': stmt.excluded.discipline,
             'relevance_score': stmt.excluded.relevance_score,
-            'timestamp': stmt.excluded.timestamp
+            'timestamp': stmt.excluded.timestamp,
+            'location': stmt.excluded.location
         }
         if is_sqlite:
             stmt = stmt.on_conflict_do_update(

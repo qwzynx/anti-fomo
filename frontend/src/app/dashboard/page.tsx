@@ -29,11 +29,6 @@ export default function DashboardPage() {
   const [linkMessage, setLinkMessage] = useState<string | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // Manual fallback form
-  const [ppyUser, setPpyUser] = useState("");
-  const [ppyPass, setPpyPass] = useState("");
-  const [linking, setLinking] = useState(false);
-
   const loadUpdates = useCallback(async (refresh: boolean) => {
     setLoadingUpdates(true);
     setError(null);
@@ -107,26 +102,6 @@ export default function DashboardPage() {
         // transient poll failure — keep waiting
       }
     }, 2000);
-  }
-
-  async function handleManualLink(e: React.FormEvent) {
-    e.preventDefault();
-    setLinking(true);
-    setError(null);
-    try {
-      const res = await api<{ message: string; user: User }>("/api/eclass/link", {
-        method: "POST",
-        body: JSON.stringify({ username: ppyUser, password: ppyPass }),
-      });
-      setUser(res.user);
-      setPpyUser("");
-      setPpyPass("");
-      loadUpdates(true);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Linking failed.");
-    } finally {
-      setLinking(false);
-    }
   }
 
   async function handleUnlink() {
@@ -225,39 +200,11 @@ export default function DashboardPage() {
               </>
             )}
 
-            <details className="mt-6 text-sm">
-              <summary className="cursor-pointer text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-300">
-                Popup not working? Enter credentials manually
-              </summary>
-              <form onSubmit={handleManualLink} className="mt-4 flex flex-col gap-3">
-                <input
-                  type="text"
-                  required
-                  placeholder="Passport York username"
-                  value={ppyUser}
-                  onChange={(e) => setPpyUser(e.target.value)}
-                  className="w-full px-4 py-2.5 bg-zinc-100 dark:bg-zinc-800 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                />
-                <input
-                  type="password"
-                  required
-                  placeholder="Passport York password"
-                  value={ppyPass}
-                  onChange={(e) => setPpyPass(e.target.value)}
-                  className="w-full px-4 py-2.5 bg-zinc-100 dark:bg-zinc-800 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                />
-                <button
-                  type="submit"
-                  disabled={linking}
-                  className="rounded-xl bg-zinc-800 py-2.5 font-semibold text-white hover:bg-zinc-700 disabled:opacity-50 dark:bg-zinc-700 dark:hover:bg-zinc-600"
-                >
-                  {linking ? "Signing in… approve Duo if prompted" : "Link with credentials"}
-                </button>
-                <p className="text-xs text-zinc-400">
-                  Used once to sign in, never stored. The popup method above is recommended.
-                </p>
-              </form>
-            </details>
+            <p className="mt-5 text-xs text-zinc-400 leading-relaxed">
+              🔒 Zero credential handling: the sign-in happens entirely on York
+              University's official pages, so Duo push, passcodes, and security
+              keys all work exactly as they do on eClass itself.
+            </p>
           </section>
         ) : (
           <>

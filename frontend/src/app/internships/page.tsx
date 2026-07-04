@@ -8,6 +8,8 @@ import { API_BASE, ScrapedItem } from "../../lib/api";
 
 const DISCIPLINES = ["All", "Software Engineering", "General"];
 const SPECIALTIES = ["Frontend", "Backend", "Full-Stack", "DevOps", "AI/ML", "Embedded", "Data", "Product", "Security"];
+const MODALITIES = ["All", "Remote", "Hybrid", "On-site"] as const;
+const LOCATIONS = ["Canada", "USA", "Global / Multi-region", "Toronto", "Vancouver", "Waterloo", "San Francisco", "New York", "Seattle", "London"];
 const FRESHNESS = [
   { label: "Any time", hours: Infinity },
   { label: "Last 24 hours", hours: 24 },
@@ -25,7 +27,8 @@ export default function InternshipsPage() {
   const [discipline, setDiscipline] = useState("All");
   const [sources, setSources] = useState<string[]>([]);
   const [specialties, setSpecialties] = useState<string[]>([]);
-  const [remoteOnly, setRemoteOnly] = useState(false);
+  const [modality, setModality] = useState<(typeof MODALITIES)[number]>("All");
+  const [locations, setLocations] = useState<string[]>([]);
   const [freshness, setFreshness] = useState<(typeof FRESHNESS)[number]["label"]>("Any time");
   const [sort, setSort] = useState<(typeof SORTS)[number]>("Relevance");
 
@@ -48,12 +51,14 @@ export default function InternshipsPage() {
     const cutoff = Date.now() - maxAge * 3600 * 1000;
 
     const result = items.filter((item) => {
-      const haystack = `${item.title} ${item.content_text ?? ""}`.toLowerCase();
+      const haystack = `${item.title} ${item.content_text ?? ""} ${item.location ?? ""}`.toLowerCase();
+      const locTags = item.location_tags ?? [];
       if (q && !haystack.includes(q)) return false;
       if (discipline !== "All" && item.discipline !== discipline) return false;
       if (sources.length > 0 && !sources.includes(item.source_platform)) return false;
       if (specialties.length > 0 && !specialties.some((s) => haystack.includes(s.toLowerCase().replace("full-stack", "full stack")) || haystack.includes(s.toLowerCase()))) return false;
-      if (remoteOnly && !haystack.includes("remote")) return false;
+      if (modality !== "All" && !locTags.includes(modality)) return false;
+      if (locations.length > 0 && !locations.some((l) => locTags.includes(l))) return false;
       if (maxAge !== Infinity && new Date(item.timestamp).getTime() < cutoff) return false;
       return true;
     });
@@ -66,14 +71,15 @@ export default function InternshipsPage() {
       default:
         return result.sort((a, b) => b.relevance_score - a.relevance_score);
     }
-  }, [items, search, discipline, sources, specialties, remoteOnly, freshness, sort]);
+  }, [items, search, discipline, sources, specialties, modality, locations, freshness, sort]);
 
   function toggle(list: string[], setList: (v: string[]) => void, value: string) {
     setList(list.includes(value) ? list.filter((v) => v !== value) : [...list, value]);
   }
 
   const activeFilters =
-    (discipline !== "All" ? 1 : 0) + sources.length + specialties.length + (remoteOnly ? 1 : 0) + (freshness !== "Any time" ? 1 : 0);
+    (discipline !== "All" ? 1 : 0) + sources.length + specialties.length +
+    (modality !== "All" ? 1 : 0) + locations.length + (freshness !== "Any time" ? 1 : 0);
 
   return (
     <div className="flex flex-col min-h-screen bg-zinc-50 font-sans dark:bg-black text-zinc-900 dark:text-zinc-100">
@@ -142,16 +148,40 @@ export default function InternshipsPage() {
                 {s}
               </button>
             ))}
-            <button
-              onClick={() => setRemoteOnly(!remoteOnly)}
-              className={`rounded-full px-3 py-1 text-xs font-semibold transition-colors ${
-                remoteOnly
-                  ? "bg-emerald-600 text-white"
-                  : "bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-400 hover:bg-zinc-200 dark:hover:bg-zinc-700"
-              }`}
-            >
-              🌍 Remote
-            </button>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-xs font-semibold uppercase tracking-wide text-zinc-400 mr-1">Work mode</span>
+            {MODALITIES.map((m) => (
+              <button
+                key={m}
+                onClick={() => setModality(m)}
+                className={`rounded-full px-3 py-1 text-xs font-semibold transition-colors ${
+                  modality === m
+                    ? "bg-emerald-600 text-white"
+                    : "bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-400 hover:bg-zinc-200 dark:hover:bg-zinc-700"
+                }`}
+              >
+                {m === "Remote" ? "🌍 Remote" : m}
+              </button>
+            ))}
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-xs font-semibold uppercase tracking-wide text-zinc-400 mr-1">Location</span>
+            {LOCATIONS.map((l) => (
+              <button
+                key={l}
+                onClick={() => toggle(locations, setLocations, l)}
+                className={`rounded-full px-3 py-1 text-xs font-semibold transition-colors ${
+                  locations.includes(l)
+                    ? "bg-indigo-600 text-white"
+                    : "bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-400 hover:bg-zinc-200 dark:hover:bg-zinc-700"
+                }`}
+              >
+                {l}
+              </button>
+            ))}
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
@@ -171,7 +201,7 @@ export default function InternshipsPage() {
             ))}
             {activeFilters > 0 && (
               <button
-                onClick={() => { setDiscipline("All"); setSources([]); setSpecialties([]); setRemoteOnly(false); setFreshness("Any time"); }}
+                onClick={() => { setDiscipline("All"); setSources([]); setSpecialties([]); setModality("All"); setLocations([]); setFreshness("Any time"); }}
                 className="ml-auto text-xs font-semibold text-indigo-600 hover:underline dark:text-indigo-400"
               >
                 Clear filters
@@ -196,7 +226,7 @@ export default function InternshipsPage() {
           <div className="text-center py-20 bg-white dark:bg-zinc-900 rounded-3xl border border-dashed border-zinc-300 dark:border-zinc-700">
             <p className="text-zinc-500 dark:text-zinc-400">No roles match your filters.</p>
             <button
-              onClick={() => { setSearch(""); setDiscipline("All"); setSources([]); setSpecialties([]); setRemoteOnly(false); setFreshness("Any time"); }}
+              onClick={() => { setSearch(""); setDiscipline("All"); setSources([]); setSpecialties([]); setModality("All"); setLocations([]); setFreshness("Any time"); }}
               className="mt-4 text-indigo-600 font-semibold text-sm hover:underline"
             >
               Clear everything

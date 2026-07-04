@@ -29,12 +29,18 @@ export function splitTitle(item: ScrapedItem): { primary: string; secondary: str
   return { primary: item.title, secondary: null };
 }
 
-/** Extracts short attribute tags from an item's metadata text. */
+/** Extracts short attribute tags from an item's metadata. */
 export function tagsFor(item: ScrapedItem): string[] {
   const tags: string[] = [];
+  if (item.location) {
+    tags.push(item.location.split("|")[0].trim().slice(0, 28));
+    const modality = item.location_tags?.find((t) => t === "Remote" || t === "Hybrid");
+    if (modality) tags.push(modality);
+  } else {
+    const loc = item.content_text?.match(/Location:\s*([^·|]+)/i);
+    if (loc) tags.push(loc[1].trim().slice(0, 28));
+  }
   if (item.discipline && item.discipline !== "General") tags.push(item.discipline);
-  const loc = item.content_text?.match(/Location:\s*([^·|]+)/i);
-  if (loc) tags.push(loc[1].trim().split("</br>")[0].slice(0, 28));
   const term = (item.title + " " + (item.content_text ?? "")).match(/(Summer|Fall|Winter|Spring)\s*20\d\d/i);
   if (term) tags.push(term[0]);
   return tags.slice(0, 3);

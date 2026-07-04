@@ -1,14 +1,15 @@
 """
 Scraper for York University's eClass (Moodle) portal.
 
-Login goes through YorkU's Shibboleth SSO (shib.yorku.ca) with Duo 2FA, so it
-is driven with Playwright. Credentials are used transiently for the login and
-are never written to disk or the database — only the resulting session
-cookies (Playwright storage state) are persisted, per user. Data is then
-pulled through Moodle's session-authenticated AJAX API with plain httpx,
-which is far faster and more stable than DOM scraping.
+Login goes through YorkU's Shibboleth SSO (shib.yorku.ca) with Duo 2FA, so
+every sign-in happens in a real (headed) browser window showing the official
+Passport York portal — Anti-FOMO never sees or handles credentials. Only the
+resulting session cookies (Playwright storage state) are persisted, per user.
+Data is then pulled through Moodle's session-authenticated AJAX API with
+plain httpx, which is far faster and more stable than DOM scraping.
 """
 
+import asyncio
 import json
 import os
 import re
@@ -24,33 +25,36 @@ ECLASS_BASE = "https://eclass.yorku.ca"
 LOGIN_URL = f"{ECLASS_BASE}/login/index.php"
 DASHBOARD_URL = f"{ECLASS_BASE}/my/"
 
-# Generous timeout: the student may need to approve a Duo push on their phone.
-LOGIN_TIMEOUT_SECONDS = 180
-
 SESSIONS_DIR = Path(__file__).parent / "data" / "eclass_sessions"
-
-USERNAME_SELECTORS = "#username, input[name='j_username'], input[name='mli'], input[name='username']"
-PASSWORD_SELECTORS = "#password, input[name='j_password'], input[name='password'], input[type='password']"
-SUBMIT_SELECTORS = "button[type='submit'], input[type='submit'], input[name='_eventId_proceed']"
 
 
 class EclassSessionExpired(Exception):
     """Saved eClass session no longer works; the student must re-link."""
 
 
-# Status of in-flight interactive (popup) link attempts, keyed by user id.
-# Single-process app, so a module-level dict is sufficient.
+# Status of in-flight popup attempts. `link_attempts` is keyed by user id
+# (linking eClass from the dashboard); `auth_attempts` by a random attempt id
+# (signing in to Anti-FOMO itself). Single-process app, so dicts suffice.
 link_attempts: Dict[int, Dict[str, str]] = {}
+auth_attempts: Dict[str, Dict[str, Any]] = {}
 
 
-async def link_account_interactive(user_id: int, state_path: Path) -> None:
+def state_path_for(user_id: int) -> Path:
+    SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
+    return SESSIONS_DIR / f"user_{user_id}.json"
+
+
+def attempt_state_path(attempt_id: str) -> Path:
+    SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
+    return SESSIONS_DIR / f"attempt_{attempt_id}.json"
+
+
+async def _popup_login(state_path: Path) -> Dict[str, Any]:
     """
-    Opens a real (headed) browser window on the official YorkU login portal.
-    The student types their credentials directly into York's page — including
-    any Duo 2FA step — and we only capture the resulting session cookies.
-    Progress is reported through `link_attempts[user_id]`.
+    Opens a real (headed) browser window on the official YorkU login portal
+    and waits for the student to finish signing in there (incl. Duo 2FA).
+    Saves the session state on success. Returns {"success", "message"}.
     """
-    link_attempts[user_id] = {"status": "pending", "message": "Waiting for you to sign in to YorkU…"}
     try:
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=False, args=["--window-size=520,760"])
@@ -62,93 +66,85 @@ async def link_account_interactive(user_id: int, state_path: Path) -> None:
             while time.monotonic() < deadline:
                 try:
                     if page.is_closed():
-                        link_attempts[user_id] = {"status": "failed", "message": "The login window was closed before finishing."}
-                        return
+                        return {"success": False, "message": "The login window was closed before finishing."}
                     url = page.url
                     if url.startswith(ECLASS_BASE) and "/login" not in url:
                         await context.storage_state(path=str(state_path))
                         os.chmod(state_path, 0o600)
                         await browser.close()
-                        link_attempts[user_id] = {"status": "success", "message": "eClass account linked."}
-                        return
+                        return {"success": True, "message": "Signed in to YorkU."}
                     await page.wait_for_timeout(1000)
                 except Exception:
-                    link_attempts[user_id] = {"status": "failed", "message": "The login window was closed before finishing."}
-                    return
+                    return {"success": False, "message": "The login window was closed before finishing."}
 
             await browser.close()
-            link_attempts[user_id] = {"status": "failed", "message": "Timed out waiting for the YorkU login to finish."}
+            return {"success": False, "message": "Timed out waiting for the YorkU login to finish."}
     except Exception as e:
-        link_attempts[user_id] = {"status": "failed", "message": f"Could not open the login window: {e}"}
+        return {"success": False, "message": f"Could not open the login window: {e}"}
 
 
-def state_path_for(user_id: int) -> Path:
-    SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
-    return SESSIONS_DIR / f"user_{user_id}.json"
+async def link_account_interactive(user_id: int, state_path: Path) -> None:
+    """Popup link flow for an already signed-in student (dashboard)."""
+    link_attempts[user_id] = {"status": "pending", "message": "Waiting for you to sign in to YorkU…"}
+    result = await _popup_login(state_path)
+    link_attempts[user_id] = {
+        "status": "success" if result["success"] else "failed",
+        "message": "eClass account linked." if result["success"] else result["message"],
+    }
 
 
-async def link_account(username: str, password: str, state_path: Path) -> Dict[str, Any]:
+async def auth_popup_login(attempt_id: str, state_path: Path) -> None:
     """
-    Logs into eClass via Passport York/Shibboleth and saves the session state.
-    Returns {"success": bool, "message": str}.
+    Popup flow used as the app's sign-in: after the YorkU login completes,
+    resolve the student's Moodle identity so the API can find or create
+    their Anti-FOMO account.
     """
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
-        context = await browser.new_context()
-        page = await context.new_page()
-        try:
-            await page.goto(LOGIN_URL, timeout=30000)
+    auth_attempts[attempt_id] = {"status": "pending", "message": "Waiting for you to sign in to YorkU…"}
+    result = await _popup_login(state_path)
+    if not result["success"]:
+        auth_attempts[attempt_id] = {"status": "failed", "message": result["message"]}
+        return
+    profile = await asyncio.to_thread(fetch_profile, state_path)
+    if not profile:
+        auth_attempts[attempt_id] = {"status": "failed", "message": "Signed in, but could not read your eClass profile."}
+        return
+    auth_attempts[attempt_id] = {"status": "success", "message": "Signed in to YorkU.", "profile": profile}
 
-            # Shibboleth shows a JS localStorage bounce page first; just wait
-            # until a username field appears anywhere in the chain.
-            await page.wait_for_selector(USERNAME_SELECTORS, timeout=30000)
-            await page.fill(USERNAME_SELECTORS, username)
-            # Some flows ask for username first, then password on submit.
-            pw = page.locator(PASSWORD_SELECTORS)
-            if await pw.count() > 0:
-                await pw.first.fill(password)
-            await page.locator(SUBMIT_SELECTORS).first.click()
 
-            deadline = time.monotonic() + LOGIN_TIMEOUT_SECONDS
-            while time.monotonic() < deadline:
-                url = page.url
-                if url.startswith(ECLASS_BASE) and "/login" not in url:
-                    await context.storage_state(path=str(state_path))
-                    os.chmod(state_path, 0o600)
-                    return {"success": True, "message": "eClass account linked."}
+def fetch_profile(state_path: Path) -> Optional[Dict[str, Any]]:
+    """
+    Resolves the logged-in student's Moodle user id and display name from
+    their own profile page. Returns {"moodle_id": int, "name": str} or None.
+    """
+    try:
+        with _client_from_state(state_path) as client:
+            resp = client.get(f"{ECLASS_BASE}/user/profile.php")
+            text = resp.text
+            moodle_id = None
+            for pattern in (r'[?&]id=(\d+)',):
+                m = re.search(pattern, str(resp.url))
+                if m:
+                    moodle_id = int(m.group(1))
+                    break
+            if moodle_id is None:
+                for pattern in (r'user/profile\.php\?id=(\d+)', r'"userid"\s*:\s*(\d+)', r'data-userid="(\d+)"'):
+                    m = re.search(pattern, text)
+                    if m:
+                        moodle_id = int(m.group(1))
+                        break
+            if moodle_id is None:
+                return None
 
-                content = await page.content()
-                lowered = content.lower()
-                if "password" in lowered and any(
-                    err in lowered for err in ("incorrect", "cannot be identified", "invalid", "unable to log in")
-                ):
-                    return {"success": False, "message": "eClass rejected the username or password."}
-
-                # Duo universal prompt: press "Yes, this is my device" if shown
-                # so future logins can reuse the session longer.
-                trust = page.locator("#trust-browser-button")
-                if await trust.count() > 0:
-                    try:
-                        await trust.first.click(timeout=2000)
-                    except Exception:
-                        pass
-
-                # A second password field can appear after a username-only step.
-                pw = page.locator(PASSWORD_SELECTORS)
-                if await pw.count() > 0 and await pw.first.input_value() == "":
-                    await pw.first.fill(password)
-                    await page.locator(SUBMIT_SELECTORS).first.click()
-
-                await page.wait_for_timeout(2000)
-
-            return {
-                "success": False,
-                "message": "Timed out waiting for login — if you use Duo, approve the push and try again.",
-            }
-        except Exception as e:
-            return {"success": False, "message": f"Login automation failed: {e}"}
-        finally:
-            await browser.close()
+            name = None
+            m = re.search(r'<h1[^>]*>\s*([^<]+?)\s*</h1>', text)
+            if m:
+                name = m.group(1).strip()
+            if not name:
+                m = re.search(r'<title>\s*([^<:|]+)', text)
+                name = m.group(1).strip() if m else "YorkU Student"
+            return {"moodle_id": moodle_id, "name": name}
+    except Exception:
+        return None
 
 
 def _client_from_state(state_path: Path) -> httpx.Client:

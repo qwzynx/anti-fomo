@@ -30,7 +30,7 @@ class ItemType(str, Enum):
     EVENT = "Event"
     INTERNSHIP = "Internship"
 
-class ScrapedItem(TypedDict):
+class ScrapedItem(TypedDict, total=False):
     title: str
     source_platform: str
     item_type: ItemType
@@ -39,6 +39,66 @@ class ScrapedItem(TypedDict):
     timestamp: datetime
     discipline: Optional[str]
     relevance_score: Optional[float]
+    location: Optional[str]
+    location_tags: List[str]
+
+# --- Location Normalization Engine ---
+
+_MODALITY_KEYWORDS = {
+    "Remote": ["remote"],
+    "Hybrid": ["hybrid"],
+}
+_CITY_KEYWORDS = {
+    "Toronto": ["toronto"],
+    "Vancouver": ["vancouver"],
+    "Waterloo": ["waterloo", "kitchener"],
+    "San Francisco": ["san francisco", "bay area", "mountain view", "palo alto", "sunnyvale", "san jose", "menlo park", "cupertino"],
+    "New York": ["new york", "nyc", "brooklyn", "manhattan"],
+    "Seattle": ["seattle", "bellevue", "redmond"],
+    "London": ["london"],
+}
+_CANADA_KEYWORDS = ["canada", "toronto", "vancouver", "waterloo", "kitchener", "montreal", "ottawa", "calgary", "edmonton",
+                    ", on", ", bc", ", qc", ", ab", "ontario", "british columbia", "quebec", "alberta"]
+_USA_KEYWORDS = ["usa", "united states", "u.s.", "san francisco", "bay area", "new york", "nyc", "seattle", "austin",
+                 "boston", "chicago", "mountain view", "palo alto", "sunnyvale", "san jose", "redmond", "bellevue",
+                 ", ca", ", ny", ", wa", ", tx", ", ma", ", il", ", ga", ", nc", ", va", ", pa", ", co", ", ut", ", az", ", fl"]
+
+def clean_location(raw: str) -> str:
+    """Collapses HTML break tags and whitespace in raw location cells."""
+    text = re.sub(r'</?\s*br\s*/?>', ' | ', raw, flags=re.I)
+    text = re.sub(r'<[^>]+>', ' ', text)
+    return re.sub(r'\s+', ' ', text).strip(' |')
+
+def normalize_location(raw: Optional[str]) -> List[str]:
+    """
+    Maps a raw location string to structured tags used by UI filters:
+    modality (Remote/Hybrid/On-site), region (Canada/USA/Global), hub cities.
+    """
+    if not raw:
+        return []
+    text = raw.lower()
+    tags: List[str] = []
+
+    for tag, kws in _MODALITY_KEYWORDS.items():
+        if any(kw in text for kw in kws):
+            tags.append(tag)
+    if not tags:
+        tags.append("On-site")
+
+    for city, kws in _CITY_KEYWORDS.items():
+        if any(kw in text for kw in kws):
+            tags.append(city)
+
+    in_canada = any(kw in text for kw in _CANADA_KEYWORDS)
+    in_usa = any(kw in text for kw in _USA_KEYWORDS)
+    if in_canada:
+        tags.append("Canada")
+    if in_usa:
+        tags.append("USA")
+    if "multiple" in text or (in_canada and in_usa) or text.count("|") >= 2:
+        tags.append("Global / Multi-region")
+
+    return tags
 
 # Academic Disciplines
 MAJORS = {
@@ -119,6 +179,7 @@ class PittCSCGithubScraper(BaseScraper):
                     company_a = tds[0].find('a')
                     company = company_a.text.strip() if company_a else tds[0].text.strip()
                     role = tds[1].text.strip()
+                    location = clean_location(tds[2].decode_contents())
                     if company == '↳':  # continuation row: same company as above
                         company = items[-1]['title'].removeprefix('Internship at ') if items else 'Unknown'
 
@@ -129,10 +190,11 @@ class PittCSCGithubScraper(BaseScraper):
                             "source_platform": self.source_name,
                             "item_type": ItemType.INTERNSHIP,
                             "url": app_link['href'],
-                            "content_text": f"Role: {role}",
+                            "content_text": f"Role: {role} · Location: {location}",
                             "timestamp": datetime.now(),
                             "discipline": "Software Engineering",
-                            "relevance_score": None
+                            "relevance_score": None,
+                            "location": location
                         })
         except Exception as e:
             logger.error(f"Error scraping {self.source_name}: {e}")
@@ -176,7 +238,7 @@ class SimplifyGithubScraper(BaseScraper):
                     company_a = tds[0].find('a')
                     company = company_a.text.strip() if company_a else tds[0].text.strip()
                     role = tds[1].text.strip()
-                    location = tds[2].text.strip()
+                    location = clean_location(tds[2].decode_contents())
                     if company == '↳' and items:  # continuation row: same company as above
                         company = items[-1]['title'].rsplit(' at ', 1)[-1]
                     
@@ -190,7 +252,8 @@ class SimplifyGithubScraper(BaseScraper):
                             "content_text": f"Location: {location}",
                             "timestamp": datetime.now(),
                             "discipline": "Software Engineering",
-                            "relevance_score": None
+                            "relevance_score": None,
+                            "location": location
                         })
         except Exception as e:
             logger.error(f"Error scraping {self.source_name}: {e}")
@@ -289,7 +352,8 @@ class LumaScraper(BaseScraper):
                     "content_text": f"{where} — starts {start or 'TBA'}".strip(" —"),
                     "timestamp": ts,
                     "discipline": None,
-                    "relevance_score": None
+                    "relevance_score": None,
+                    "location": where or None
                 })
         except Exception as e:
             logger.error(f"Error scraping {self.source_name}: {e}")
@@ -316,7 +380,8 @@ class LevelsFyiScraper(BaseScraper):
                     "content_text": f"{d.get('season', '')} {d.get('yr', '')} · {d.get('loc', 'Location N/A')} · {salary}",
                     "timestamp": datetime.now(),
                     "discipline": None,
-                    "relevance_score": None
+                    "relevance_score": None,
+                    "location": d.get('loc')
                 })
         except Exception as e:
             logger.error(f"Error scraping {self.source_name}: {e}")
@@ -547,6 +612,8 @@ async def fetch_all_items() -> List[ScrapedItem]:
         seen_urls.add(item['url'])
         if not item['discipline']:
             item['discipline'] = classify_item(item, MAJORS)
+        item['location'] = item.get('location') or None
+        item['location_tags'] = normalize_location(item['location'])
         deduped.append(item)
 
     return deduped

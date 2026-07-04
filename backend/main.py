@@ -10,8 +10,10 @@ from auth import create_token, get_current_user, hash_password, verify_password
 from database import EclassUpdate, User, get_db, init_db, replace_eclass_updates
 from eclass_scraper import (
     EclassSessionExpired,
+    attempt_state_path,
+    auth_attempts,
+    auth_popup_login,
     fetch_updates,
-    link_account,
     link_account_interactive,
     link_attempts,
     state_path_for,
@@ -66,10 +68,6 @@ class LoginRequest(BaseModel):
     email: EmailStr
     password: str
 
-class EclassLinkRequest(BaseModel):
-    username: str
-    password: str
-
 def _user_payload(user: User) -> dict:
     return {
         "id": user.id,
@@ -103,21 +101,54 @@ def login(req: LoginRequest, db: Session = Depends(get_db)):
 def me(user: User = Depends(get_current_user)):
     return _user_payload(user)
 
-# --- eClass (YorkU Moodle) integration ---
+# --- YorkU popup sign-in (Passport York + Duo, zero credential handling) ---
 
-@app.post("/api/eclass/link")
-async def eclass_link(req: EclassLinkRequest, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+@app.post("/api/auth/yorku/start")
+async def yorku_auth_start():
     """
-    Logs into eClass with the student's Passport York credentials (used only
-    for this login, never stored) and saves the session for future scrapes.
-    If Duo 2FA is enabled, the student must approve the push during this call.
+    Opens the official YorkU login portal in a browser window on this machine.
+    Sign-in (incl. Duo) happens entirely on York's pages; poll
+    GET /api/auth/yorku/status/{attempt_id} for the outcome.
     """
-    result = await link_account(req.username, req.password, state_path_for(user.id))
-    if not result["success"]:
-        raise HTTPException(status_code=502, detail=result["message"])
+    import secrets
+    attempt_id = secrets.token_urlsafe(24)
+    asyncio.create_task(auth_popup_login(attempt_id, attempt_state_path(attempt_id)))
+    return {"attempt_id": attempt_id, "status": "pending"}
+
+@app.get("/api/auth/yorku/status/{attempt_id}")
+def yorku_auth_status(attempt_id: str, db: Session = Depends(get_db)):
+    attempt = auth_attempts.get(attempt_id)
+    if attempt is None:
+        raise HTTPException(status_code=404, detail="Unknown sign-in attempt.")
+    if attempt["status"] != "success":
+        return {"status": attempt["status"], "message": attempt["message"]}
+
+    profile = attempt["profile"]
+    user = db.query(User).filter(User.yorku_user_id == profile["moodle_id"]).first()
+    if user is None:
+        import secrets
+        user = User(
+            # Synthetic address: YorkU sign-in accounts have no email/password.
+            email=f"yorku-{profile['moodle_id']}@antifomo.local",
+            password_hash=hash_password(secrets.token_hex(24)),
+            name=profile["name"],
+            yorku_user_id=profile["moodle_id"],
+        )
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+
+    # The captured session becomes the user's eClass session.
+    tmp_state = attempt_state_path(attempt_id)
+    if tmp_state.exists():
+        tmp_state.replace(state_path_for(user.id))
     user.eclass_linked_at = datetime.utcnow()
     db.commit()
-    return {"message": result["message"], "user": _user_payload(user)}
+    auth_attempts.pop(attempt_id, None)
+
+    return {"status": "success", "token": create_token(user.id), "user": _user_payload(user)}
+
+# --- eClass (YorkU Moodle) integration ---
 
 @app.post("/api/eclass/link/interactive")
 async def eclass_link_interactive(user: User = Depends(get_current_user)):
