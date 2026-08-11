@@ -1,198 +1,127 @@
-# 🚀 Anti-FOMO: The Ultimate AI-Powered Student Hub & Opportunity Aggregator
+# Anti-FOMO
 
 <div align="center">
 
-![Next.js](https://img.shields.io/badge/Next.js_15-black?style=for-the-badge&logo=next.js&logoColor=white)
+![Next.js](https://img.shields.io/badge/Next.js_16-black?style=for-the-badge&logo=next.js&logoColor=white)
 ![React](https://img.shields.io/badge/React_19-20232A?style=for-the-badge&logo=react&logoColor=61DAFB)
 ![TypeScript](https://img.shields.io/badge/TypeScript-007ACC?style=for-the-badge&logo=typescript&logoColor=white)
-![Tailwind CSS](https://img.shields.io/badge/Tailwind_CSS-38B2AC?style=for-the-badge&logo=tailwind-css&logoColor=white)
+![Tailwind CSS](https://img.shields.io/badge/Tailwind_CSS_4-38B2AC?style=for-the-badge&logo=tailwind-css&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/FastAPI-009688?style=for-the-badge&logo=fastapi&logoColor=white)
-![Python](https://img.shields.io/badge/Python_3.12+-3776AB?style=for-the-badge&logo=python&logoColor=white)
+![Python](https://img.shields.io/badge/Python_3.10+-3776AB?style=for-the-badge&logo=python&logoColor=white)
 ![Playwright](https://img.shields.io/badge/Playwright-2EAD33?style=for-the-badge&logo=playwright&logoColor=white)
-![SQLAlchemy](https://img.shields.io/badge/SQLAlchemy-red?style=for-the-badge&logo=python&logoColor=white)
+![SQLAlchemy](https://img.shields.io/badge/SQLAlchemy-D71F00?style=for-the-badge&logo=python&logoColor=white)
 
-**Never miss an application deadline, tech internship, hackathon, or university announcement again.**
+**A personal aggregator that pulls internships, tech news, and events into one ranked feed — with an optional YorkU eClass hub for students there.**
 
-[Explore Opportunities](#-key-features) • [Getting Started](#-getting-started) • [Architecture](#-architecture--tech-stack) • [Documentation](#-project-structure)
+[Features](#features) • [Tech Stack](#tech-stack) • [Getting Started](#getting-started) • [API Overview](#api-overview) • [Project Structure](#project-structure)
 
 </div>
 
 ---
 
-## 💡 About The Project
+## About
 
-Students constantly experience **FOMO (Fear Of Missing Out)** when trying to keep track of academic deadlines, career opportunities, and industry news. Information is scattered across fragmented portals: university learning management systems (eClass/Moodle), GitHub internship repositories, tech news feeds, and local event aggregators.
+Job postings live on GitHub internship-tracker repos, tech news lives in newsletters and link aggregators, and (for York University students) course deadlines live behind a Moodle login — three different places to check every day. Anti-FOMO scrapes all of them concurrently, dedupes and tags the results, and serves a single ranked feed through a Next.js frontend.
 
-**Anti-FOMO** bridges this gap. It aggregates, classifies, and prioritizes over 200+ live items from top industry sources into a unified, glassmorphic dark-mode dashboard tailored specifically for Software Engineering and tech students.
+It has two halves:
 
----
+- **A FastAPI backend** that runs an async scraper pipeline against ten public sources, normalizes locations, scores relevance per user, and stores everything in SQLite (or Postgres) via SQLAlchemy.
+- **A Next.js frontend** that renders the feed with filtering/sorting, a dedicated internships hub, JWT-based accounts, and (for YorkU students) a dashboard that links an eClass account through a real browser popup to support Duo 2FA natively.
 
-## ✨ Key Features
+## Features
 
-### 🏠 AI-Prioritized Feed & Smart Filtering
-* **Live Aggregation Pipeline:** Continuously pulls active opportunities from **8 primary sources** (*Hacker News*, *SimplifyJobs*, *Pitt CSC*, *Phoronix*, *TLDR Tech*, *HN Top Links*, *Daily.dev*, and *Luma*).
-* **Multi-Parameter Filter Bar:** Instantly slice and dice your feed:
-  * **Item Type:** Isolate `Internships`, `Events`, or `Articles`.
-  * **Source Platform:** Filter specifically by platform (e.g., show only *Simplify* or *Hacker News*).
-  * **Freshness:** View postings from the `Last 24 Hours`, `Past Week`, or `Past Month`.
-  * **Sorting:** Sort by `Relevance Score (Top Match)` or `Newest First`.
+### Aggregated feed
+- Ten scrapers run concurrently (`httpx` + `BeautifulSoup4` for static sources, Playwright for JS-rendered ones), covering GitHub internship-tracker repos, Hacker News, RSS feeds, and event listings. Results are deduplicated by URL and cached for 10 minutes so repeat requests don't re-scrape.
+- Each item is auto-classified into an academic discipline via keyword matching and given a relevance score based on discipline match, item type, and a per-source cap so one large source can't flood the feed.
+- The home feed (`/`) supports filtering by item type (Internship/Event/Article), source platform, freshness (last 24h / week / month), and sorting by relevance or recency.
 
-### 💼 Dedicated Internships & Careers Hub (`/internships`)
-* **Location Normalization Engine:** Scrapers automatically extract and categorize job locations from unstructured markdown and career pages into clean UI tags:
-  * **Modality Toggles:** Quickly filter between `Remote Only`, `Hybrid`, and `On-site`.
-  * **Region & Tech Hub Dropdowns:** Check specific regions like `Canada`, `USA`, `Toronto`, `Vancouver`, `Waterloo`, or `San Francisco`.
-* **Keyword Search & Instant Match:** Real-time search across company names, job titles, and qualification summaries.
+### Internships hub (`/internships`)
+- All scraped jobs/internships in one view, independent of the 60-item home feed cap.
+- A location-normalization step maps raw location strings (from markdown tables, RSS text, etc.) to structured tags: modality (Remote / Hybrid / On-site), region (Canada / USA / Global-Multi-region), and hub cities (Toronto, Vancouver, Waterloo, San Francisco, New York, Seattle, London).
+- Multi-select filters for modality, region/city, source, and discipline, plus free-text search across title, company, and description.
 
-### 🔐 Secure YorkU eClass Integration with Duo 2FA Support
-* **Official Passport York Login Popup:** Instead of handling passwords in unverified forms, clicking **"Connect YorkU eClass"** opens an official browser popup window loading York University's authentic login portal (`https://passportyork.yorku.ca`).
-* **Native 2FA Execution:** Because authentication takes place on YorkU's official domain, **Duo Two-Factor Authentication** (mobile push notifications, OTP SMS, hardware security keys) executes smoothly and reliably.
-* **Zero Credential Storage:** Our headless Playwright engine intercepts the authenticated session cookies once 2FA is verified and stores them securely. Your raw password is never seen, handled, or stored by Anti-FOMO.
-* **Student Hub Feed:** Automatically extracts and organizes your enrolled courses, upcoming assignment deadlines, and faculty announcements.
+### Accounts
+- Email/password registration and login, with PBKDF2-hashed passwords and JWT bearer tokens (`auth.py`).
+- A separate passwordless path: **Sign in with YorkU** opens the official Passport York SSO login in a real browser window (Playwright, headed); once signed in, the app resolves the student's Moodle identity and creates or logs into a matching Anti-FOMO account. No password is ever entered into Anti-FOMO's own forms for this path.
 
-### 🃏 Interactive Opportunity Cards & Detailed Modals
-* **At-a-Glance Scannability:** Cards feature company badges, visual typography, and prominent **"⭐️ Top Match"** relevance indicators.
-* **Slide-Over Modal Drawers:** Clicking any card opens a rich modal dialog displaying complete job descriptions, skills required, compensation notes, and source transparency.
-* **Direct Action CTAs:** Launch directly to the original scraped posting with high-contrast buttons like **"Apply on Simplify ↗"** or **"Read Full Article ↗"**.
+### YorkU eClass dashboard (`/dashboard`)
+- Students can link their eClass account through the same popup flow used for sign-in (`POST /api/eclass/link/interactive`). Because the login happens on York's own domain, Duo 2FA (push, OTP, security keys) works exactly as it does on the real site.
+- Only the resulting Playwright session cookies are persisted to disk per user (`backend/data/eclass_sessions/`) — Anti-FOMO never sees or stores a York password.
+- Once linked, the backend calls Moodle's session-authenticated AJAX API directly (no DOM scraping) to pull enrolled courses, upcoming deadlines/calendar events, and notifications, and caches them in the database until the student refreshes or unlinks.
 
----
+## Tech Stack
 
-## 🏗 Architecture & Tech Stack
+| Layer | Technology |
+|---|---|
+| Frontend framework | [Next.js 16](https://nextjs.org/) (App Router), [React 19](https://react.dev/) |
+| Language | [TypeScript](https://www.typescriptlang.org/) |
+| Styling | [Tailwind CSS 4](https://tailwindcss.com/) (CSS-first config via `@theme`) |
+| Backend framework | [FastAPI](https://fastapi.tiangolo.com/) on [Uvicorn](https://www.uvicorn.org/) |
+| Scraping | [httpx](https://www.python-httpx.org/) (async HTTP), [BeautifulSoup4](https://www.crummy.com/software/BeautifulSoup/) + `lxml` (HTML/RSS parsing), [Playwright for Python](https://playwright.dev/python/) (JS-rendered pages, YorkU login capture) |
+| Database / ORM | [SQLAlchemy](https://www.sqlalchemy.org/) — SQLite by default, PostgreSQL via `DATABASE_URL` |
+| Auth | [PyJWT](https://pyjwt.readthedocs.io/) bearer tokens, PBKDF2-HMAC password hashing |
 
-```mermaid
-graph TD
-    subgraph Frontend [Next.js 15 Client Hub]
-        UI[Glassmorphic UI / Tailwind CSS]
-        Feed[Home Feed & Filters]
-        Hub[Internship Discovery Hub]
-        Dashboard[Student eClass Hub]
-    end
+## Getting Started
 
-    subgraph Backend [FastAPI / Python 3.12 Engine]
-        API[REST API Endpoints]
-        Auth[JWT & Session Auth Service]
-        Scraper[Async Scraper Pipeline]
-        PW[Playwright Headless / Webview Engine]
-    end
+### Prerequisites
+- Node.js 20+
+- Python 3.10+
+- Git
 
-    subgraph Sources [External Data Sources]
-        GH1[SimplifyJobs GitHub Repo]
-        GH2[Pitt CSC GitHub Repo]
-        HN[Algolia HN API & Top Links]
-        RSS[Phoronix & TLDR Tech Feeds]
-        Luma[Luma Toronto Next.js JSON]
-        York[YorkU eClass Moodle Portal]
-    end
+### Clone
 
-    UI --> API
-    Feed & Hub & Dashboard --> API
-    API --> Auth
-    API --> Scraper
-    Scraper --> GH1 & GH2 & HN & RSS & Luma
-    Auth --> PW
-    PW <-->|Secure 2FA Session Capture| York
-```
-
-### Frontend
-* **Framework:** [Next.js 15](https://nextjs.org/) (App Router) & [React 19](https://react.dev/)
-* **Language:** [TypeScript](https://www.typescriptlang.org/)
-* **Styling:** Vanilla CSS & [Tailwind CSS](https://tailwindcss.com/) with custom glassmorphism (`backdrop-blur-md`) and responsive dark-mode color palettes.
-* **Icons & Components:** Custom modular SVG badges and slide-over modal drawers.
-
-### Backend & Scrapers
-* **Framework:** [FastAPI](https://fastapi.tiangolo.com/) (Asynchronous Python REST API)
-* **Database & ORM:** [SQLAlchemy](https://www.sqlalchemy.org/) supporting SQLite (for zero-dependency local dev) and PostgreSQL (for production).
-* **Automation & Scraping:**
-  * **[Playwright](https://playwright.dev/python/):** Handles complex gated authentication, session cookies, and interactive webviews for YorkU eClass and Duo 2FA.
-  * **[HTTPX](https://www.python-httpx.org/) & [BeautifulSoup4](https://www.crummy.com/software/BeautifulSoup/):** Lightning-fast asynchronous scraping for raw GitHub markdown tables, RSS feeds, and Next.js `__NEXT_DATA__` payloads.
-  * **Algolia REST API:** Direct JSON querying for Hacker News front-page stories.
-
----
-
-## 🚀 Getting Started
-
-Follow these instructions to get a local development copy of Anti-FOMO up and running in minutes.
-
-### 📋 Prerequisites
-* **Node.js:** `v20.0.0` or higher ([Download Node.js](https://nodejs.org/))
-* **Python:** `v3.10` or higher ([Download Python](https://www.python.org/))
-* **Git:** installed and configured.
-
-### 1️⃣ Clone the Repository
 ```bash
 git clone https://github.com/qwzynx/anti-fomo.git
 cd anti-fomo
 ```
 
-### 2️⃣ Backend Setup
-Navigate to the `backend` directory, create a virtual environment, install dependencies, and launch the FastAPI server:
+### Backend
 
 ```bash
 cd backend
-
-# Create and activate virtual environment
 python -m venv .venv
-source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+source .venv/bin/activate   # Windows: .venv\Scripts\activate
 
-# Install Python dependencies
 pip install -r requirements.txt
+playwright install chromium   # required for the eClass/YorkU login popup and Daily.dev scraper
 
-# Install Playwright browser binaries (required for eClass integration)
-playwright install chromium
-
-# Launch the FastAPI development server
 uvicorn main:app --reload --port 8000
 ```
-*The backend API will now be active at `http://localhost:8000`. You can inspect the interactive OpenAPI Swagger docs at `http://localhost:8000/docs`.*
 
-### 3️⃣ Frontend Setup
-Open a new terminal window, navigate to the `frontend` directory, install Node dependencies, and start the Next.js client:
+The API is now served at `http://localhost:8000`, with interactive Swagger docs at `http://localhost:8000/docs`. On first run it creates a local `antifomo.db` SQLite file automatically — no database setup needed for local development.
+
+### Frontend
+
+In a second terminal:
 
 ```bash
 cd frontend
-
-# Install dependencies
 npm install
-
-# Launch the Next.js development server
 npm run dev
 ```
-*The frontend application is now running at `http://localhost:3000`.*
 
----
+The app is now served at `http://localhost:3000` and talks to the backend at `http://localhost:8000` by default.
 
-## 📂 Project Structure
+### Environment variables
 
-```text
-anti-fomo/
-├── backend/
-│   ├── main.py                    # FastAPI application, CORS setup, and API route definitions
-│   ├── scraper_pipeline.py        # Modular async scrapers (Simplify, Pitt CSC, HN, Phoronix, Luma, etc.)
-│   ├── eclass_scraper.py          # Playwright automation for YorkU Passport York 2FA & Moodle scraping
-│   ├── database.py                # SQLAlchemy database models (DBScrapedItem, User, EclassUpdate) and ORM
-│   ├── auth.py                    # JWT token creation, hashing, and authentication dependencies
-│   ├── check_scraper_counts.py    # CLI diagnostic script to test live scraper endpoints and counts
-│   └── requirements.txt           # Python dependency specifications
-├── frontend/
-│   ├── src/
-│   │   ├── app/
-│   │   │   ├── page.tsx           # Home Feed page featuring AI prioritization and multi-filter bar
-│   │   │   ├── internships/       # Dedicated Internship Hub with location modalities and region filters
-│   │   │   ├── dashboard/         # Student Hub displaying eClass deadlines, announcements, and courses
-│   │   │   └── login/             # Authentication onboarding and YorkU 2FA popup launcher
-│   │   ├── components/            # Reusable UI components (Header, ItemCard, ItemModal)
-│   │   └── lib/                   # API utilities, JWT storage, and TypeScript interfaces
-│   ├── package.json               # Frontend dependencies and Next.js scripts
-│   └── tailwind.config.ts         # Design system tokens and styling configurations
-├── internship_filters_and_yorku_signin_plan.md   # Architectural doc for location filters & YorkU 2FA popup
-├── frontend_enhancement_plan.md                  # Strategic UI/UX aesthetic and navigation overhaul plan
-└── scraping_expansion_plan.md                    # Aggregation pipeline scaling and categorization roadmap
-```
+Neither app ships a `.env.example`; both fall back to sensible local defaults, so nothing is required to run locally. To override defaults, create a `.env` file in the relevant directory (both are git-ignored):
 
----
+**`backend/.env`**
 
-## 🧪 Verifying Scraper Health
+| Variable | Default | Purpose |
+|---|---|---|
+| `DATABASE_URL` | `sqlite:///./antifomo.db` | SQLAlchemy connection string. Point this at Postgres in production (`postgres://…` is auto-normalized to `postgresql://…`). |
+| `SECRET_KEY` | `dev-secret-change-me` | Signing key for JWT auth tokens. Set a real secret outside local dev. |
 
-You can run our automated diagnostic CLI tool at any time from the `backend` directory to verify that all 8 external platforms are returning live, active data:
+**`frontend/.env.local`**
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `NEXT_PUBLIC_API_BASE` | `http://localhost:8000` | Base URL the frontend uses to reach the FastAPI backend. |
+
+### Verifying the scrapers
+
+`check_scraper_counts.py` is a CLI diagnostic that runs a subset of the scrapers directly and prints how many live items each one returns — useful for spotting a source that's started returning zero items (usually a sign the target site changed its markup):
 
 ```bash
 cd backend
@@ -200,40 +129,55 @@ source .venv/bin/activate
 python check_scraper_counts.py
 ```
 
-**Example Output:**
-```text
-Fetching items from all active scrapers... (this may take a few seconds due to Playwright)
+## API Overview
 
-=== Scraped Items Count by Website/Platform ===
-✅ Hacker News        :  10 items (Live Data)
-✅ Pitt CSC Repo      :  59 items (Live Data)
-✅ Phoronix           :  10 items (Live Data)
-✅ Simplify           :  59 items (Live Data)
-✅ Luma               :  20 items (Live Data)
-✅ TLDR Tech          :  15 items (Live Data)
-✅ HN Top Links       :  30 items (Live Data)
-✅ Daily.dev          :  10 items (Live Data)
-===============================================
-Total Active Items Scraped: 213
+All routes are defined in `backend/main.py`.
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/api/feed` | Top 60 items from the cached scrape, ranked for a given `major` query param. |
+| `GET` | `/api/internships` | Every scraped job/internship, ranked (used by the Internships hub; client filters further). |
+| `POST` | `/api/auth/register` | Create an account with email + password. |
+| `POST` | `/api/auth/login` | Log in, returns a JWT. |
+| `GET` | `/api/auth/me` | Current user from the bearer token. |
+| `POST` | `/api/auth/yorku/start` | Opens the Passport York login popup as a sign-in method; returns an `attempt_id` to poll. |
+| `GET` | `/api/auth/yorku/status/{attempt_id}` | Poll the outcome of a YorkU sign-in attempt. |
+| `POST` | `/api/eclass/link/interactive` | Opens the same popup to link eClass to an already-logged-in account. |
+| `GET` | `/api/eclass/link/status` | Poll the outcome of an eClass linking attempt. |
+| `DELETE` | `/api/eclass/link` | Unlink eClass and delete cached updates for the current user. |
+| `GET` | `/api/eclass/updates` | Cached (or freshly scraped, with `?refresh=true`) courses/deadlines/notifications. |
+
+## Project Structure
+
+```text
+anti-fomo/
+├── backend/
+│   ├── main.py                    # FastAPI app: CORS, feed/internship routes, auth, eClass routes
+│   ├── scraper_pipeline.py        # BaseScraper subclasses per source, location normalization, relevance scoring
+│   ├── eclass_scraper.py          # Playwright popup login capture + Moodle AJAX client for eClass data
+│   ├── database.py                # SQLAlchemy models (DBScrapedItem, User, EclassUpdate) and upsert helpers
+│   ├── auth.py                    # Password hashing (PBKDF2) and JWT issuance/verification
+│   ├── check_scraper_counts.py    # CLI script to sanity-check scraper output counts
+│   ├── data/eclass_sessions/      # Per-user Playwright session state (git-ignored)
+│   └── requirements.txt
+├── frontend/
+│   ├── src/
+│   │   ├── app/
+│   │   │   ├── page.tsx           # Home feed: filters (type/source/freshness), sort, search
+│   │   │   ├── internships/       # Internships hub: location/modality/region filters
+│   │   │   ├── dashboard/         # eClass linking flow + courses/deadlines/announcements view
+│   │   │   └── login/             # Email/password + "Sign in with YorkU" popup
+│   │   ├── components/            # Header, ItemCard, ItemModal
+│   │   └── lib/api.ts             # Typed fetch wrapper, token storage, shared types
+│   └── package.json
+├── internship_filters_and_yorku_signin_plan.md   # Design notes for location filters & YorkU popup sign-in
+├── frontend_enhancement_plan.md                  # Design notes for the UI/UX pass
+└── scraping_expansion_plan.md                    # Design notes for adding new scraper sources
 ```
 
----
+## Notes on scope
 
-## 🗺 Roadmap & Future Enhancements
+A couple of things worth knowing if you're reading the code alongside this README:
 
-* [x] **Core Aggregation Pipeline:** Support for Y Combinator Hacker News, SimplifyJobs, Pitt CSC, Phoronix, and TLDR Tech.
-* [x] **YorkU eClass Integration:** Secure Passport York authentication with native Duo 2FA popup support.
-* [x] **Location Normalization Engine:** Automatic extraction and tagging of Remote, Hybrid, On-site, Canadian, and US internships.
-* [ ] **Zero-Shot AI Categorization:** Integrate Google Gemini 2.0 Flash SDK to classify ambiguous postings automatically.
-* [ ] **Custom Notification Alerts:** Email and Discord webhook reminders when an internship matching your exact criteria drops or when an eClass deadline is within 24 hours.
-* [ ] **Calendar Export:** One-click `.ics` calendar sync for all scraped eClass assignment deadlines and tech event schedules.
-
----
-
-## 📝 License
-
-Distributed under the MIT License. See `LICENSE` for more information.
-
-<div align="center">
-  <p>Built with ❤️ by students, for students.</p>
-</div>
+- `scraper_pipeline.py` defines `ExperienceYorkScraper` and `HandshakeScraper` classes, but neither is wired into the active pipeline (`get_scrapers()`) — they exist as scaffolding for gated sources that need real credentials, and currently return mock/placeholder data if invoked directly.
+- There's a `classify_with_gemini_ai` stub in the same file; it isn't called anywhere yet. Discipline classification in the running app is keyword-based (`classify_item`).
