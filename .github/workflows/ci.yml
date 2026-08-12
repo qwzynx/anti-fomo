@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Linux webview dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev librsvg2-dev build-essential
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: app/src-tauri -> target
+
+      - name: Install frontend dependencies
+        working-directory: app
+        run: npm ci
+
+      # The frontend must build first: tauri::generate_context! reads ../build
+      # at compile time.
+      - name: Build frontend
+        working-directory: app
+        run: npm run build
+
+      - name: Type-check Svelte
+        working-directory: app
+        run: npm run check
+
+      - name: Rust format
+        working-directory: app/src-tauri
+        run: cargo fmt --check
+
+      - name: Clippy
+        working-directory: app/src-tauri
+        run: cargo clippy --all-targets -- -D warnings
+
+      # Unit tests only — the scrapers hit live sites and are checked manually
+      # with `cargo run --bin scraper_check`.
+      - name: Rust tests
+        working-directory: app/src-tauri
+        run: cargo test --lib

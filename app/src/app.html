@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <link rel="icon" href="%sveltekit.assets%/favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <script>
+      // Applied before first paint so there is no light-mode flash on launch.
+      // "system" follows the OS; an explicit choice overrides it.
+      (function () {
+        var saved = localStorage.getItem("antifomo_theme") || "system";
+        var dark =
+          saved === "dark" ||
+          (saved === "system" && matchMedia("(prefers-color-scheme: dark)").matches);
+        document.documentElement.classList.toggle("dark", dark);
+      })();
+    </script>
+    %sveltekit.head%
+  </head>
+  <body data-sveltekit-preload-data="hover" class="min-h-full flex flex-col">
+    <div style="display: contents" class="min-h-full flex flex-col">%sveltekit.body%</div>
+  </body>
+</html>

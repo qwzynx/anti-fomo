@@ -1,0 +1,71 @@
+[package]
+name = "anti-fomo"
+version = "0.1.0"
+description = "Your internships, tech news and events in one ranked feed"
+authors = ["qwzynx"]
+edition = "2021"
+rust-version = "1.82"
+# Without this, the extra scraper_check binary makes `cargo run` ambiguous and
+# `tauri dev` cannot start.
+default-run = "anti-fomo"
+
+# The library is the real entry point: Tauri's mobile targets build a cdylib and
+# call `run()` through `tauri::mobile_entry_point`, never `main.rs`.
+[lib]
+name = "anti_fomo_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "anti-fomo"
+path = "src/main.rs"
+
+# Standalone parity check against the old Python `check_scraper_counts.py`.
+[[bin]]
+name = "scraper_check"
+path = "src/bin/scraper_check.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+tauri-plugin-log = "2"
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# rustls rather than native-tls: cross-compiling OpenSSL to Android is a
+# well-known source of pain, and rustls needs no system libraries.
+# webpki-roots bundles the CA set so there is no system trust store to find
+# either — the same binary verifies certs on Linux, Windows and Android.
+reqwest = { version = "0.13", default-features = false, features = [
+  "rustls",
+  "webpki-roots",
+  "json",
+  "gzip",
+  "brotli",
+  "charset",
+  "http2",
+] }
+
+# "bundled" compiles SQLite from source, which cross-compiles cleanly to the
+# Android NDK targets instead of hunting for a system libsqlite3.
+rusqlite = { version = "0.40", features = ["bundled"] }
+
+scraper = "0.27"
+feed-rs = "2"
+regex = "1"
+chrono = { version = "0.4", features = ["serde"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+futures = "0.3"
+anyhow = "1"
+async-trait = "0.1"
+log = "0.4"
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true

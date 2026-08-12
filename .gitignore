@@ -1,0 +1,2 @@
+# Written by scripts/setup-android.sh with machine-specific SDK paths.
+scripts/android-env.sh
