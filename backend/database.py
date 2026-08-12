@@ -1,7 +1,7 @@
 import os
 from datetime import datetime
 from dotenv import load_dotenv
-from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime, Float, Boolean, UniqueConstraint, ForeignKey
+from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime, Float, Boolean, UniqueConstraint
 from sqlalchemy.orm import declarative_base, sessionmaker
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
@@ -47,25 +47,6 @@ class User(Base):
     name = Column(String(128), nullable=True)
     major = Column(String(128), default="Software Engineering")
     created_at = Column(DateTime, default=datetime.utcnow)
-    # eClass link state: credentials are never stored, only the Playwright
-    # session state file on disk (see eclass_scraper.state_path_for).
-    eclass_linked_at = Column(DateTime, nullable=True)
-    # Moodle user id from eClass, set when the account was created through
-    # the "Sign in with YorkU" popup flow.
-    yorku_user_id = Column(Integer, unique=True, nullable=True, index=True)
-
-class EclassUpdate(Base):
-    __tablename__ = "eclass_updates"
-
-    id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
-    kind = Column(String(32), nullable=False)  # course | deadline | announcement
-    title = Column(String(512), nullable=False)
-    course = Column(String(256), nullable=True)
-    url = Column(Text, nullable=True)
-    content_text = Column(Text, nullable=True)
-    timestamp = Column(DateTime, nullable=True)  # when the event/announcement is due/was posted
-    fetched_at = Column(DateTime, default=datetime.utcnow)
 
 def init_db():
     Base.metadata.create_all(bind=engine)
@@ -75,7 +56,6 @@ def init_db():
     with engine.connect() as conn:
         for ddl in (
             "ALTER TABLE scraped_items ADD COLUMN location TEXT",
-            "ALTER TABLE users ADD COLUMN yorku_user_id INTEGER",
         ):
             try:
                 conn.execute(text(ddl))
@@ -136,19 +116,4 @@ def save_scraped_items(db, items):
             stmt = stmt.on_conflict_do_update(
                 constraint='uix_title_source', set_=update_set)
         db.execute(stmt)
-    db.commit()
-
-def replace_eclass_updates(db, user_id, updates):
-    """Replaces a user's cached eClass updates with a fresh scrape."""
-    db.query(EclassUpdate).filter(EclassUpdate.user_id == user_id).delete()
-    for u in updates:
-        db.add(EclassUpdate(
-            user_id=user_id,
-            kind=u["kind"],
-            title=u["title"][:512],
-            course=u.get("course"),
-            url=u.get("url"),
-            content_text=u.get("content_text"),
-            timestamp=u.get("timestamp"),
-        ))
     db.commit()

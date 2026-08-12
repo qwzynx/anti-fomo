@@ -1,11 +1,10 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import Link from "next/link";
 import Header from "../components/Header";
 import ItemCard from "../components/ItemCard";
 import ItemModal from "../components/ItemModal";
-import { API_BASE, EclassUpdate, ScrapedItem, api, getToken, timeAgo } from "../lib/api";
+import { API_BASE, ScrapedItem, timeAgo } from "../lib/api";
 
 const DISCIPLINES = ["All", "Software Engineering"];
 const NEWS_SOURCES = ["Hacker News", "Phoronix", "TLDR Tech", "HN Top Links", "Daily.dev"];
@@ -23,11 +22,6 @@ const FRESHNESS = [
 ] as const;
 const SORTS = ["Relevance", "Newest first"] as const;
 
-interface UpdatesResponse {
-  fetched_at: string | null;
-  updates: EclassUpdate[];
-}
-
 export default function Home() {
   const [items, setItems] = useState<ScrapedItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -35,8 +29,6 @@ export default function Home() {
   const [searchTerm, setSearchTerm] = useState("");
   const [selectedDiscipline, setSelectedDiscipline] = useState("All");
   const [selected, setSelected] = useState<ScrapedItem | null>(null);
-  const [deadlines, setDeadlines] = useState<EclassUpdate[] | null>(null);
-  const [signedIn, setSignedIn] = useState(false);
   const [itemType, setItemType] = useState<(typeof TYPE_OPTIONS)[number]>("All");
   const [sourceFilter, setSourceFilter] = useState("All");
   const [freshness, setFreshness] = useState<(typeof FRESHNESS)[number]["label"]>("Any time");
@@ -58,22 +50,6 @@ export default function Home() {
 
     fetchFeed();
   }, [major]);
-
-  useEffect(() => {
-    if (!getToken()) return;
-    setSignedIn(true);
-    api<UpdatesResponse>("/api/eclass/updates")
-      .then((res) => {
-        const soon = Date.now() + 72 * 3600 * 1000;
-        setDeadlines(
-          res.updates
-            .filter((u) => u.kind === "deadline" && u.timestamp && new Date(u.timestamp).getTime() <= soon)
-            .sort((a, b) => (a.timestamp ?? "").localeCompare(b.timestamp ?? ""))
-            .slice(0, 3)
-        );
-      })
-      .catch(() => setDeadlines(null));
-  }, []);
 
   const topMatch = useMemo(
     () =>
@@ -120,7 +96,7 @@ export default function Home() {
 
       <main className="flex-1 mx-auto w-full max-w-6xl py-10 px-6">
         {/* Curated widgets */}
-        <section className="mb-10 grid grid-cols-1 gap-4 md:grid-cols-3">
+        <section className="mb-10 grid grid-cols-1 gap-4 md:grid-cols-2">
           <div className="animate-fade-up rounded-2xl border border-amber-200/60 bg-gradient-to-br from-amber-50 to-white p-5 dark:border-amber-900/40 dark:from-amber-950/30 dark:to-zinc-900">
             <p className="mb-2 text-xs font-bold uppercase tracking-wider text-amber-600 dark:text-amber-400">
               🔥 Top Match Today
@@ -139,34 +115,7 @@ export default function Home() {
             )}
           </div>
 
-          <div className="animate-fade-up rounded-2xl border border-rose-200/60 bg-gradient-to-br from-rose-50 to-white p-5 dark:border-rose-900/40 dark:from-rose-950/30 dark:to-zinc-900" style={{ animationDelay: "60ms" }}>
-            <p className="mb-2 text-xs font-bold uppercase tracking-wider text-rose-600 dark:text-rose-400">
-              ⏰ Urgent Course Deadlines
-            </p>
-            {deadlines && deadlines.length > 0 ? (
-              <ul className="flex flex-col gap-1.5">
-                {deadlines.map((d, i) => (
-                  <li key={i} className="text-sm leading-snug">
-                    <a href={d.url ?? "#"} target="_blank" rel="noopener noreferrer" className="font-semibold hover:text-indigo-600 dark:hover:text-indigo-400">
-                      {d.title}
-                    </a>
-                    <span className="text-xs text-zinc-500"> — {d.timestamp ? new Date(d.timestamp).toLocaleString(undefined, { weekday: "short", hour: "numeric", minute: "2-digit" }) : ""}</span>
-                  </li>
-                ))}
-              </ul>
-            ) : deadlines ? (
-              <p className="text-sm text-zinc-500">Nothing due in the next 72 hours 🎉</p>
-            ) : (
-              <p className="text-sm text-zinc-500">
-                <Link href={signedIn ? "/dashboard" : "/login"} className="font-semibold text-indigo-600 hover:underline dark:text-indigo-400">
-                  {signedIn ? "Connect eClass" : "Sign in"}
-                </Link>{" "}
-                to see assignment deadlines here.
-              </p>
-            )}
-          </div>
-
-          <div className="animate-fade-up rounded-2xl border border-indigo-200/60 bg-gradient-to-br from-indigo-50 to-white p-5 dark:border-indigo-900/40 dark:from-indigo-950/30 dark:to-zinc-900" style={{ animationDelay: "120ms" }}>
+          <div className="animate-fade-up rounded-2xl border border-indigo-200/60 bg-gradient-to-br from-indigo-50 to-white p-5 dark:border-indigo-900/40 dark:from-indigo-950/30 dark:to-zinc-900" style={{ animationDelay: "60ms" }}>
             <p className="mb-2 text-xs font-bold uppercase tracking-wider text-indigo-600 dark:text-indigo-400">
               📰 Trending in Tech
             </p>

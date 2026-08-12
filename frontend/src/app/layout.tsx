@@ -15,7 +15,7 @@ const outfit = Outfit({
 export const metadata: Metadata = {
   title: "Anti-FOMO — Your Student Hub",
   description:
-    "Internships, tech news, campus events, and eClass updates in one personalized feed.",
+    "Internships, tech news, and campus events in one personalized feed.",
 };
 
 export default function RootLayout({

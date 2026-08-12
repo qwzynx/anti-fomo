@@ -18,8 +18,6 @@ export interface User {
   email: string;
   name: string | null;
   major: string;
-  eclass_linked: boolean;
-  eclass_linked_at: string | null;
 }
 
 export interface ScrapedItem {
@@ -60,15 +58,6 @@ export function timeAgo(iso: string): string {
   const days = Math.round(hours / 24);
   if (days < 30) return `${days}d ago`;
   return new Date(iso).toLocaleDateString();
-}
-
-export interface EclassUpdate {
-  kind: "course" | "deadline" | "announcement";
-  title: string;
-  course: string | null;
-  url: string | null;
-  content_text: string | null;
-  timestamp: string | null;
 }
 
 export async function api<T>(
