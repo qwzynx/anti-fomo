@@ -5,10 +5,11 @@
 use anyhow::Result;
 use chrono::{DateTime, TimeZone, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
+use std::collections::HashSet;
 
 use crate::models::{Item, ItemType};
 
-const SCHEMA_VERSION: i32 = 2;
+const SCHEMA_VERSION: i32 = 3;
 
 pub fn open(path: &std::path::Path) -> Result<Connection> {
     if let Some(parent) = path.parent() {
@@ -29,8 +30,8 @@ fn migrate(conn: &Connection) -> Result<()> {
     }
 
     // `items` is a rebuildable cache, so schema changes just drop and refetch
-    // rather than carrying migration logic. `settings` holds the only data
-    // worth keeping and is never dropped.
+    // rather than carrying migration logic. `settings` and `item_state` hold
+    // the only data worth keeping and are never dropped.
     conn.execute_batch(
         r#"
         DROP TABLE IF EXISTS items;
@@ -62,6 +63,21 @@ fn migrate(conn: &Connection) -> Result<()> {
             key   TEXT PRIMARY KEY,
             value TEXT NOT NULL
         );
+
+        -- What the user did with an item, keyed by the same URL identity as
+        -- `items`. Deliberately *not* a foreign key: the `items` cache is
+        -- pruned at 60 days and dropped wholesale on a schema bump, and a
+        -- starred listing has to outlive both. `snapshot` carries a serialized
+        -- Item so the saved list can still render one the cache no longer has.
+        CREATE TABLE IF NOT EXISTS item_state (
+            url          TEXT PRIMARY KEY,
+            saved_at     TEXT,
+            dismissed_at TEXT,
+            seen_at      TEXT,
+            snapshot     TEXT
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_state_saved ON item_state (saved_at);
         "#,
     )?;
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
@@ -134,6 +150,11 @@ pub fn load_items(conn: &Connection) -> Result<Vec<Item>> {
             relevance_score: row.get(7)?,
             location: row.get(8)?,
             location_tags: serde_json::from_str(&tags).unwrap_or_default(),
+            // Derived on read: `annotate` fills these from `item_state` and
+            // `rank::personalize` fills `matched_interests`.
+            matched_interests: Vec::new(),
+            saved: false,
+            seen: false,
         })
     })?;
 
@@ -145,6 +166,136 @@ pub fn load_items(conn: &Connection) -> Result<Vec<Item>> {
 pub fn prune_older_than(conn: &Connection, days: i64) -> Result<usize> {
     let cutoff = (Utc::now() - chrono::Duration::days(days)).to_rfc3339();
     Ok(conn.execute("DELETE FROM items WHERE timestamp < ?1", params![cutoff])?)
+}
+
+// --- item state: saved / dismissed / seen ---
+
+/// The three durable per-item flags, as URL sets. Loaded once per read so
+/// annotating a 400-item feed stays a hash lookup rather than 400 queries.
+#[derive(Default)]
+pub struct ItemStates {
+    pub saved: HashSet<String>,
+    pub dismissed: HashSet<String>,
+    pub seen: HashSet<String>,
+}
+
+pub fn load_states(conn: &Connection) -> Result<ItemStates> {
+    let mut stmt =
+        conn.prepare("SELECT url, saved_at, dismissed_at, seen_at FROM item_state")?;
+    let mut states = ItemStates::default();
+
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, Option<String>>(1)?,
+            row.get::<_, Option<String>>(2)?,
+            row.get::<_, Option<String>>(3)?,
+        ))
+    })?;
+
+    for (url, saved, dismissed, seen) in rows.flatten() {
+        if saved.is_some() {
+            states.saved.insert(url.clone());
+        }
+        if dismissed.is_some() {
+            states.dismissed.insert(url.clone());
+        }
+        if seen.is_some() {
+            states.seen.insert(url);
+        }
+    }
+    Ok(states)
+}
+
+/// Stamps the saved/seen flags onto items that carry them. Dismissal is left to
+/// the caller: the feed hides those rows, but the saved list must not.
+pub fn annotate(items: &mut [Item], states: &ItemStates) {
+    for item in items {
+        item.saved = states.saved.contains(&item.url);
+        item.seen = states.seen.contains(&item.url);
+    }
+}
+
+/// Upserts one column of `item_state` to a timestamp or NULL, creating the row
+/// if this is the first thing the user has done with the item.
+fn set_flag(conn: &Connection, url: &str, column: &str, on: bool) -> Result<()> {
+    let now = on.then(|| Utc::now().to_rfc3339());
+    // `column` is never user input — every caller passes a literal below.
+    conn.execute(
+        &format!(
+            "INSERT INTO item_state (url, {column}) VALUES (?1, ?2)
+             ON CONFLICT (url) DO UPDATE SET {column} = excluded.{column}"
+        ),
+        params![url, now],
+    )?;
+    Ok(())
+}
+
+/// Stars an item. The snapshot is what lets it survive the `items` cache being
+/// pruned or rebuilt, so it is written on save and left alone on unsave.
+pub fn set_saved(conn: &Connection, url: &str, saved: bool, snapshot: Option<&Item>) -> Result<()> {
+    set_flag(conn, url, "saved_at", saved)?;
+    if saved {
+        if let Some(item) = snapshot {
+            conn.execute(
+                "UPDATE item_state SET snapshot = ?2 WHERE url = ?1",
+                params![url, serde_json::to_string(item)?],
+            )?;
+        }
+    }
+    Ok(())
+}
+
+pub fn set_dismissed(conn: &Connection, url: &str, dismissed: bool) -> Result<()> {
+    set_flag(conn, url, "dismissed_at", dismissed)
+}
+
+pub fn mark_seen(conn: &Connection, url: &str) -> Result<()> {
+    set_flag(conn, url, "seen_at", true)
+}
+
+/// Saved items, newest star first. Reads the snapshot rather than joining
+/// `items`, so a role starred two months ago still renders after the cache has
+/// pruned it.
+pub fn load_saved(conn: &Connection) -> Result<Vec<Item>> {
+    let mut stmt = conn.prepare(
+        "SELECT snapshot, seen_at FROM item_state
+         WHERE saved_at IS NOT NULL AND snapshot IS NOT NULL
+         ORDER BY saved_at DESC",
+    )?;
+
+    let rows = stmt.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+    })?;
+
+    Ok(rows
+        .flatten()
+        .filter_map(|(json, seen)| {
+            let mut item: Item = serde_json::from_str(&json).ok()?;
+            item.saved = true;
+            item.seen = seen.is_some();
+            Some(item)
+        })
+        .collect())
+}
+
+/// Un-hides everything the user has dismissed. Offered in Settings because a
+/// dismissal is otherwise permanent and there is no per-item undo after the
+/// card leaves the screen.
+pub fn clear_dismissed(conn: &Connection) -> Result<usize> {
+    Ok(conn.execute("UPDATE item_state SET dismissed_at = NULL", [])?)
+}
+
+/// Drops state rows that no longer matter: seen or dismissed, never saved, and
+/// no longer backed by a cached item. Without this the table grows forever as
+/// listings churn.
+pub fn prune_orphan_states(conn: &Connection) -> Result<usize> {
+    Ok(conn.execute(
+        "DELETE FROM item_state
+         WHERE saved_at IS NULL
+           AND url NOT IN (SELECT url FROM items)",
+        [],
+    )?)
 }
 
 pub fn get_setting(conn: &Connection, key: &str) -> Result<Option<String>> {
@@ -270,5 +421,134 @@ mod tests {
 
     fn db_single(conn: &Connection) -> Item {
         load_items(conn).unwrap().into_iter().next().unwrap()
+    }
+
+    // --- item state ---
+
+    #[test]
+    fn saved_and_seen_flags_round_trip() {
+        let conn = mem();
+        set_saved(&conn, "https://x.test/1", true, None).unwrap();
+        mark_seen(&conn, "https://x.test/1").unwrap();
+        mark_seen(&conn, "https://x.test/2").unwrap();
+
+        let states = load_states(&conn).unwrap();
+        assert!(states.saved.contains("https://x.test/1"));
+        assert!(states.seen.contains("https://x.test/1"));
+        assert!(states.seen.contains("https://x.test/2"));
+        assert!(!states.saved.contains("https://x.test/2"));
+        assert!(states.dismissed.is_empty());
+    }
+
+    #[test]
+    fn unsaving_clears_only_the_saved_flag() {
+        let conn = mem();
+        let it = Item::new("Intern", "S", ItemType::Internship, "https://x.test/1");
+        set_saved(&conn, &it.url, true, Some(&it)).unwrap();
+        mark_seen(&conn, &it.url).unwrap();
+        set_saved(&conn, &it.url, false, None).unwrap();
+
+        let states = load_states(&conn).unwrap();
+        assert!(states.saved.is_empty());
+        assert!(states.seen.contains("https://x.test/1"));
+    }
+
+    #[test]
+    fn a_saved_item_outlives_the_pruned_cache() {
+        // The whole reason `snapshot` exists: star something, let the items
+        // cache drop it, and the saved list must still render it.
+        let mut conn = mem();
+        let it = Item::new("Intern", "Simplify", ItemType::Internship, "https://x.test/1")
+            .with_content("Toronto, ON");
+        save_items(&mut conn, &[it.clone()]).unwrap();
+        set_saved(&conn, &it.url, true, Some(&it)).unwrap();
+
+        conn.execute("DELETE FROM items", []).unwrap();
+
+        let saved = load_saved(&conn).unwrap();
+        assert_eq!(saved.len(), 1);
+        assert_eq!(saved[0].title, "Intern");
+        assert_eq!(saved[0].content_text, "Toronto, ON");
+        assert!(saved[0].saved);
+    }
+
+    #[test]
+    fn saved_list_is_newest_star_first() {
+        let conn = mem();
+        for i in 0..3 {
+            let it = Item::new(
+                format!("item-{i}"),
+                "S",
+                ItemType::Article,
+                format!("https://x.test/{i}"),
+            );
+            set_saved(&conn, &it.url, true, Some(&it)).unwrap();
+            // saved_at is an RFC3339 string; without a gap the ORDER BY is a coin flip.
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        let saved = load_saved(&conn).unwrap();
+        assert_eq!(saved[0].title, "item-2");
+        assert_eq!(saved[2].title, "item-0");
+    }
+
+    #[test]
+    fn annotate_stamps_flags_onto_matching_urls() {
+        let conn = mem();
+        set_saved(&conn, "https://x.test/1", true, None).unwrap();
+        mark_seen(&conn, "https://x.test/2").unwrap();
+        let states = load_states(&conn).unwrap();
+
+        let mut items = vec![
+            Item::new("a", "S", ItemType::Article, "https://x.test/1"),
+            Item::new("b", "S", ItemType::Article, "https://x.test/2"),
+            Item::new("c", "S", ItemType::Article, "https://x.test/3"),
+        ];
+        annotate(&mut items, &states);
+
+        assert!(items[0].saved && !items[0].seen);
+        assert!(!items[1].saved && items[1].seen);
+        assert!(!items[2].saved && !items[2].seen);
+    }
+
+    #[test]
+    fn clear_dismissed_unhides_everything() {
+        let conn = mem();
+        set_dismissed(&conn, "https://x.test/1", true).unwrap();
+        set_dismissed(&conn, "https://x.test/2", true).unwrap();
+        assert_eq!(load_states(&conn).unwrap().dismissed.len(), 2);
+
+        clear_dismissed(&conn).unwrap();
+        assert!(load_states(&conn).unwrap().dismissed.is_empty());
+    }
+
+    #[test]
+    fn pruning_orphan_states_spares_saved_rows() {
+        let mut conn = mem();
+        let cached = Item::new("cached", "S", ItemType::Article, "https://x.test/live");
+        save_items(&mut conn, &[cached.clone()]).unwrap();
+
+        mark_seen(&conn, &cached.url).unwrap(); // seen + still cached  → kept
+        mark_seen(&conn, "https://x.test/gone").unwrap(); // seen + uncached  → dropped
+        let starred = Item::new("starred", "S", ItemType::Article, "https://x.test/star");
+        set_saved(&conn, &starred.url, true, Some(&starred)).unwrap(); // saved + uncached → kept
+
+        prune_orphan_states(&conn).unwrap();
+
+        let states = load_states(&conn).unwrap();
+        assert!(states.seen.contains("https://x.test/live"));
+        assert!(!states.seen.contains("https://x.test/gone"));
+        assert!(states.saved.contains("https://x.test/star"));
+    }
+
+    #[test]
+    fn item_state_survives_a_schema_bump() {
+        // `items` is dropped and rebuilt on migrate; user actions must not be.
+        let conn = mem();
+        set_saved(&conn, "https://x.test/1", true, None).unwrap();
+
+        conn.pragma_update(None, "user_version", 0).unwrap();
+        migrate(&conn).unwrap();
+
+        assert!(load_states(&conn).unwrap().saved.contains("https://x.test/1"));
     }
 }

@@ -56,6 +56,18 @@ pub struct Item {
     pub location: Option<String>,
     #[serde(default)]
     pub location_tags: Vec<String>,
+
+    // --- derived, never stored on the `items` row ---
+    // These are recomputed on every read: the first by `rank::personalize`, the
+    // other two by joining `item_state`. `db::save_items` ignores them and
+    // `db::load_items` leaves them at their defaults.
+    /// Interest tags that fired for this item, so a card can show *why* it ranked.
+    #[serde(default)]
+    pub matched_interests: Vec<String>,
+    #[serde(default)]
+    pub saved: bool,
+    #[serde(default)]
+    pub seen: bool,
 }
 
 impl Item {
@@ -76,6 +88,9 @@ impl Item {
             relevance_score: None,
             location: None,
             location_tags: Vec::new(),
+            matched_interests: Vec::new(),
+            saved: false,
+            seen: false,
         }
     }
 

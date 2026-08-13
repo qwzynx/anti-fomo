@@ -29,6 +29,30 @@ pub const LASSONDE: RssSource = RssSource {
     limit: 15,
 };
 
+pub const LOBSTERS: RssSource = RssSource {
+    name: "Lobsters",
+    url: "https://lobste.rs/rss",
+    limit: 15,
+};
+
+pub const ARS_TECHNICA: RssSource = RssSource {
+    name: "Ars Technica",
+    url: "https://feeds.arstechnica.com/arstechnica/index",
+    limit: 12,
+};
+
+pub const THE_VERGE: RssSource = RssSource {
+    name: "The Verge",
+    url: "https://www.theverge.com/rss/index.xml",
+    limit: 12,
+};
+
+pub const INFOQ: RssSource = RssSource {
+    name: "InfoQ",
+    url: "https://feed.infoq.com/",
+    limit: 12,
+};
+
 #[async_trait]
 impl Scraper for RssSource {
     fn source_name(&self) -> &'static str {
@@ -52,6 +76,12 @@ impl Scraper for RssSource {
                     .map(|s| s.content)
                     .or_else(|| entry.content.and_then(|c| c.body))
                     .unwrap_or_default();
+
+                // Some feeds double-escape their titles (The Verge ships
+                // "Let&amp;#8217;s", which one XML decode leaves as
+                // "Let&#8217;s"), so run the title through the HTML decoder
+                // rather than printing the raw entity.
+                let title = strip_html(&title);
 
                 Some(
                     Item::new(title.trim(), self.name, ItemType::Article, link.trim())

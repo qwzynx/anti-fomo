@@ -1,9 +1,12 @@
 <script lang="ts">
   import type { ScrapedItem } from "$lib/api";
+  import CardSkeleton from "$lib/components/CardSkeleton.svelte";
+  import EmptyState from "$lib/components/EmptyState.svelte";
   import FilterSheet from "$lib/components/FilterSheet.svelte";
   import ItemCard from "$lib/components/ItemCard.svelte";
   import ItemModal from "$lib/components/ItemModal.svelte";
   import { feed } from "$lib/feed.svelte";
+  import { Briefcase, Search } from "$lib/icons";
   import {
     FRESHNESS,
     HUB_DISCIPLINES,
@@ -84,21 +87,20 @@
     freshness = "Any time";
   }
 
-  const selectClass =
-    "rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm font-medium outline-none focus:ring-2 focus:ring-indigo-500 dark:border-zinc-800 dark:bg-zinc-900";
+  const selectClass = "control control-focus";
 
   function chipClass(active: boolean) {
-    return `rounded-full px-3 py-1.5 text-xs font-semibold whitespace-nowrap transition-colors ${
+    return `chip ${
       active
-        ? "bg-indigo-600 text-white"
-        : "border border-zinc-200 bg-white text-zinc-600 hover:border-indigo-400 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-400"
+        ? "bg-brand text-brand-fg"
+        : "border border-line bg-surface text-muted hover:border-brand"
     }`;
   }
 </script>
 
 {#snippet chipRow(label: string, options: string[], current: string[], onToggle: (v: string) => void)}
   <div class="flex flex-col gap-2">
-    <p class="text-xs font-bold tracking-wide text-zinc-400 uppercase">{label}</p>
+    <p class="text-xs font-bold tracking-wide text-subtle uppercase">{label}</p>
     <div class="scrollbar-hide flex flex-wrap gap-1.5">
       {#each options as option (option)}
         <button onclick={() => onToggle(option)} class={chipClass(current.includes(option))}>
@@ -115,7 +117,7 @@
       type="text"
       placeholder="Search roles, companies, locations…"
       bind:value={search}
-      class="flex-1 rounded-xl border border-zinc-200 bg-white px-4 py-2 outline-none focus:ring-2 focus:ring-indigo-500 dark:border-zinc-800 dark:bg-zinc-900"
+      class="control control-focus flex-1 py-2.5"
     />
     <select bind:value={discipline} class={selectClass}>
       {#each HUB_DISCIPLINES as option (option)}
@@ -124,12 +126,12 @@
     </select>
     <select bind:value={freshness} class={selectClass}>
       {#each FRESHNESS as option (option.label)}
-        <option value={option.label}>⏱️ {option.label}</option>
+        <option value={option.label}>{option.label}</option>
       {/each}
     </select>
     <select bind:value={sort} class={selectClass}>
       {#each HUB_SORTS as option (option)}
-        <option value={option}>📊 {option}</option>
+        <option value={option}>{option}</option>
       {/each}
     </select>
   </div>
@@ -137,7 +139,7 @@
   {@render chipRow("Specialty", SPECIALTIES, specialties, (v) => (specialties = toggle(specialties, v)))}
 
   <div class="flex flex-col gap-2">
-    <p class="text-xs font-bold tracking-wide text-zinc-400 uppercase">Work mode</p>
+    <p class="text-xs font-bold tracking-wide text-subtle uppercase">Work mode</p>
     <div class="flex flex-wrap gap-1.5">
       {#each MODALITIES as option (option)}
         <button onclick={() => (modality = option)} class={chipClass(modality === option)}>
@@ -153,8 +155,8 @@
 
 <main class="mx-auto w-full max-w-6xl flex-1 px-4 py-8 sm:px-6 sm:py-10">
   <div class="mb-6">
-    <h2 class="mb-1 text-3xl font-bold">💼 Internship Hub</h2>
-    <p class="text-sm text-zinc-500 dark:text-zinc-400">
+    <h2 class="mb-1 text-3xl font-bold">Jobs &amp; internships</h2>
+    <p class="text-sm text-muted">
       {feed.loading
         ? "Scanning sources…"
         : `${filtered.length} of ${items.length} open roles from ${allSources.length} sources`}{activeFilters >
@@ -166,13 +168,13 @@
 
   <!-- Desktop: the full panel. Phones: the same controls in a sheet. -->
   <div
-    class="mb-8 hidden flex-col gap-4 rounded-2xl border border-zinc-200 bg-white p-5 sm:flex dark:border-zinc-800 dark:bg-zinc-900"
+    class="card mb-8 hidden flex-col gap-4 p-5 sm:flex"
   >
     {@render controls()}
     {#if activeFilters > 0}
       <button
         onclick={clearFilters}
-        class="self-start text-xs font-semibold text-indigo-600 hover:underline dark:text-indigo-400"
+        class="self-start text-xs font-semibold text-brand hover:underline"
       >
         Clear filters
       </button>
@@ -184,7 +186,7 @@
       type="text"
       placeholder="Search roles, companies…"
       bind:value={search}
-      class="w-full rounded-xl border border-zinc-200 bg-white px-4 py-2.5 outline-none focus:ring-2 focus:ring-indigo-500 dark:border-zinc-800 dark:bg-zinc-900"
+      class="control control-focus w-full py-2.5"
     />
     <FilterSheet activeCount={activeFilters} onReset={clearFilters}>
       {@render controls()}
@@ -192,34 +194,33 @@
   </div>
 
   {#if feed.loading}
-    <div class="grid grid-cols-1 gap-5 md:grid-cols-2 lg:grid-cols-3">
-      {#each { length: 9 } as _, i (i)}
-        <div class="h-52 w-full animate-pulse rounded-2xl bg-zinc-200 dark:bg-zinc-800"></div>
-      {/each}
-    </div>
+    <CardSkeleton count={9} />
   {:else if filtered.length > 0}
     <div class="grid grid-cols-1 gap-5 md:grid-cols-2 lg:grid-cols-3">
       {#each filtered as item, idx (item.url)}
         <ItemCard {item} index={idx} onOpen={(i) => (selected = i)} />
       {/each}
     </div>
+  {:else if items.length === 0}
+    <EmptyState
+      icon={Briefcase}
+      title="No roles cached yet"
+      body="Refresh to pull the latest openings from all sources."
+      actionLabel="Refresh now"
+      busy={feed.refreshing}
+      onAction={() => feed.refresh(true)}
+    />
   {:else}
-    <div
-      class="rounded-3xl border border-dashed border-zinc-300 bg-white py-20 text-center dark:border-zinc-700 dark:bg-zinc-900"
-    >
-      <p class="text-zinc-500 dark:text-zinc-400">No roles match these filters.</p>
-      {#if activeFilters > 0 || search}
-        <button
-          onclick={() => {
-            search = "";
-            clearFilters();
-          }}
-          class="mt-4 text-sm font-semibold text-indigo-600 hover:underline"
-        >
-          Clear filters
-        </button>
-      {/if}
-    </div>
+    <EmptyState
+      icon={Search}
+      title="No roles match"
+      body="Try loosening the location, specialty or freshness filters."
+      actionLabel="Clear filters"
+      onAction={() => {
+        search = "";
+        clearFilters();
+      }}
+    />
   {/if}
 </main>
 

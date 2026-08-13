@@ -1,14 +1,15 @@
-import type { ScrapedItem } from "./api";
+import { domainOf, type ScrapedItem } from "./api";
 
+/** Per-type badge colours, resolved through the theme tokens in app.css. */
 export function typeBadgeClass(type: ScrapedItem["item_type"]): string {
   switch (type) {
     case "Internship":
     case "Job":
-      return "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300";
+      return "bg-job-soft text-job";
     case "Event":
-      return "bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-300";
+      return "bg-event-soft text-event";
     default:
-      return "bg-indigo-100 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-300";
+      return "bg-article-soft text-article";
   }
 }
 
@@ -45,16 +46,23 @@ export function tagsFor(item: ScrapedItem): string[] {
   return tags.slice(0, 3);
 }
 
-/** Source-aware call to action, so the button says what the click will do. */
+/**
+ * Source-aware call to action, so the button says what the click will do.
+ * No trailing arrow: the button renders an ArrowUpRight icon beside the label.
+ */
 export function ctaLabel(item: ScrapedItem): string {
   if (item.item_type === "Internship" || item.item_type === "Job") {
-    return item.source_platform === "Simplify" ? "Apply via Simplify ↗" : "Apply on Company Page ↗";
+    if (item.source_platform === "Simplify") return "Apply via Simplify";
+    if (item.source_platform === "Job Bank Canada") return "View on Job Bank";
+    return "Apply on company page";
   }
   if (item.item_type === "Event") {
-    return item.source_platform === "Luma" ? "Register on Luma ↗" : "View Event ↗";
+    if (item.source_platform === "Luma") return "Register on Luma";
+    if (item.source_platform === "Devpost") return "View hackathon";
+    return "View event";
   }
-  const domain = item.url ? new URL(item.url).hostname.replace(/^www\./, "") : "";
-  return domain ? `Read on ${domain} ↗` : "Open link ↗";
+  const domain = domainOf(item.url);
+  return domain ? `Read on ${domain}` : "Open link";
 }
 
 /** Where this item came from and what that implies about it. */
@@ -79,6 +87,20 @@ export function sourceBlurb(item: ScrapedItem): string {
       return "Linux and open-source hardware coverage from Phoronix.";
     case "TLDR Tech":
       return "From today's TLDR Tech newsletter.";
+    case "New Grad Positions":
+      return "Full-time graduate roles, from the Simplify new-grad list.";
+    case "Job Bank Canada":
+      return "Posted on the Government of Canada's official Job Bank.";
+    case "Devpost":
+      return "Open hackathon on Devpost — check the deadline before you commit.";
+    case "Lobsters":
+      return "Computing-focused link aggregator, lighter on noise than HN.";
+    case "Ars Technica":
+      return "In-depth technology reporting from Ars Technica.";
+    case "The Verge":
+      return "Consumer tech and industry news from The Verge.";
+    case "InfoQ":
+      return "Software architecture and engineering practice from InfoQ.";
     default:
       return `Aggregated from ${item.source_platform}.`;
   }

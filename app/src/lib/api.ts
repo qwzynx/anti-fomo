@@ -11,6 +11,15 @@ export interface ScrapedItem {
   relevance_score: number | null;
   location?: string | null;
   location_tags?: string[];
+  /** Which of the user's interest tags fired, so a card can explain its rank. */
+  matched_interests?: string[];
+  saved?: boolean;
+  seen?: boolean;
+}
+
+export interface SourceHealth {
+  name: string;
+  count: number;
 }
 
 export interface FeedStatus {
@@ -18,6 +27,9 @@ export interface FeedStatus {
   item_count: number;
   refreshing: boolean;
   stale: boolean;
+  saved_count: number;
+  dismissed_count: number;
+  sources: SourceHealth[];
 }
 
 // --- Rust commands ---
@@ -30,7 +42,32 @@ export const getFeed = (major?: string) =>
 export const getInternships = (major?: string) =>
   invoke<ScrapedItem[]>("get_internships", { major: major ?? null });
 
+export const getSaved = () => invoke<ScrapedItem[]>("get_saved");
+
 export const feedStatus = () => invoke<FeedStatus>("feed_status");
+
+// --- user actions ---
+// The whole item goes with a save so Rust can snapshot it, letting the saved
+// list outlive the item cache being pruned.
+
+export const setSaved = (item: ScrapedItem, saved: boolean) =>
+  invoke<void>("set_saved", { url: item.url, saved, item: saved ? item : null });
+
+export const setDismissed = (url: string, dismissed: boolean) =>
+  invoke<void>("set_dismissed", { url, dismissed });
+
+export const markSeen = (url: string) => invoke<void>("mark_seen", { url });
+
+export const clearDismissed = () => invoke<void>("clear_dismissed");
+
+// --- interests ---
+
+export const listInterests = () => invoke<string[]>("list_interests");
+
+export const getInterests = () => invoke<string[]>("get_interests");
+
+export const setInterests = (interests: string[]) =>
+  invoke<void>("set_interests", { interests });
 
 /** Returns the item count written, or null when the cache was still fresh. */
 export const refreshFeed = (force = false) => invoke<number | null>("refresh", { force });

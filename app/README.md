@@ -1,7 +1,7 @@
 # Anti-FOMO
 
-Internships, tech news and events from ten public sources, scraped on your own
-device and ranked into one feed. Runs on Linux, Windows and Android from a
+Internships, tech news and events from seventeen public sources, scraped on your
+own device and ranked into one feed. Runs on Linux, Windows and Android from a
 single Rust + Svelte codebase.
 
 There is no server, no account and no hosting bill. The scraping, ranking and
@@ -12,20 +12,24 @@ storage all happen inside the app.
 ```
 app/
 ├── src/                       Svelte 5 + Tailwind 4 UI
+│   ├── app.css                the Tailwind 4 @theme token palette
 │   ├── lib/
 │   │   ├── api.ts             invoke() wrappers around the Rust commands
-│   │   ├── feed.svelte.ts     shared feed store (items, status, refresh)
+│   │   ├── feed.svelte.ts     shared store (feed, saved, interests, status)
 │   │   ├── filters.ts         filter facets shared by both feed pages
+│   │   ├── icons.ts           the lucide icon vocabulary, re-exported
 │   │   ├── item.ts            title/tag/CTA derivation for cards and the modal
+│   │   ├── nav.ts             the four destinations, shared by both navs
 │   │   ├── theme.svelte.ts    light/dark/system toggle
-│   │   └── components/        Header, ItemCard, ItemModal, FilterSheet
-│   └── routes/                / (feed), /internships, /settings
+│   │   └── components/        Header, BottomNav, ItemCard, ItemModal,
+│   │                          FilterSheet, CardSkeleton, EmptyState
+│   └── routes/                / (feed), /internships, /saved, /settings
 └── src-tauri/
     ├── src/
     │   ├── scrapers/          one module per source + the concurrent runner
     │   ├── location.rs        raw location strings → modality/city/region tags
-    │   ├── rank.rs            discipline classification + relevance scoring
-    │   ├── db.rs              SQLite cache and settings
+    │   ├── rank.rs            classification, scoring, source diversification
+    │   ├── db.rs              SQLite cache, settings, saved/dismissed/seen
     │   ├── commands.rs        the invoke() surface
     │   └── lib.rs             Tauri setup, background refresh on launch
     └── tauri.conf.json
@@ -43,25 +47,79 @@ background, so a cold start never blocks on the network.
 
 ## How the data flows
 
-On launch, and whenever the cache is more than 10 minutes old, all ten scrapers
-run concurrently via `reqwest`. A failing source logs and yields nothing rather
-than taking the refresh down with it. Results are deduplicated by URL,
-classified by keyword, tagged with location facets, ranked, and written to
+On launch, and whenever the cache is more than 10 minutes old, all seventeen
+scrapers run concurrently via `reqwest`. A failing source logs and yields
+nothing rather than taking the refresh down with it. Results are deduplicated by
+URL, classified by keyword, tagged with location facets, ranked, and written to
 SQLite at the platform app-data directory. The UI reads only from that
 database, which is why the feed works offline.
+
+**News**
 
 | Source | Technique |
 | --- | --- |
 | Hacker News | Algolia JSON API |
+| HN Top Links | HTML |
+| Phoronix | RSS |
+| Lobsters | RSS |
+| Ars Technica | RSS |
+| The Verge | Atom |
+| InfoQ | RSS |
+| Lassonde News | RSS (needs a browser User-Agent or it 403s) |
+| TLDR Tech | latest issue discovered from the archive index |
+| Daily.dev | public GraphQL `tagFeed` |
+
+**Opportunities**
+
+| Source | Technique |
+| --- | --- |
 | Pitt CSC Repo | HTML tables in the repo README |
 | Simplify | HTML tables in the repo README |
+| New Grad Positions | HTML tables in the repo README (full-time, not interns) |
 | Levels.fyi | public `internshipData.json` |
-| Luma | `__NEXT_DATA__` blob on the Toronto city page |
-| TLDR Tech | latest issue discovered from the archive index |
-| Phoronix | RSS |
-| Lassonde News | RSS (needs a browser User-Agent or it 403s) |
-| HN Top Links | HTML |
-| Daily.dev | public GraphQL `tagFeed` |
+| Job Bank Canada | HTML search results from the federal job board |
+
+**Events**
+
+| Source | Technique |
+| --- | --- |
+| Luma | `__NEXT_DATA__` blob on the Toronto, SF and NYC city pages |
+| Devpost | public `/api/hackathons` JSON |
+
+## Ranking
+
+`rank.rs` scores every item, then interleaves the result so no single source can
+own the first page:
+
+- **discipline match** with the chosen major, +10
+- **kind**: opportunities +5, events +4 (news is the baseline)
+- **interest tags** the item matched, +4 each, capped at +8
+- **recency**, up to +6 on a 48-hour half-life — the decay is applied to the
+  absolute distance from now, so a hackathon three months out ranks below one
+  next week
+- **already seen**, −3
+
+`diversify()` then buckets the scored items by source and pops them round-robin,
+best-front-item first. The three big internship repos post hundreds of rows a
+day; without this they crowd out everything else.
+
+The twelve interest tags (AI/ML, Frontend, Backend, Systems, Security, Data,
+DevOps/Cloud, Mobile, Hardware, Product/Design, Game Dev, Startups) are picked
+in Settings and stored in `settings`. A card shows which of them it matched.
+
+## Saved, dismissed and seen
+
+`items` is a rebuildable cache — a refresh drops and rewrites it — so the user's
+own marks live in a separate durable `item_state` table keyed by URL:
+
+- **saved** stars an item onto `/saved`. The row also holds a JSON `snapshot` of
+  the item, so a saved listing survives falling out of the cache.
+- **dismissed** hides an item from every list permanently. Settings can restore
+  them all.
+- **seen** dims an already-opened card and applies the −3 ranking penalty.
+
+`item_state` is created with `IF NOT EXISTS` and is never dropped by a schema
+bump (currently `user_version` 3). Orphan rows are pruned after each refresh.
 
 ## Commands
 
@@ -69,8 +127,14 @@ database, which is why the feed works offline.
 | --- | --- |
 | `get_feed(major?)` | top 60 ranked items |
 | `get_internships(major?)` | every job/internship, ranked |
-| `feed_status()` | last refresh, cached count, staleness |
+| `get_saved()` | starred items, newest star first |
+| `feed_status()` | last refresh, counts, staleness, per-source health |
 | `refresh(force)` | items written, or `null` if the cache was fresh |
+| `set_saved(item, saved)` | stars/unstars; the whole item is sent so it can be snapshotted |
+| `set_dismissed(url, dismissed)` | hides or unhides one item |
+| `mark_seen(url)` | records an open |
+| `clear_dismissed()` | restores every hidden item |
+| `list_interests()` / `get_interests()` / `set_interests(interests)` | the interest tags |
 | `get_setting(key)` / `set_setting(key, value)` | local preferences |
 | `list_sources()` | distinct sources currently cached |
 
@@ -84,7 +148,10 @@ cargo run --bin scraper_check        # live per-source item counts
 
 `scraper_check` is the tool to reach for when a source goes quiet — it prints
 each scraper's item count and the first title, and exits non-zero if any source
-returns nothing.
+returns nothing. It then runs the real `fetch_all` + `personalize` path and
+reports the deduped type composition and how many distinct sources the top 20
+spans. That last number is the one that catches a ranking regression: a feed can
+have every scraper healthy and still put three repos on the whole first page.
 
 ## Android
 

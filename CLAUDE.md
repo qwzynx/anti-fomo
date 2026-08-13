@@ -19,16 +19,19 @@ Everything ships from `/app`:
     run concurrently. A source that fails logs and returns nothing; it must never
     take the whole refresh down.
   - `location.rs`, `rank.rs` — pure functions (location tagging, discipline
-    classification, relevance scoring, per-source diversification). Unit-tested.
+    classification, interest-tag matching, recency decay, relevance scoring,
+    round-robin per-source diversification). Unit-tested.
   - `db.rs` — SQLite via `rusqlite` (bundled). Items are a rebuildable cache keyed
-    by URL; `settings` is the only durable table.
+    by URL. `settings` and `item_state` are the durable tables and must survive a
+    schema bump, so they are created with `IF NOT EXISTS` and never dropped.
   - `commands.rs` — the `invoke()` surface the UI calls.
   - `lib.rs` holds `run()` with `#[cfg_attr(mobile, tauri::mobile_entry_point)]`;
     `main.rs` is only a shim. **Mobile will not build if real code moves into
     `main.rs`.**
-- **`app/src`** — the Svelte UI. Routes are `/` (feed), `/internships`, `/settings`.
-  `lib/feed.svelte.ts` is the single shared store; pages derive from it rather
-  than fetching independently.
+- **`app/src`** — the Svelte UI. Routes are `/` (feed), `/internships`, `/saved`,
+  `/settings`, reached from the header on desktop and a bottom tab bar under
+  `sm:`. `lib/feed.svelte.ts` is the single shared store; pages derive from it
+  rather than fetching independently.
 
 See `app/README.md` for the source list, the command table, and Android setup.
 
@@ -39,17 +42,28 @@ See `app/README.md` for the source list, the command table, and Android setup.
 - **External links** open through `tauri-plugin-opener`, never by navigating the
   webview.
 - **Item shape**: the Rust `Item` struct and the TS `ScrapedItem` interface must
-  stay field-for-field identical. Changing one means changing the other.
+  stay field-for-field identical. Changing one means changing the other. The
+  trailing `matched_interests`/`saved`/`seen` fields are derived on read from
+  `item_state` and the user's tags — they are never columns on the `items` row.
 - **Adding a source**: implement `Scraper` in a new `scrapers/` module, register it
-  in `all_scrapers()`, and verify with `cargo run --bin scraper_check`. Prefer a
-  JSON or RSS endpoint over HTML scraping, and HTML over anything needing a
-  browser — the app must never depend on a headless browser, which cannot exist
-  on Android.
+  in `all_scrapers()` under its category, and verify with
+  `cargo run --bin scraper_check`. Prefer a JSON or RSS endpoint over HTML
+  scraping, and HTML over anything needing a browser — the app must never depend
+  on a headless browser, which cannot exist on Android. Give every item a real
+  timestamp; stamping `Utc::now()` on rows of unknown age makes the recency term
+  hand that source the whole first page.
 - **Cross-platform care**: `reqwest` uses rustls + webpki-roots (not native-tls),
   and SQLite is bundled, both so the Android NDK targets cross-compile cleanly.
-- **Tailwind 4 is CSS-first** — the design tokens live in `app/src/app.css`, and
-  there is no `tailwind.config.js`. Dark mode is a `dark` class applied before
+- **Tailwind 4 is CSS-first** — the semantic design tokens (`bg`, `surface`,
+  `line`, `fg`, `muted`, `brand`, and the per-type accents) live in
+  `app/src/app.css`, and there is no `tailwind.config.js`. Use the token
+  utilities, not raw palette colours. Dark mode is a `dark` class applied before
   first paint by a script in `app.html`.
+- **Icons come from `lib/icons.ts`**, which re-exports the lucide set the UI uses
+  — no emoji in the interface, and no importing from `lucide-svelte` directly.
+  Type an icon prop as `IconComponent` from that file; lucide still declares its
+  icons as legacy `SvelteComponentTyped` classes, so a hand-written
+  `Component<IconProps>` will not typecheck.
 
 ## Legacy
 

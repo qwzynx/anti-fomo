@@ -12,8 +12,16 @@ use crate::models::{Item, ItemType};
 
 pub struct Luma;
 
-const CITY_PAGE: &str = "https://lu.ma/toronto";
-const LIMIT: usize = 20;
+/// One scraper covering several city pages rather than one registered scraper
+/// per city: the source filter and the health list should show a single "Luma"
+/// entry, and the events already carry their city in `location`.
+const CITY_PAGES: &[&str] = &[
+    "https://lu.ma/toronto",
+    "https://lu.ma/sf",
+    "https://lu.ma/nyc",
+];
+/// Per city, not overall.
+const LIMIT: usize = 15;
 
 static NEXT_DATA: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"(?s)<script id="__NEXT_DATA__" type="application/json">(.*?)</script>"#).unwrap()
@@ -26,12 +34,36 @@ impl Scraper for Luma {
     }
 
     async fn fetch(&self, client: &reqwest::Client) -> Result<Vec<Item>> {
-        let body = client.get(CITY_PAGE).send().await?.text().await?;
+        let mut all = Vec::new();
+        let mut last_err = None;
+
+        for page in CITY_PAGES {
+            match self.fetch_city(client, page).await {
+                Ok(items) => all.extend(items),
+                // One city failing shouldn't cost the others, mirroring the
+                // per-source degradation contract one level down.
+                Err(e) => {
+                    log::warn!("Luma: {page} failed: {e}");
+                    last_err = Some(e);
+                }
+            }
+        }
+
+        match last_err {
+            Some(e) if all.is_empty() => Err(e),
+            _ => Ok(all),
+        }
+    }
+}
+
+impl Luma {
+    async fn fetch_city(&self, client: &reqwest::Client, page: &str) -> Result<Vec<Item>> {
+        let body = client.get(page).send().await?.text().await?;
 
         let blob = NEXT_DATA
             .captures(&body)
             .map(|c| c[1].to_string())
-            .ok_or_else(|| anyhow!("__NEXT_DATA__ not found on {CITY_PAGE}"))?;
+            .ok_or_else(|| anyhow!("__NEXT_DATA__ not found on {page}"))?;
 
         let data: serde_json::Value = serde_json::from_str(&blob)?;
         let events = data

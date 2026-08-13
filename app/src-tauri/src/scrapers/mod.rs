@@ -13,9 +13,11 @@ use crate::models::Item;
 use crate::rank::classify_item;
 
 pub mod daily_dev;
+pub mod devpost;
 pub mod github_internships;
 pub mod hacker_news;
 pub mod hn_top_links;
+pub mod job_bank;
 pub mod levels_fyi;
 pub mod luma;
 pub mod rss;
@@ -41,16 +43,26 @@ pub fn build_client() -> Result<reqwest::Client> {
 
 pub fn all_scrapers() -> Vec<Box<dyn Scraper>> {
     vec![
+        // News
         Box::new(hacker_news::HackerNews),
-        Box::new(github_internships::PITT_CSC),
-        Box::new(rss::PHORONIX),
-        Box::new(github_internships::SIMPLIFY),
-        Box::new(rss::LASSONDE),
-        Box::new(luma::Luma),
-        Box::new(levels_fyi::LevelsFyi),
-        Box::new(tldr::TldrTech),
         Box::new(hn_top_links::HnTopLinks),
+        Box::new(rss::PHORONIX),
+        Box::new(rss::LOBSTERS),
+        Box::new(rss::ARS_TECHNICA),
+        Box::new(rss::THE_VERGE),
+        Box::new(rss::INFOQ),
+        Box::new(rss::LASSONDE),
+        Box::new(tldr::TldrTech),
         Box::new(daily_dev::DailyDev),
+        // Opportunities
+        Box::new(github_internships::PITT_CSC),
+        Box::new(github_internships::SIMPLIFY),
+        Box::new(github_internships::NEW_GRAD),
+        Box::new(levels_fyi::LevelsFyi),
+        Box::new(job_bank::JOB_BANK),
+        // Events
+        Box::new(luma::Luma),
+        Box::new(devpost::Devpost),
     ]
 }
 

@@ -1,7 +1,9 @@
 <script lang="ts">
   import "../app.css";
+  import BottomNav from "$lib/components/BottomNav.svelte";
   import Header from "$lib/components/Header.svelte";
   import { feed } from "$lib/feed.svelte";
+  import { CircleAlert } from "$lib/icons";
   import { theme } from "$lib/theme.svelte";
 
   let { children } = $props();
@@ -16,27 +18,29 @@
   <title>Anti-FOMO — Your Student Hub</title>
 </svelte:head>
 
-<div
-  class="flex min-h-screen flex-col bg-zinc-50 font-sans text-zinc-900 dark:bg-black dark:text-zinc-100"
->
+<div class="flex min-h-screen flex-col bg-background font-sans text-foreground">
   <Header />
 
   {#if feed.error}
     <div
-      class="border-b border-amber-200 bg-amber-50 px-4 py-2 text-center text-xs font-medium text-amber-800 dark:border-amber-900/50 dark:bg-amber-950/40 dark:text-amber-300"
+      class="flex items-center justify-center gap-2 border-b border-star/30 bg-star-soft px-4 py-2 text-center text-xs font-medium text-star"
+      role="status"
     >
+      <CircleAlert size={14} />
       Showing cached results — last refresh failed ({feed.error})
     </div>
   {/if}
 
   {@render children()}
 
-  <footer
-    class="safe-bottom mt-auto border-t border-zinc-200 py-8 text-center text-sm text-zinc-500 dark:border-zinc-800"
-  >
+  <footer class="mt-auto border-t border-line py-8 text-center text-sm text-subtle">
     <p class="px-6">
-      Aggregated from Hacker News, Phoronix, TLDR, Daily.dev, Lassonde, Luma, Levels.fyi, Pitt CSC
-      &amp; Simplify.
+      {feed.status?.sources.length ?? 0} sources scraped on this device · nothing leaves your machine
     </p>
   </footer>
+
+  <!-- Clearance for the fixed tab bar, which would otherwise cover the footer. -->
+  <div class="safe-bottom h-16 sm:hidden" aria-hidden="true"></div>
 </div>
+
+<BottomNav />
