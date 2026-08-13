@@ -13,8 +13,12 @@ use super::{collapse_ws, Scraper};
 use crate::location::clean_location;
 use crate::models::{Item, ItemType};
 
-/// Rows are appended newest-first, so the first 150 are the freshest.
-const MAX_ROWS: usize = 150;
+/// Rows are appended newest-first, so the first `MAX_ROWS` are the freshest.
+/// The three repos carry roughly 370, 350 and 2,200 rows respectively; 500
+/// takes all of the two internship tables and the newest slice of the new-grad
+/// one, and a good fraction of every table is skipped below anyway for having
+/// no application link.
+const MAX_ROWS: usize = 500;
 /// Marks a row that reuses the company from the row above it.
 const CONTINUATION: &str = "↳";
 

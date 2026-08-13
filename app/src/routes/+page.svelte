@@ -1,9 +1,10 @@
 <script lang="ts">
   import { timeAgo, type ScrapedItem } from "$lib/api";
   import CardSkeleton from "$lib/components/CardSkeleton.svelte";
+  import DensityToggle from "$lib/components/DensityToggle.svelte";
   import EmptyState from "$lib/components/EmptyState.svelte";
   import FilterSheet from "$lib/components/FilterSheet.svelte";
-  import ItemCard from "$lib/components/ItemCard.svelte";
+  import ItemList from "$lib/components/ItemList.svelte";
   import ItemModal from "$lib/components/ItemModal.svelte";
   import { feed } from "$lib/feed.svelte";
   import { Calendar, Flame, Inbox, Search, Sparkles, TrendingUp } from "$lib/icons";
@@ -71,8 +72,11 @@
       : result;
   });
 
-  const filtersActive = $derived(
-    itemType !== "All" || sourceFilter !== "All" || freshness !== "Any time" || sort !== "Relevance",
+  const activeFilters = $derived(
+    (itemType !== "All" ? 1 : 0) +
+      (sourceFilter !== "All" ? 1 : 0) +
+      (freshness !== "Any time" ? 1 : 0) +
+      (sort !== "Relevance" ? 1 : 0),
   );
 
   function resetFilters() {
@@ -124,9 +128,47 @@
   </div>
 {/snippet}
 
-<main class="mx-auto w-full max-w-6xl flex-1 px-4 py-8 sm:px-6 sm:py-10">
+{#snippet filterControls()}
+  <select bind:value={itemType} class="control control-focus" aria-label="Item type">
+    {#each TYPE_OPTIONS as option (option)}
+      <option value={option}>{option === "All" ? "All types" : option}</option>
+    {/each}
+  </select>
+  <select bind:value={sourceFilter} class="control control-focus" aria-label="Source">
+    <option value="All">All sources</option>
+    {#each allSources as source (source)}
+      <option value={source}>{source}</option>
+    {/each}
+  </select>
+  <select bind:value={freshness} class="control control-focus" aria-label="Posted within">
+    {#each FRESHNESS as option (option.label)}
+      <option value={option.label}>{option.label}</option>
+    {/each}
+  </select>
+  <select bind:value={sort} class="control control-focus" aria-label="Sort by">
+    {#each SORTS as option (option)}
+      <option value={option}>{option}</option>
+    {/each}
+  </select>
+{/snippet}
+
+<main class="mx-auto w-full max-w-6xl flex-1 px-4 pb-8 sm:px-6 lg:px-8">
+  <div class="pt-6 pb-5 sm:pt-8">
+    <h1 class="text-2xl font-bold sm:text-3xl">Your feed</h1>
+    <p class="mt-1 text-sm text-muted">
+      {#if feed.loading}
+        Scanning {feed.status?.sources.length ?? 0} sources…
+      {:else}
+        {filteredItems.length.toLocaleString()} results for {feed.major} students{selectedDiscipline !==
+        "All"
+          ? ` · filtered by ${selectedDiscipline}`
+          : ""}
+      {/if}
+    </p>
+  </div>
+
   <!-- Curated widgets: one per category, so news never crowds out the other two -->
-  <section class="mb-8 grid grid-cols-1 gap-4 md:grid-cols-3">
+  <section class="mb-6 grid grid-cols-1 gap-4 lg:grid-cols-3">
     {@render widget(
       "Top match today",
       Flame,
@@ -138,28 +180,6 @@
     {@render widget("Trending in tech", TrendingUp, "text-brand", trending, "No stories right now.", 60)}
     {@render widget("Happening soon", Calendar, "text-event", upcoming, "No upcoming events.", 120)}
   </section>
-
-  <!-- Controls -->
-  <div class="mb-5 flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-    <div>
-      <h2 class="mb-1 text-3xl font-bold">Your feed</h2>
-      <p class="text-sm text-muted">
-        {filteredItems.length} results for {feed.major} students{selectedDiscipline !== "All"
-          ? ` · filtered by ${selectedDiscipline}`
-          : ""}
-      </p>
-    </div>
-    <div class="relative w-full md:w-72">
-      <Search size={16} class="pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 text-subtle" />
-      <input
-        type="search"
-        placeholder="Search your feed…"
-        aria-label="Search your feed"
-        bind:value={searchTerm}
-        class="control control-focus w-full py-2.5 pl-9"
-      />
-    </div>
-  </div>
 
   {#if feed.interests.length === 0 && !feed.loading}
     <a
@@ -174,75 +194,60 @@
     </a>
   {/if}
 
-  <!-- Filters: inline on desktop, a sheet on phones -->
-  <div class="mb-4 hidden flex-wrap items-center gap-2 sm:flex">
-    <select bind:value={itemType} class="control control-focus" aria-label="Item type">
-      {#each TYPE_OPTIONS as option (option)}
-        <option value={option}>{option === "All" ? "All types" : option}</option>
-      {/each}
-    </select>
-    <select bind:value={sourceFilter} class="control control-focus" aria-label="Source">
-      <option value="All">All sources</option>
-      {#each allSources as source (source)}
-        <option value={source}>{source}</option>
-      {/each}
-    </select>
-    <select bind:value={freshness} class="control control-focus" aria-label="Posted within">
-      {#each FRESHNESS as option (option.label)}
-        <option value={option.label}>{option.label}</option>
-      {/each}
-    </select>
-    <select bind:value={sort} class="control control-focus" aria-label="Sort by">
-      {#each SORTS as option (option)}
-        <option value={option}>{option}</option>
-      {/each}
-    </select>
-    {#if filtersActive}
-      <button onclick={resetFilters} class="text-xs font-semibold text-brand hover:underline">
-        Reset
+  <!--
+    Sticky toolbar. It carries search, the filters and the density switch, and
+    stays reachable however far down the list the reader has scrolled — which
+    matters a great deal more now that the list runs to hundreds of results
+    rather than sixty. The negative margins let it span the full column width
+    while its contents stay aligned with the rest of the page.
+  -->
+  <div
+    class="glass sticky top-14 z-30 -mx-4 mb-4 border-y border-line px-4 py-3 sm:-mx-6 sm:px-6 md:top-0 lg:-mx-8 lg:px-8"
+  >
+    <!-- Wraps rather than squeezing: four selects, a search box and the density
+         switch do not fit on one line beside the sidebar at 1024px, and a
+         search field crushed to 150px is worse than a second row. -->
+    <div class="flex flex-wrap items-center gap-2">
+      <div class="relative min-w-56 flex-1">
+        <Search
+          size={16}
+          class="pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 text-subtle"
+        />
+        <input
+          type="search"
+          placeholder="Search your feed…"
+          aria-label="Search your feed"
+          bind:value={searchTerm}
+          class="control control-focus w-full py-2.5 pl-9"
+        />
+      </div>
+
+      <!-- Filters are inline on desktop and behind a sheet on phones. -->
+      <div class="hidden flex-wrap items-center gap-2 lg:flex">
+        {@render filterControls()}
+      </div>
+      <div class="lg:hidden">
+        <FilterSheet activeCount={activeFilters} onReset={resetFilters}>
+          <div class="flex flex-col gap-3">
+            {@render filterControls()}
+          </div>
+        </FilterSheet>
+      </div>
+
+      <DensityToggle />
+    </div>
+
+    {#if activeFilters > 0}
+      <button
+        onclick={resetFilters}
+        class="mt-2 text-xs font-semibold text-brand hover:underline lg:mt-1.5"
+      >
+        Reset {activeFilters} filter{activeFilters > 1 ? "s" : ""}
       </button>
     {/if}
   </div>
 
-  <div class="mb-4 sm:hidden">
-    <FilterSheet activeCount={filtersActive ? 1 : 0} onReset={resetFilters}>
-      <label class="flex flex-col gap-1 text-sm font-semibold">
-        Type
-        <select bind:value={itemType} class="control control-focus">
-          {#each TYPE_OPTIONS as option (option)}
-            <option value={option}>{option === "All" ? "All types" : option}</option>
-          {/each}
-        </select>
-      </label>
-      <label class="flex flex-col gap-1 text-sm font-semibold">
-        Source
-        <select bind:value={sourceFilter} class="control control-focus">
-          <option value="All">All sources</option>
-          {#each allSources as source (source)}
-            <option value={source}>{source}</option>
-          {/each}
-        </select>
-      </label>
-      <label class="flex flex-col gap-1 text-sm font-semibold">
-        Posted
-        <select bind:value={freshness} class="control control-focus">
-          {#each FRESHNESS as option (option.label)}
-            <option value={option.label}>{option.label}</option>
-          {/each}
-        </select>
-      </label>
-      <label class="flex flex-col gap-1 text-sm font-semibold">
-        Sort
-        <select bind:value={sort} class="control control-focus">
-          {#each SORTS as option (option)}
-            <option value={option}>{option}</option>
-          {/each}
-        </select>
-      </label>
-    </FilterSheet>
-  </div>
-
-  <div class="scrollbar-hide mb-6 overflow-x-auto">
+  <div class="scrollbar-hide mb-5 overflow-x-auto">
     <div class="flex gap-2">
       {#each DISCIPLINES as discipline (discipline)}
         <button
@@ -262,11 +267,7 @@
   {#if feed.loading}
     <CardSkeleton count={6} />
   {:else if filteredItems.length > 0}
-    <div class="grid grid-cols-1 gap-5 md:grid-cols-2 lg:grid-cols-3">
-      {#each filteredItems as item, idx (item.url)}
-        <ItemCard {item} index={idx} onOpen={(i) => (selected = i)} />
-      {/each}
-    </div>
+    <ItemList items={filteredItems} onOpen={(i) => (selected = i)} />
   {:else if feed.items.length === 0}
     <EmptyState
       icon={Inbox}

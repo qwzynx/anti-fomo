@@ -15,13 +15,24 @@ pub struct Luma;
 /// One scraper covering several city pages rather than one registered scraper
 /// per city: the source filter and the health list should show a single "Luma"
 /// entry, and the events already carry their city in `location`.
+///
+/// The three Canadian cities come first because that is where this app's user
+/// actually is; the US hubs are here because a remote-friendly event is worth
+/// seeing wherever it is hosted. `lu.ma/waterloo` exists but is consistently
+/// empty, so it is left out rather than costing a request per refresh.
 const CITY_PAGES: &[&str] = &[
     "https://lu.ma/toronto",
+    "https://lu.ma/vancouver",
+    "https://lu.ma/montreal",
     "https://lu.ma/sf",
     "https://lu.ma/nyc",
+    "https://lu.ma/seattle",
+    "https://lu.ma/boston",
+    "https://lu.ma/la",
 ];
-/// Per city, not overall.
-const LIMIT: usize = 15;
+/// Per city, not overall. A city page embeds 20 upcoming events in its
+/// `__NEXT_DATA__` blob and no more, so this takes all of them.
+const LIMIT: usize = 20;
 
 static NEXT_DATA: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"(?s)<script id="__NEXT_DATA__" type="application/json">(.*?)</script>"#).unwrap()
@@ -34,11 +45,18 @@ impl Scraper for Luma {
     }
 
     async fn fetch(&self, client: &reqwest::Client) -> Result<Vec<Item>> {
+        // Concurrent, like the scraper runner one level up: eight city pages
+        // at ~50 KB each is the slowest source in the pipeline if walked in
+        // sequence, and they share nothing with one another.
+        let results =
+            futures::future::join_all(CITY_PAGES.iter().map(|page| self.fetch_city(client, page)))
+                .await;
+
         let mut all = Vec::new();
         let mut last_err = None;
 
-        for page in CITY_PAGES {
-            match self.fetch_city(client, page).await {
+        for (page, result) in CITY_PAGES.iter().zip(results) {
+            match result {
                 Ok(items) => all.extend(items),
                 // One city failing shouldn't cost the others, mirroring the
                 // per-source degradation contract one level down.

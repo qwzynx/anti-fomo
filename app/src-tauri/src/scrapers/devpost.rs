@@ -14,6 +14,12 @@ pub struct Devpost;
 
 /// `status[]=open` drops the hundreds of finished hackathons in the archive.
 const ENDPOINT: &str = "https://devpost.com/api/hackathons?status[]=open&per_page=40";
+/// `per_page` is clamped server-side at 40 however large a value is sent, so
+/// reaching the rest of the open hackathons means paging. Three passes covers
+/// the ~66 that are typically open with room to spare.
+const MAX_PAGES: usize = 3;
+/// What the server actually returns per page; a short page means the last one.
+const PAGE_SIZE: usize = 40;
 
 #[derive(Deserialize)]
 struct Response {
@@ -82,7 +88,38 @@ impl Scraper for Devpost {
     }
 
     async fn fetch(&self, client: &reqwest::Client) -> Result<Vec<Item>> {
-        let resp: Response = client.get(ENDPOINT).send().await?.json().await?;
+        let mut all = Vec::new();
+
+        for page in 1..=MAX_PAGES {
+            let hackathons = match self.fetch_page(client, page).await {
+                Ok(h) => h,
+                // Page 1 failing is a dead source; a later page failing just
+                // ends the walk with what we already have.
+                Err(e) if page == 1 => return Err(e),
+                Err(e) => {
+                    log::warn!("Devpost: page {page} failed: {e}");
+                    break;
+                }
+            };
+            let short_page = hackathons.len() < PAGE_SIZE;
+            all.extend(hackathons);
+            if short_page {
+                break;
+            }
+        }
+
+        Ok(all)
+    }
+}
+
+impl Devpost {
+    async fn fetch_page(&self, client: &reqwest::Client, page: usize) -> Result<Vec<Item>> {
+        let resp: Response = client
+            .get(format!("{ENDPOINT}&page={page}"))
+            .send()
+            .await?
+            .json()
+            .await?;
 
         Ok(resp
             .hackathons

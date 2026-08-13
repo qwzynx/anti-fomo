@@ -9,7 +9,12 @@ use crate::models::{Item, ItemType};
 pub struct LevelsFyi;
 
 const ENDPOINT: &str = "https://www.levels.fyi/js/internshipData.json";
-const LIMIT: usize = 25;
+/// The dataset carries ~14k historical postings, of which ~1.5k are open for
+/// the current year. Internships are the category this app exists for, so this
+/// takes a deep slice rather than the token 25 it used to — but not all of
+/// them, because one source contributing 1,500 rows would dominate the cache
+/// even with round-robin diversification protecting the first page.
+const LIMIT: usize = 300;
 
 #[derive(Deserialize)]
 struct Posting {

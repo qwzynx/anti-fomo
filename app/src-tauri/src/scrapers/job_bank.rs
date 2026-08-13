@@ -37,6 +37,10 @@ const BASE: &str = "https://www.jobbank.gc.ca";
 /// `sort=D` is newest first; `fperiod=1` limits to the last 30 days so the
 /// scrape doesn't drag in months of stale postings.
 const SEARCH: &str = "https://www.jobbank.gc.ca/jobsearch/jobsearch?sort=D&fperiod=1&searchstring=";
+/// The results page serves 25 postings and takes a `page` parameter; measured,
+/// consecutive pages share no postings at all. Five passes is ~125 Canadian
+/// roles, which is what makes this competitive with the US-centric sources.
+const MAX_PAGES: usize = 5;
 
 static ARTICLE: LazyLock<Selector> = LazyLock::new(|| Selector::parse("article").unwrap());
 static LINK: LazyLock<Selector> = LazyLock::new(|| Selector::parse("a").unwrap());
@@ -84,8 +88,32 @@ impl Scraper for JobBank {
     }
 
     async fn fetch(&self, client: &reqwest::Client) -> Result<Vec<Item>> {
+        let mut all = Vec::new();
+        // Sequential rather than concurrent: five polite requests to a
+        // government server, and an exhausted search should stop paging rather
+        // than fire the remaining requests regardless.
+        for page in 1..=MAX_PAGES {
+            let items = self.fetch_page(client, page).await;
+            match items {
+                // Page 1 failing is a real failure; a later page failing just
+                // ends the walk with whatever came before it.
+                Err(e) if page == 1 => return Err(e),
+                Err(e) => {
+                    log::warn!("{}: page {page} failed: {e}", self.name);
+                    break;
+                }
+                Ok(items) if items.is_empty() => break,
+                Ok(items) => all.extend(items),
+            }
+        }
+        Ok(all)
+    }
+}
+
+impl JobBank {
+    async fn fetch_page(&self, client: &reqwest::Client, page: usize) -> Result<Vec<Item>> {
         let body = client
-            .get(format!("{SEARCH}{}", self.query))
+            .get(format!("{SEARCH}{}&page={page}", self.query))
             .send()
             .await?
             .text()

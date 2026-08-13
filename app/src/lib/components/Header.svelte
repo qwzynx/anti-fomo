@@ -1,17 +1,20 @@
 <script lang="ts">
-  import { page } from "$app/state";
   import { feed } from "$lib/feed.svelte";
   import { Monitor, Moon, RefreshCw, Sun } from "$lib/icons";
-  import { NAV } from "$lib/nav";
   import { theme } from "$lib/theme.svelte";
+
+  // Phones and small tablets only — md: and up gets the sidebar instead, which
+  // already carries the brand, the refresh button and the theme toggle. There
+  // are no navigation links here because the bottom tab bar owns that job and
+  // duplicating it would waste the top row on a 360px screen.
 
   const ThemeIcon = $derived(
     theme.value === "light" ? Sun : theme.value === "dark" ? Moon : Monitor,
   );
 </script>
 
-<header class="glass safe-top sticky top-0 z-40 border-b border-line">
-  <div class="mx-auto flex h-14 w-full max-w-6xl items-center justify-between gap-3 px-4 sm:px-6">
+<header class="glass safe-top sticky top-0 z-40 border-b border-line md:hidden">
+  <div class="flex h-14 w-full items-center justify-between gap-3 px-4">
     <a href="/" class="flex shrink-0 items-center gap-2">
       <span
         class="flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br from-indigo-600 to-violet-600 text-xs font-bold text-white"
@@ -20,23 +23,6 @@
       </span>
       <span class="font-display text-lg font-bold">Anti-FOMO</span>
     </a>
-
-    <!-- Phones get the bottom tab bar instead; duplicating nav in both places
-         would waste the top row's width on a 360px screen. -->
-    <nav class="hidden items-center gap-1 sm:flex">
-      {#each NAV as link (link.href)}
-        <a
-          href={link.href}
-          aria-current={page.url.pathname === link.href ? "page" : undefined}
-          class="rounded-lg px-3 py-1.5 text-sm font-semibold transition-colors {page.url
-            .pathname === link.href
-            ? 'bg-foreground text-background'
-            : 'text-muted hover:bg-line-soft hover:text-foreground'}"
-        >
-          {link.label}
-        </a>
-      {/each}
-    </nav>
 
     <div class="flex shrink-0 items-center gap-1">
       <button

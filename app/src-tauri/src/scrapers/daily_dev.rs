@@ -16,7 +16,7 @@ pub struct DailyDev;
 
 const ENDPOINT: &str = "https://api.daily.dev/graphql";
 const TAG: &str = "software-engineering";
-const LIMIT: usize = 15;
+const LIMIT: usize = 50;
 
 const QUERY: &str = r#"
 query TagFeed($first: Int, $tag: String!) {

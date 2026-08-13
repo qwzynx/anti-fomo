@@ -15,14 +15,17 @@ app/
 │   ├── app.css                the Tailwind 4 @theme token palette
 │   ├── lib/
 │   │   ├── api.ts             invoke() wrappers around the Rust commands
+│   │   ├── density.svelte.ts  card / list / compact result density
 │   │   ├── feed.svelte.ts     shared store (feed, saved, interests, status)
 │   │   ├── filters.ts         filter facets shared by both feed pages
 │   │   ├── icons.ts           the lucide icon vocabulary, re-exported
 │   │   ├── item.ts            title/tag/CTA derivation for cards and the modal
 │   │   ├── nav.ts             the four destinations, shared by both navs
 │   │   ├── theme.svelte.ts    light/dark/system toggle
-│   │   └── components/        Header, BottomNav, ItemCard, ItemModal,
-│   │                          FilterSheet, CardSkeleton, EmptyState
+│   │   └── components/        Sidebar, Header, BottomNav, ItemList, ItemCard,
+│   │                          ItemRow, ItemDetail, ItemModal, InfiniteScroll,
+│   │                          DensityToggle, FilterSheet, CardSkeleton,
+│   │                          EmptyState
 │   └── routes/                / (feed), /internships, /saved, /settings
 └── src-tauri/
     ├── src/
@@ -45,6 +48,24 @@ npm run tauri dev
 The window opens immediately on whatever is cached and refreshes in the
 background, so a cold start never blocks on the network.
 
+## Interface
+
+Two shells from one codebase. At `md:` and up a sidebar takes the left edge and
+the content column scrolls beside it; below that the sidebar is replaced by a
+slim top bar and a bottom tab bar, which is the right shape for Android and for
+thumb reach. The two navigations are never on screen together.
+
+The feed and the saved list share one results component with three densities —
+cards, list and compact — and reveal a page of results at a time as you scroll,
+so a filtered list of several hundred never has to render at once. The choice of
+density is remembered across launches.
+
+Jobs and internships get the job-board treatment: at `lg:` the result list sits
+beside a detail column that stays put, so comparing two postings costs a glance
+rather than opening and closing a dialog twice. Narrower than that, the list
+goes full width and the detail opens as a sheet. Both render the same component,
+so the two views cannot drift apart.
+
 ## How the data flows
 
 On launch, and whenever the cache is more than 10 minutes old, all seventeen
@@ -53,6 +74,11 @@ nothing rather than taking the refresh down with it. Results are deduplicated by
 URL, classified by keyword, tagged with location facets, ranked, and written to
 SQLite at the platform app-data directory. The UI reads only from that
 database, which is why the feed works offline.
+
+A full refresh lands roughly 1,650 items, about 1,150 of them jobs and
+internships — the category the app exists for. Per-source limits are set against
+what each endpoint actually serves rather than guessed, and the sources that
+page (Job Bank, Devpost) are walked until they run dry.
 
 **News**
 

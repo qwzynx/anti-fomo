@@ -23,8 +23,8 @@
   const quiet = $derived(sources.filter((s) => s.count === 0).length);
 </script>
 
-<main class="mx-auto w-full max-w-3xl flex-1 px-4 py-8 sm:px-6 sm:py-10">
-  <h2 class="mb-1 text-3xl font-bold">Settings</h2>
+<main class="mx-auto w-full max-w-3xl flex-1 px-4 pt-6 pb-8 sm:px-6 sm:pt-8 lg:px-8">
+  <h1 class="mb-1 text-2xl font-bold sm:text-3xl">Settings</h1>
   <p class="mb-8 text-sm text-muted">
     Everything is stored locally on this device. No account, no server.
   </p>

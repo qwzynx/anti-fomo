@@ -11,13 +11,16 @@ use crate::models::{Item, ItemType};
 pub struct RssSource {
     pub name: &'static str,
     pub url: &'static str,
+    /// Set at or just above what the feed actually carries, measured per
+    /// source. A feed that ships 20 entries gains nothing from a limit of 50,
+    /// and one that ships 32 was losing two thirds of them at a limit of 10.
     pub limit: usize,
 }
 
 pub const PHORONIX: RssSource = RssSource {
     name: "Phoronix",
     url: "https://www.phoronix.com/rss.php",
-    limit: 10,
+    limit: 30,
 };
 
 // The site 403s generic clients, which the browser User-Agent on the shared
@@ -32,25 +35,25 @@ pub const LASSONDE: RssSource = RssSource {
 pub const LOBSTERS: RssSource = RssSource {
     name: "Lobsters",
     url: "https://lobste.rs/rss",
-    limit: 15,
+    limit: 25,
 };
 
 pub const ARS_TECHNICA: RssSource = RssSource {
     name: "Ars Technica",
     url: "https://feeds.arstechnica.com/arstechnica/index",
-    limit: 12,
+    limit: 20,
 };
 
 pub const THE_VERGE: RssSource = RssSource {
     name: "The Verge",
     url: "https://www.theverge.com/rss/index.xml",
-    limit: 12,
+    limit: 15,
 };
 
 pub const INFOQ: RssSource = RssSource {
     name: "InfoQ",
     url: "https://feed.infoq.com/",
-    limit: 12,
+    limit: 15,
 };
 
 #[async_trait]

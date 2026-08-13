@@ -4,12 +4,13 @@
   import { NAV } from "$lib/nav";
 
   // This ships on Android, where a top nav bar is the wrong shape and out of
-  // thumb reach. Phones get a tab bar; sm: and up keeps the header nav.
+  // thumb reach. Phones and small tablets get a tab bar; md: and up switches to
+  // the sidebar, so the two navigations are never on screen together.
   const savedCount = $derived(feed.status?.saved_count ?? 0);
 </script>
 
 <nav
-  class="glass safe-bottom fixed inset-x-0 bottom-0 z-40 border-t border-line sm:hidden"
+  class="glass safe-bottom fixed inset-x-0 bottom-0 z-40 border-t border-line md:hidden"
   aria-label="Main"
 >
   <div class="flex items-stretch justify-around">

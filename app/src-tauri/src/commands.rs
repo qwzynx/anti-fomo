@@ -10,8 +10,10 @@ use crate::rank::{self, personalize, DEFAULT_MAJOR};
 use crate::scrapers;
 use crate::AppState;
 
-/// The old `/api/feed` endpoint capped its response at 60 items.
-const FEED_LIMIT: usize = 60;
+/// The old `/api/feed` endpoint capped its response at 60, which threw away
+/// most of what the sources returned — the UI pages through the feed now, so
+/// the cap only exists to bound the size of one `invoke` payload.
+const FEED_LIMIT: usize = 400;
 /// Matches the Python pipeline's 10-minute in-memory cache TTL.
 const REFRESH_TTL_SECONDS: i64 = 600;
 /// Items older than this are dropped; job posts and news both go stale fast.

@@ -1,7 +1,8 @@
 <script lang="ts">
   import type { ScrapedItem } from "$lib/api";
+  import DensityToggle from "$lib/components/DensityToggle.svelte";
   import EmptyState from "$lib/components/EmptyState.svelte";
-  import ItemCard from "$lib/components/ItemCard.svelte";
+  import ItemList from "$lib/components/ItemList.svelte";
   import ItemModal from "$lib/components/ItemModal.svelte";
   import { feed } from "$lib/feed.svelte";
   import { Bookmark } from "$lib/icons";
@@ -24,22 +25,27 @@
   );
 </script>
 
-<main class="mx-auto w-full max-w-6xl flex-1 px-4 py-8 sm:px-6 sm:py-10">
-  <div class="mb-6">
-    <h2 class="mb-1 text-3xl font-bold">Saved</h2>
-    <p class="text-sm text-muted">
-      {#if feed.saved.length === 0}
-        Nothing saved yet.
-      {:else}
-        {filtered.length}
-        {filtered.length === 1 ? "item" : "items"} · kept on this device even after they drop out of
-        the feed
-      {/if}
-    </p>
+<main class="mx-auto w-full max-w-6xl flex-1 px-4 pb-8 sm:px-6 lg:px-8">
+  <div class="flex flex-wrap items-end justify-between gap-3 pt-6 pb-5 sm:pt-8">
+    <div>
+      <h1 class="text-2xl font-bold sm:text-3xl">Saved</h1>
+      <p class="mt-1 text-sm text-muted">
+        {#if feed.saved.length === 0}
+          Nothing saved yet.
+        {:else}
+          {filtered.length}
+          {filtered.length === 1 ? "item" : "items"} · kept on this device even after they drop out
+          of the feed
+        {/if}
+      </p>
+    </div>
+    {#if feed.saved.length > 0}
+      <DensityToggle />
+    {/if}
   </div>
 
   {#if availableTypes.length > 2}
-    <div class="scrollbar-hide mb-6 overflow-x-auto">
+    <div class="scrollbar-hide mb-5 overflow-x-auto">
       <div class="flex gap-2">
         {#each availableTypes as option (option)}
           <button
@@ -57,13 +63,14 @@
   {/if}
 
   {#if filtered.length > 0}
-    <div class="grid grid-cols-1 gap-5 md:grid-cols-2 lg:grid-cols-3">
-      {#each filtered as item, idx (item.url)}
-        <!-- Dismissing a saved item would be contradictory, so the card hides
-             that action here. -->
-        <ItemCard {item} index={idx} dismissable={false} onOpen={(i) => (selected = i)} />
-      {/each}
-    </div>
+    <!-- Dismissing a saved item would be contradictory, so the cards and rows
+         hide that action here. -->
+    <ItemList
+      items={filtered}
+      dismissable={false}
+      noun="saved items"
+      onOpen={(i) => (selected = i)}
+    />
   {:else if feed.saved.length > 0}
     <EmptyState
       icon={Bookmark}

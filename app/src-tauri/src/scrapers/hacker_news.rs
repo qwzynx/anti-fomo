@@ -8,8 +8,12 @@ use crate::models::{Item, ItemType};
 
 pub struct HackerNews;
 
+/// Algolia serves the whole front page history under this tag (measured: ~180
+/// hits), so 50 is a page of it rather than everything — enough to fill the
+/// feed without spending four round trips on a category that is not the point
+/// of the app.
 const ENDPOINT: &str =
-    "https://hn.algolia.com/api/v1/search_by_date?tags=front_page&hitsPerPage=10";
+    "https://hn.algolia.com/api/v1/search_by_date?tags=front_page&hitsPerPage=50";
 
 #[derive(Deserialize)]
 struct Response {

@@ -29,9 +29,16 @@ Everything ships from `/app`:
     `main.rs` is only a shim. **Mobile will not build if real code moves into
     `main.rs`.**
 - **`app/src`** — the Svelte UI. Routes are `/` (feed), `/internships`, `/saved`,
-  `/settings`, reached from the header on desktop and a bottom tab bar under
-  `sm:`. `lib/feed.svelte.ts` is the single shared store; pages derive from it
-  rather than fetching independently.
+  `/settings`, reached from a sidebar at `md:` and up and a bottom tab bar below
+  it; the two navigations are never on screen together. `lib/feed.svelte.ts` is
+  the single shared store; pages derive from it rather than fetching
+  independently.
+  - The feed and the saved list render through `ItemList`, which honours the
+    card/list/compact `density` store and reveals results a page at a time.
+  - `/internships` is a job-board split pane at `lg:` — result list beside a
+    detail column — and falls back to the plain list plus `ItemModal` below
+    that. `ItemDetail` is the shared body of the modal and the pane, so the two
+    cannot drift apart.
 
 See `app/README.md` for the source list, the command table, and Android setup.
 
@@ -52,6 +59,16 @@ See `app/README.md` for the source list, the command table, and Android setup.
   on a headless browser, which cannot exist on Android. Give every item a real
   timestamp; stamping `Utc::now()` on rows of unknown age makes the recency term
   hand that source the whole first page.
+- **Per-source limits are measured, not guessed.** Check what the endpoint
+  actually serves before picking a number: a feed carrying 32 entries gains
+  nothing from a limit of 50, and one carrying 1,500 needs a cap for a reason.
+  Where a source pages (Job Bank, Devpost), walk the pages and stop on the first
+  empty or short one rather than firing a fixed number of requests. A failing
+  page after the first ends the walk with what it has; a failing *first* page is
+  a real error.
+- **Never render a full result list.** The cache holds well over a thousand
+  items. Lists page through `ItemList`/`InfiniteScroll`; a bare `{#each}` over a
+  filtered feed is a visible stall on a phone.
 - **Cross-platform care**: `reqwest` uses rustls + webpki-roots (not native-tls),
   and SQLite is bundled, both so the Android NDK targets cross-compile cleanly.
 - **Tailwind 4 is CSS-first** — the semantic design tokens (`bg`, `surface`,
