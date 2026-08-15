@@ -1,51 +1,13 @@
 "use client";
 
-import { ChevronDownIcon, SearchIcon } from "./icons";
+import { SearchIcon } from "./icons";
 
 /**
  * Shared form primitives.
  *
- * `Select` keeps a real <select> underneath — the popup, keyboard behaviour and
- * mobile wheel all come free that way — and only restyles the closed control so
- * it stops looking like an OS default next to the rounded surfaces around it.
+ * The dropdown lives in Dropdown.tsx — a native <select> could not be styled
+ * past its closed state, so the option list is rendered as a real listbox.
  */
-export function Select({
-  value,
-  onChange,
-  icon,
-  label,
-  children,
-  className = "",
-}: {
-  value: string;
-  onChange: (value: string) => void;
-  icon?: React.ReactNode;
-  /** Accessible name; not shown, the chosen value is the visible text. */
-  label: string;
-  children: React.ReactNode;
-  className?: string;
-}) {
-  return (
-    <div className={`relative ${className}`}>
-      {icon && (
-        <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-ink-3">
-          {icon}
-        </span>
-      )}
-      <select
-        aria-label={label}
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        className={`w-full cursor-pointer appearance-none rounded-xl border border-line bg-card py-2.5 text-sm font-medium text-ink transition-colors hover:border-line-strong focus:outline-none ${
-          icon ? "pl-9" : "pl-3.5"
-        } pr-9`}
-      >
-        {children}
-      </select>
-      <ChevronDownIcon className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-ink-3" />
-    </div>
-  );
-}
 
 export function SearchField({
   value,

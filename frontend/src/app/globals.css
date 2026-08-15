@@ -8,9 +8,10 @@
    dark:bg-zinc-900, …) — use the semantic utility instead (bg-card, text-ink-2)
    so that light and dark stay in sync from a single definition.
 
-   Theming has three states:
-     - no attribute  → follow the OS via prefers-color-scheme
-     - data-theme="light" / "dark" → explicit user choice, wins over the OS
+   The theme is always exactly data-theme="light" or "dark" — a boot script in
+   layout.tsx stamps one on before first paint, seeding from the OS preference
+   only on a first visit. The prefers-color-scheme block below is a safety net
+   for the brief moment before that script runs (and if JS is disabled).
    Light is defined on bare :root so a token always has a value.
 --------------------------------------------------------------------------- */
 

@@ -5,7 +5,8 @@ import Header from "../components/Header";
 import Footer from "../components/Footer";
 import ItemCard from "../components/ItemCard";
 import ItemModal from "../components/ItemModal";
-import { Select, SearchField } from "../components/ui";
+import { SearchField } from "../components/ui";
+import { Dropdown } from "../components/Dropdown";
 import { CARD_GRID, CardSkeletonGrid, EmptyState, ErrorState } from "../components/states";
 import { ClockIcon, FlameIcon, GlobeIcon, LayersIcon, NewspaperIcon, SortIcon } from "../components/icons";
 import { API_BASE, ScrapedItem, timeAgo } from "../lib/api";
@@ -222,70 +223,54 @@ export default function Home() {
               placeholder="Search your feed…"
               className="w-full md:w-64"
             />
-            <Select
+            <Dropdown
               label="Major"
               value={major}
               onChange={(v) => {
                 setLoading(true);
                 setMajor(v);
               }}
-            >
-              <option value="Software Engineering">Software Engineering</option>
-            </Select>
+              options={[{ value: "Software Engineering", label: "Software Engineering" }]}
+            />
           </div>
         </div>
 
         {/* Filter bar */}
         <div className="mb-6 flex flex-wrap items-center gap-2">
-          <Select
+          <Dropdown
             label="Item type"
             value={itemType}
             onChange={(v) => setItemType(v as typeof itemType)}
             icon={<LayersIcon className="h-4 w-4" />}
-          >
-            {TYPE_OPTIONS.map((t) => (
-              <option key={t} value={t}>
-                {t === "All" ? "All types" : t}
-              </option>
-            ))}
-          </Select>
-          <Select
+            options={TYPE_OPTIONS.map((t) => ({
+              value: t,
+              label: t === "All" ? "All types" : t,
+            }))}
+          />
+          <Dropdown
             label="Source"
             value={sourceFilter}
             onChange={setSourceFilter}
             icon={<GlobeIcon className="h-4 w-4" />}
-          >
-            <option value="All">All sources</option>
-            {allSources.map((s) => (
-              <option key={s} value={s}>
-                {s}
-              </option>
-            ))}
-          </Select>
-          <Select
+            options={[
+              { value: "All", label: "All sources" },
+              ...allSources.map((s) => ({ value: s, label: s })),
+            ]}
+          />
+          <Dropdown
             label="Freshness"
             value={freshness}
             onChange={(v) => setFreshness(v as typeof freshness)}
             icon={<ClockIcon className="h-4 w-4" />}
-          >
-            {FRESHNESS.map((f) => (
-              <option key={f.label} value={f.label}>
-                {f.label}
-              </option>
-            ))}
-          </Select>
-          <Select
+            options={FRESHNESS.map((f) => ({ value: f.label, label: f.label }))}
+          />
+          <Dropdown
             label="Sort order"
             value={sort}
             onChange={(v) => setSort(v as typeof sort)}
             icon={<SortIcon className="h-4 w-4" />}
-          >
-            {SORTS.map((s) => (
-              <option key={s} value={s}>
-                {s}
-              </option>
-            ))}
-          </Select>
+            options={SORTS.map((s) => ({ value: s, label: s }))}
+          />
           {filtersActive && (
             <button
               onClick={resetFilters}

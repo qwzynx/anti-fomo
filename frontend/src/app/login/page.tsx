@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import Header from "../../components/Header";
 import Footer from "../../components/Footer";
 import { AlertIcon } from "../../components/icons";
+import { Dropdown } from "../../components/Dropdown";
 import { api, setToken, User } from "../../lib/api";
 
 const MAJORS = ["Software Engineering"];
@@ -109,19 +110,13 @@ export default function LoginPage() {
                   />
                 </div>
                 <div>
-                  <label htmlFor={`${ids}-major`} className={labelClass}>
-                    Major
-                  </label>
-                  <select
-                    id={`${ids}-major`}
+                  <span className={labelClass}>Major</span>
+                  <Dropdown
+                    label="Major"
                     value={major}
-                    onChange={(e) => setMajor(e.target.value)}
-                    className={inputClass}
-                  >
-                    {MAJORS.map((m) => (
-                      <option key={m} value={m}>{m}</option>
-                    ))}
-                  </select>
+                    onChange={setMajor}
+                    options={MAJORS.map((m) => ({ value: m, label: m }))}
+                  />
                 </div>
               </>
             )}

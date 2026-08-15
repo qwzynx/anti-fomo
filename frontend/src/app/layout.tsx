@@ -26,19 +26,21 @@ export const viewport: Viewport = {
 };
 
 /**
- * Applies the stored theme before the first paint.
+ * Applies the theme before the first paint.
  *
- * Without this the page renders in the OS theme and then snaps to the user's
- * choice once React hydrates — a visible white flash for anyone who picked
- * dark on a light system. Kept in sync with `applyTheme` in ThemeToggle.tsx.
+ * Without this the page renders in one theme and snaps to the user's choice
+ * once React hydrates — a visible flash. Falls back to the OS preference on a
+ * first visit, then the stored choice wins forever after. Kept in sync with
+ * `readTheme`/`applyTheme` in ThemeToggle.tsx.
  */
 const themeBootScript = `
 (function () {
   try {
     var t = localStorage.getItem("antifomo_theme");
-    if (t === "light" || t === "dark") {
-      document.documentElement.setAttribute("data-theme", t);
+    if (t !== "light" && t !== "dark") {
+      t = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
     }
+    document.documentElement.setAttribute("data-theme", t);
   } catch (e) {}
 })();
 `;

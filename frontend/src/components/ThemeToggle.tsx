@@ -1,34 +1,57 @@
 "use client";
 
-import { notifyStoreChange, useStoredValue } from "../lib/browserStore";
-import { MonitorIcon, MoonIcon, SunIcon } from "./icons";
+import { useSyncExternalStore } from "react";
+import { MoonIcon, SunIcon } from "./icons";
 
-export type Theme = "light" | "dark" | "system";
+export type Theme = "light" | "dark";
 
 export const THEME_KEY = "antifomo_theme";
 
-/** Writes the choice to <html data-theme>; "system" removes it so the CSS
- *  media query takes over. Kept in sync with the boot script in layout.tsx. */
+/** Writes the choice to <html data-theme>. Always one of the two themes —
+ *  there is no "follow the OS" state. Kept in sync with the boot script in
+ *  layout.tsx. */
 export function applyTheme(theme: Theme) {
-  const root = document.documentElement;
-  if (theme === "system") root.removeAttribute("data-theme");
-  else root.setAttribute("data-theme", theme);
+  document.documentElement.setAttribute("data-theme", theme);
+}
+
+const listeners = new Set<() => void>();
+
+function subscribe(callback: () => void) {
+  listeners.add(callback);
+  window.addEventListener("storage", callback);
+  return () => {
+    listeners.delete(callback);
+    window.removeEventListener("storage", callback);
+  };
+}
+
+/** The stored choice, or the OS preference as the first-visit default. Once
+ *  the user picks, their choice sticks regardless of what the OS does. */
+function readTheme(): Theme {
+  try {
+    const stored = localStorage.getItem(THEME_KEY);
+    if (stored === "light" || stored === "dark") return stored;
+    return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+  } catch {
+    return "dark";
+  }
 }
 
 const OPTIONS: { value: Theme; label: string; Icon: typeof SunIcon }[] = [
   { value: "light", label: "Light", Icon: SunIcon },
-  { value: "system", label: "System", Icon: MonitorIcon },
   { value: "dark", label: "Dark", Icon: MoonIcon },
 ];
 
 export default function ThemeToggle() {
-  // Server renders "system"; hydration swaps in the stored choice.
-  const theme = useStoredValue(THEME_KEY, "system") as Theme;
+  // The server cannot know the OS preference, so it renders "dark" and
+  // hydration swaps in the real value. useSyncExternalStore is the sanctioned
+  // way to do that without a mismatch warning.
+  const theme = useSyncExternalStore(subscribe, readTheme, () => "dark" as Theme);
 
   function choose(next: Theme) {
     localStorage.setItem(THEME_KEY, next);
     applyTheme(next);
-    notifyStoreChange();
+    listeners.forEach((l) => l());
   }
 
   return (

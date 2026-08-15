@@ -5,7 +5,8 @@ import Header from "../../components/Header";
 import Footer from "../../components/Footer";
 import ItemCard, { splitTitle } from "../../components/ItemCard";
 import ItemModal from "../../components/ItemModal";
-import { Chip, FacetLabel, SearchField, Select } from "../../components/ui";
+import { Chip, FacetLabel, SearchField } from "../../components/ui";
+import { Dropdown } from "../../components/Dropdown";
 import { CARD_GRID, CardSkeletonGrid, EmptyState, ErrorState } from "../../components/states";
 import { BriefcaseIcon, ChevronDownIcon, ClockIcon, LayersIcon, SortIcon } from "../../components/icons";
 import { API_BASE, ScrapedItem } from "../../lib/api";
@@ -157,42 +158,30 @@ export default function InternshipsPage() {
               placeholder="Search roles, companies, locations…"
               className="flex-1"
             />
-            <Select
+            <Dropdown
               label="Discipline"
               value={discipline}
               onChange={setDiscipline}
               icon={<LayersIcon className="h-4 w-4" />}
-            >
-              {DISCIPLINES.map((d) => (
-                <option key={d} value={d}>
-                  {d === "All" ? "All disciplines" : d}
-                </option>
-              ))}
-            </Select>
-            <Select
+              options={DISCIPLINES.map((d) => ({
+                value: d,
+                label: d === "All" ? "All disciplines" : d,
+              }))}
+            />
+            <Dropdown
               label="Freshness"
               value={freshness}
               onChange={(v) => setFreshness(v as typeof freshness)}
               icon={<ClockIcon className="h-4 w-4" />}
-            >
-              {FRESHNESS.map((f) => (
-                <option key={f.label} value={f.label}>
-                  {f.label}
-                </option>
-              ))}
-            </Select>
-            <Select
+              options={FRESHNESS.map((f) => ({ value: f.label, label: f.label }))}
+            />
+            <Dropdown
               label="Sort order"
               value={sort}
               onChange={(v) => setSort(v as typeof sort)}
               icon={<SortIcon className="h-4 w-4" />}
-            >
-              {SORTS.map((s) => (
-                <option key={s} value={s}>
-                  {s}
-                </option>
-              ))}
-            </Select>
+              options={SORTS.map((s) => ({ value: s, label: s }))}
+            />
           </div>
 
           <div className="mt-3 flex items-center gap-3 border-t border-line pt-3">
