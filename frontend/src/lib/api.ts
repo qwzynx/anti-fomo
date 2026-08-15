@@ -1,7 +1,9 @@
+import { notifyStoreChange } from "./browserStore";
+
 export const API_BASE =
   process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
 
-const TOKEN_KEY = "antifomo_token";
+export const TOKEN_KEY = "antifomo_token";
 
 export function getToken(): string | null {
   if (typeof window === "undefined") return null;
@@ -11,6 +13,8 @@ export function getToken(): string | null {
 export function setToken(token: string | null) {
   if (token === null) localStorage.removeItem(TOKEN_KEY);
   else localStorage.setItem(TOKEN_KEY, token);
+  // Let subscribers (the header's signed-in state) react in this tab too.
+  notifyStoreChange();
 }
 
 export interface User {

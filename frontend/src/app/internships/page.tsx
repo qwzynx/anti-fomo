@@ -2,8 +2,12 @@
 
 import { useEffect, useMemo, useState } from "react";
 import Header from "../../components/Header";
+import Footer from "../../components/Footer";
 import ItemCard, { splitTitle } from "../../components/ItemCard";
 import ItemModal from "../../components/ItemModal";
+import { Chip, FacetLabel, SearchField, Select } from "../../components/ui";
+import { CARD_GRID, CardSkeletonGrid, EmptyState, ErrorState } from "../../components/states";
+import { BriefcaseIcon, ChevronDownIcon, ClockIcon, LayersIcon, SortIcon } from "../../components/icons";
 import { API_BASE, ScrapedItem } from "../../lib/api";
 
 const DISCIPLINES = ["All", "Software Engineering", "General"];
@@ -21,7 +25,11 @@ const SORTS = ["Relevance", "Newest first", "Company name"] as const;
 export default function InternshipsPage() {
   const [items, setItems] = useState<ScrapedItem[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  // Reference time for the freshness filter — see the note on the feed page.
+  const [fetchedAt, setFetchedAt] = useState(0);
   const [selected, setSelected] = useState<ScrapedItem | null>(null);
+  const [showFilters, setShowFilters] = useState(false);
 
   const [search, setSearch] = useState("");
   const [discipline, setDiscipline] = useState("All");
@@ -32,13 +40,44 @@ export default function InternshipsPage() {
   const [freshness, setFreshness] = useState<(typeof FRESHNESS)[number]["label"]>("Any time");
   const [sort, setSort] = useState<(typeof SORTS)[number]>("Relevance");
 
+  // Bumping this re-runs the fetch effect; see the note on the feed page.
+  const [reloadToken, setReloadToken] = useState(0);
+
   useEffect(() => {
-    fetch(`${API_BASE}/api/internships`)
-      .then((r) => r.json())
-      .then(setItems)
-      .catch((e) => console.error("Failed to fetch internships:", e))
-      .finally(() => setLoading(false));
-  }, []);
+    const controller = new AbortController();
+
+    (async () => {
+      try {
+        const res = await fetch(`${API_BASE}/api/internships`, {
+          signal: controller.signal,
+        });
+        if (!res.ok) throw new Error(`The API responded with ${res.status}.`);
+        const data = await res.json();
+        if (controller.signal.aborted) return;
+        setItems(data);
+        setError(null);
+      } catch (err) {
+        if (controller.signal.aborted) return;
+        setItems([]);
+        setError(
+          err instanceof Error ? err.message : "The internships API could not be reached."
+        );
+      } finally {
+        if (!controller.signal.aborted) {
+          setFetchedAt(Date.now());
+          setLoading(false);
+        }
+      }
+    })();
+
+    return () => controller.abort();
+  }, [reloadToken]);
+
+  function retry() {
+    setLoading(true);
+    setError(null);
+    setReloadToken((n) => n + 1);
+  }
 
   const allSources = useMemo(
     () => Array.from(new Set(items.map((i) => i.source_platform))).sort(),
@@ -48,7 +87,7 @@ export default function InternshipsPage() {
   const filtered = useMemo(() => {
     const q = search.toLowerCase();
     const maxAge = FRESHNESS.find((f) => f.label === freshness)?.hours ?? Infinity;
-    const cutoff = Date.now() - maxAge * 3600 * 1000;
+    const cutoff = fetchedAt - maxAge * 3600 * 1000;
 
     const result = items.filter((item) => {
       const haystack = `${item.title} ${item.content_text ?? ""} ${item.location ?? ""}`.toLowerCase();
@@ -71,7 +110,7 @@ export default function InternshipsPage() {
       default:
         return result.sort((a, b) => b.relevance_score - a.relevance_score);
     }
-  }, [items, search, discipline, sources, specialties, modality, locations, freshness, sort]);
+  }, [items, search, discipline, sources, specialties, modality, locations, freshness, sort, fetchedAt]);
 
   function toggle(list: string[], setList: (v: string[]) => void, value: string) {
     setList(list.includes(value) ? list.filter((v) => v !== value) : [...list, value]);
@@ -81,161 +120,185 @@ export default function InternshipsPage() {
     (discipline !== "All" ? 1 : 0) + sources.length + specialties.length +
     (modality !== "All" ? 1 : 0) + locations.length + (freshness !== "Any time" ? 1 : 0);
 
+  function clearAll() {
+    setDiscipline("All");
+    setSources([]);
+    setSpecialties([]);
+    setModality("All");
+    setLocations([]);
+    setFreshness("Any time");
+  }
+
   return (
-    <div className="flex flex-col min-h-screen bg-zinc-50 font-sans dark:bg-black text-zinc-900 dark:text-zinc-100">
+    <div className="flex min-h-screen flex-col bg-page font-sans text-ink">
       <Header active="internships" />
 
-      <main className="flex-1 mx-auto w-full max-w-6xl py-10 px-6">
-        <div className="mb-8">
-          <h2 className="text-3xl font-bold mb-1">💼 Internship Hub</h2>
-          <p className="text-zinc-500 dark:text-zinc-400 text-sm">
-            {loading ? "Scanning sources…" : `${filtered.length} of ${items.length} open roles from ${allSources.length} sources`}
+      <main className="mx-auto w-full max-w-6xl flex-1 px-6 py-10">
+        <div className="mb-6">
+          <h2 className="mb-1 flex items-center gap-2.5 text-3xl font-bold">
+            <BriefcaseIcon className="h-7 w-7 text-brand-ink" />
+            Internship hub
+          </h2>
+          <p className="text-sm text-ink-2">
+            {loading
+              ? "Scanning sources…"
+              : `${filtered.length} of ${items.length} open roles from ${allSources.length} source${allSources.length === 1 ? "" : "s"}`}
             {activeFilters > 0 && ` · ${activeFilters} filter${activeFilters > 1 ? "s" : ""} active`}
           </p>
         </div>
 
-        {/* Filter panel */}
-        <div className="mb-8 flex flex-col gap-4 rounded-2xl border border-zinc-200 bg-white p-5 dark:border-zinc-800 dark:bg-zinc-900">
-          <div className="flex flex-col gap-3 md:flex-row">
-            <input
-              type="text"
-              placeholder="Search roles, companies, locations…"
-              className="flex-1 px-4 py-2.5 bg-zinc-50 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500"
+        {/* Controls. The facet chips are collapsed by default — four always-on
+            rows pushed every result below the fold. */}
+        <div className="mb-8 rounded-2xl border border-line bg-card p-4">
+          <div className="flex flex-col gap-3 lg:flex-row">
+            <SearchField
               value={search}
-              onChange={(e) => setSearch(e.target.value)}
+              onChange={setSearch}
+              placeholder="Search roles, companies, locations…"
+              className="flex-1"
             />
-            <select
+            <Select
+              label="Discipline"
               value={discipline}
-              onChange={(e) => setDiscipline(e.target.value)}
-              className="bg-zinc-50 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-xl px-3 py-2.5 text-sm font-medium outline-none focus:ring-2 focus:ring-indigo-500"
+              onChange={setDiscipline}
+              icon={<LayersIcon className="h-4 w-4" />}
             >
               {DISCIPLINES.map((d) => (
-                <option key={d} value={d}>{d === "All" ? "All disciplines" : d}</option>
+                <option key={d} value={d}>
+                  {d === "All" ? "All disciplines" : d}
+                </option>
               ))}
-            </select>
-            <select
+            </Select>
+            <Select
+              label="Freshness"
               value={freshness}
-              onChange={(e) => setFreshness(e.target.value as typeof freshness)}
-              className="bg-zinc-50 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-xl px-3 py-2.5 text-sm font-medium outline-none focus:ring-2 focus:ring-indigo-500"
+              onChange={(v) => setFreshness(v as typeof freshness)}
+              icon={<ClockIcon className="h-4 w-4" />}
             >
               {FRESHNESS.map((f) => (
-                <option key={f.label} value={f.label}>{f.label}</option>
+                <option key={f.label} value={f.label}>
+                  {f.label}
+                </option>
               ))}
-            </select>
-            <select
+            </Select>
+            <Select
+              label="Sort order"
               value={sort}
-              onChange={(e) => setSort(e.target.value as typeof sort)}
-              className="bg-zinc-50 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-xl px-3 py-2.5 text-sm font-medium outline-none focus:ring-2 focus:ring-indigo-500"
+              onChange={(v) => setSort(v as typeof sort)}
+              icon={<SortIcon className="h-4 w-4" />}
             >
               {SORTS.map((s) => (
-                <option key={s} value={s}>Sort: {s}</option>
+                <option key={s} value={s}>
+                  {s}
+                </option>
               ))}
-            </select>
+            </Select>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="text-xs font-semibold uppercase tracking-wide text-zinc-400 mr-1">Specialty</span>
-            {SPECIALTIES.map((s) => (
-              <button
-                key={s}
-                onClick={() => toggle(specialties, setSpecialties, s)}
-                className={`rounded-full px-3 py-1 text-xs font-semibold transition-colors ${
-                  specialties.includes(s)
-                    ? "bg-indigo-600 text-white"
-                    : "bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-400 hover:bg-zinc-200 dark:hover:bg-zinc-700"
-                }`}
-              >
-                {s}
-              </button>
-            ))}
-          </div>
-
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="text-xs font-semibold uppercase tracking-wide text-zinc-400 mr-1">Work mode</span>
-            {MODALITIES.map((m) => (
-              <button
-                key={m}
-                onClick={() => setModality(m)}
-                className={`rounded-full px-3 py-1 text-xs font-semibold transition-colors ${
-                  modality === m
-                    ? "bg-emerald-600 text-white"
-                    : "bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-400 hover:bg-zinc-200 dark:hover:bg-zinc-700"
-                }`}
-              >
-                {m === "Remote" ? "🌍 Remote" : m}
-              </button>
-            ))}
-          </div>
-
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="text-xs font-semibold uppercase tracking-wide text-zinc-400 mr-1">Location</span>
-            {LOCATIONS.map((l) => (
-              <button
-                key={l}
-                onClick={() => toggle(locations, setLocations, l)}
-                className={`rounded-full px-3 py-1 text-xs font-semibold transition-colors ${
-                  locations.includes(l)
-                    ? "bg-indigo-600 text-white"
-                    : "bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-400 hover:bg-zinc-200 dark:hover:bg-zinc-700"
-                }`}
-              >
-                {l}
-              </button>
-            ))}
-          </div>
-
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="text-xs font-semibold uppercase tracking-wide text-zinc-400 mr-1">Source</span>
-            {allSources.map((s) => (
-              <button
-                key={s}
-                onClick={() => toggle(sources, setSources, s)}
-                className={`rounded-full px-3 py-1 text-xs font-semibold transition-colors ${
-                  sources.includes(s)
-                    ? "bg-indigo-600 text-white"
-                    : "bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-400 hover:bg-zinc-200 dark:hover:bg-zinc-700"
-                }`}
-              >
-                {s}
-              </button>
-            ))}
+          <div className="mt-3 flex items-center gap-3 border-t border-line pt-3">
+            <button
+              onClick={() => setShowFilters((v) => !v)}
+              aria-expanded={showFilters}
+              className="flex items-center gap-1.5 rounded-lg text-sm font-semibold text-ink-2 transition-colors hover:text-ink"
+            >
+              <ChevronDownIcon
+                className={`h-4 w-4 transition-transform ${showFilters ? "rotate-180" : ""}`}
+              />
+              {showFilters ? "Hide filters" : "More filters"}
+              {activeFilters > 0 && (
+                <span className="ml-1 rounded-full bg-brand px-1.5 py-0.5 text-[10px] font-bold text-on-brand">
+                  {activeFilters}
+                </span>
+              )}
+            </button>
             {activeFilters > 0 && (
               <button
-                onClick={() => { setDiscipline("All"); setSources([]); setSpecialties([]); setModality("All"); setLocations([]); setFreshness("Any time"); }}
-                className="ml-auto text-xs font-semibold text-indigo-600 hover:underline dark:text-indigo-400"
+                onClick={clearAll}
+                className="ml-auto text-xs font-semibold text-brand-ink hover:underline"
               >
                 Clear filters
               </button>
             )}
           </div>
+
+          {showFilters && (
+            <div className="animate-fade-up mt-4 flex flex-col gap-4">
+              <div className="flex flex-wrap items-center gap-2">
+                <FacetLabel>Specialty</FacetLabel>
+                {SPECIALTIES.map((s) => (
+                  <Chip
+                    key={s}
+                    active={specialties.includes(s)}
+                    onClick={() => toggle(specialties, setSpecialties, s)}
+                  >
+                    {s}
+                  </Chip>
+                ))}
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2">
+                <FacetLabel>Work mode</FacetLabel>
+                {MODALITIES.map((m) => (
+                  <Chip key={m} tone="job" active={modality === m} onClick={() => setModality(m)}>
+                    {m}
+                  </Chip>
+                ))}
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2">
+                <FacetLabel>Location</FacetLabel>
+                {LOCATIONS.map((l) => (
+                  <Chip
+                    key={l}
+                    active={locations.includes(l)}
+                    onClick={() => toggle(locations, setLocations, l)}
+                  >
+                    {l}
+                  </Chip>
+                ))}
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2">
+                <FacetLabel>Source</FacetLabel>
+                {allSources.map((s) => (
+                  <Chip
+                    key={s}
+                    active={sources.includes(s)}
+                    onClick={() => toggle(sources, setSources, s)}
+                  >
+                    {s}
+                  </Chip>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
 
         {loading ? (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
-            {[1, 2, 3, 4, 5, 6, 7, 8, 9].map((i) => (
-              <div key={i} className="h-52 w-full animate-pulse rounded-2xl bg-zinc-200 dark:bg-zinc-800" />
-            ))}
-          </div>
+          <CardSkeletonGrid count={9} />
+        ) : error ? (
+          <ErrorState message={error} onRetry={retry} />
         ) : filtered.length > 0 ? (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
+          <div className={CARD_GRID}>
             {filtered.map((item, idx) => (
               <ItemCard key={`${item.url}-${idx}`} item={item} index={idx} onOpen={setSelected} />
             ))}
           </div>
         ) : (
-          <div className="text-center py-20 bg-white dark:bg-zinc-900 rounded-3xl border border-dashed border-zinc-300 dark:border-zinc-700">
-            <p className="text-zinc-500 dark:text-zinc-400">No roles match your filters.</p>
-            <button
-              onClick={() => { setSearch(""); setDiscipline("All"); setSources([]); setSpecialties([]); setModality("All"); setLocations([]); setFreshness("Any time"); }}
-              className="mt-4 text-indigo-600 font-semibold text-sm hover:underline"
-            >
-              Clear everything
-            </button>
-          </div>
+          <EmptyState
+            title="No roles match those filters"
+            hint="Loosen a facet or clear the search to see every open role again."
+            actionLabel="Clear everything"
+            onAction={() => {
+              setSearch("");
+              clearAll();
+            }}
+          />
         )}
       </main>
 
       <ItemModal item={selected} onClose={() => setSelected(null)} />
+      <Footer />
     </div>
   );
 }

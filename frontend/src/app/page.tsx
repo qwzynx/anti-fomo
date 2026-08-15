@@ -2,11 +2,14 @@
 
 import { useEffect, useMemo, useState } from "react";
 import Header from "../components/Header";
+import Footer from "../components/Footer";
 import ItemCard from "../components/ItemCard";
 import ItemModal from "../components/ItemModal";
+import { Select, SearchField } from "../components/ui";
+import { CARD_GRID, CardSkeletonGrid, EmptyState, ErrorState } from "../components/states";
+import { ClockIcon, FlameIcon, GlobeIcon, LayersIcon, NewspaperIcon, SortIcon } from "../components/icons";
 import { API_BASE, ScrapedItem, timeAgo } from "../lib/api";
 
-const DISCIPLINES = ["All", "Software Engineering"];
 const NEWS_SOURCES = ["Hacker News", "Phoronix", "TLDR Tech", "HN Top Links", "Daily.dev"];
 const TYPE_OPTIONS = ["All", "Internships", "Events", "Articles"] as const;
 const TYPE_MAP: Record<string, string[]> = {
@@ -25,6 +28,11 @@ const SORTS = ["Relevance", "Newest first"] as const;
 export default function Home() {
   const [items, setItems] = useState<ScrapedItem[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  // Reference time for the freshness filter, captured when the data lands.
+  // Calling Date.now() inside the filter memo would make it impure — the same
+  // inputs would produce different results on an unrelated re-render.
+  const [fetchedAt, setFetchedAt] = useState(0);
   const [major, setMajor] = useState("Software Engineering");
   const [searchTerm, setSearchTerm] = useState("");
   const [selectedDiscipline, setSelectedDiscipline] = useState("All");
@@ -34,22 +42,45 @@ export default function Home() {
   const [freshness, setFreshness] = useState<(typeof FRESHNESS)[number]["label"]>("Any time");
   const [sort, setSort] = useState<(typeof SORTS)[number]>("Relevance");
 
-  useEffect(() => {
-    async function fetchFeed() {
-      setLoading(true);
-      try {
-        const response = await fetch(`${API_BASE}/api/feed?major=${encodeURIComponent(major)}`);
-        const data = await response.json();
-        setItems(data);
-      } catch (error) {
-        console.error("Failed to fetch feed:", error);
-      } finally {
-        setLoading(false);
-      }
-    }
+  // Bumping this re-runs the fetch effect; it is how "Try again" retries
+  // without the effect having to call a setState-bearing callback.
+  const [reloadToken, setReloadToken] = useState(0);
 
-    fetchFeed();
-  }, [major]);
+  useEffect(() => {
+    const controller = new AbortController();
+
+    (async () => {
+      try {
+        const response = await fetch(
+          `${API_BASE}/api/feed?major=${encodeURIComponent(major)}`,
+          { signal: controller.signal }
+        );
+        if (!response.ok) throw new Error(`The API responded with ${response.status}.`);
+        const data = await response.json();
+        if (controller.signal.aborted) return;
+        setItems(data);
+        setError(null);
+      } catch (err) {
+        // An abort means a newer request superseded this one — not a failure.
+        if (controller.signal.aborted) return;
+        setItems([]);
+        setError(err instanceof Error ? err.message : "The feed API could not be reached.");
+      } finally {
+        if (!controller.signal.aborted) {
+          setFetchedAt(Date.now());
+          setLoading(false);
+        }
+      }
+    })();
+
+    return () => controller.abort();
+  }, [major, reloadToken]);
+
+  function retry() {
+    setLoading(true);
+    setError(null);
+    setReloadToken((n) => n + 1);
+  }
 
   const topMatch = useMemo(
     () =>
@@ -69,14 +100,22 @@ export default function Home() {
     [items]
   );
 
+  // Derived from the data rather than hardcoded: the chip row is only worth
+  // showing once the feed actually spans more than one discipline.
+  const allDisciplines = useMemo(
+    () => Array.from(new Set(items.map((i) => i.discipline).filter(Boolean))).sort(),
+    [items]
+  );
+
   const filteredItems = useMemo(() => {
     const maxAge = FRESHNESS.find((f) => f.label === freshness)?.hours ?? Infinity;
-    const cutoff = Date.now() - maxAge * 3600 * 1000;
+    const cutoff = fetchedAt - maxAge * 3600 * 1000;
+    const needle = searchTerm.toLowerCase();
 
     const result = items.filter((item) => {
       const matchesSearch =
-        item.title.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        (item.content_text && item.content_text.toLowerCase().includes(searchTerm.toLowerCase()));
+        item.title.toLowerCase().includes(needle) ||
+        (item.content_text && item.content_text.toLowerCase().includes(needle));
       if (!matchesSearch) return false;
       if (selectedDiscipline !== "All" && item.discipline !== selectedDiscipline) return false;
       if (itemType !== "All" && !TYPE_MAP[itemType].includes(item.item_type)) return false;
@@ -88,183 +127,223 @@ export default function Home() {
     return sort === "Newest first"
       ? [...result].sort((a, b) => b.timestamp.localeCompare(a.timestamp))
       : result; // API order is already relevance-ranked
-  }, [items, searchTerm, selectedDiscipline, itemType, sourceFilter, freshness, sort]);
+  }, [items, searchTerm, selectedDiscipline, itemType, sourceFilter, freshness, sort, fetchedAt]);
+
+  const filtersActive =
+    itemType !== "All" || sourceFilter !== "All" || freshness !== "Any time" || sort !== "Relevance";
+
+  function resetFilters() {
+    setItemType("All");
+    setSourceFilter("All");
+    setFreshness("Any time");
+    setSort("Relevance");
+  }
 
   return (
-    <div className="flex flex-col min-h-screen bg-zinc-50 font-sans dark:bg-black text-zinc-900 dark:text-zinc-100">
+    <div className="flex min-h-screen flex-col bg-page font-sans text-ink">
       <Header active="feed" />
 
-      <main className="flex-1 mx-auto w-full max-w-6xl py-10 px-6">
-        {/* Curated widgets */}
-        <section className="mb-10 grid grid-cols-1 gap-4 md:grid-cols-2">
-          <div className="animate-fade-up rounded-2xl border border-amber-200/60 bg-gradient-to-br from-amber-50 to-white p-5 dark:border-amber-900/40 dark:from-amber-950/30 dark:to-zinc-900">
-            <p className="mb-2 text-xs font-bold uppercase tracking-wider text-amber-600 dark:text-amber-400">
-              🔥 Top Match Today
+      <main className="mx-auto w-full max-w-6xl flex-1 px-6 py-10">
+        {/* Curated widgets. items-start lets each card take its natural height —
+            stretching them left a large empty gap under the shorter one. */}
+        <section className="mb-10 grid grid-cols-1 items-start gap-4 md:grid-cols-2">
+          <div className="animate-fade-up rounded-2xl border border-star-soft bg-card p-5">
+            <p className="mb-3 flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider text-star-ink">
+              <FlameIcon className="h-3.5 w-3.5" />
+              Top match today
             </p>
-            {topMatch ? (
-              <button onClick={() => setSelected(topMatch)} className="text-left group">
-                <p className="font-bold leading-snug group-hover:text-indigo-600 dark:group-hover:text-indigo-400">
+            {loading ? (
+              <div className="skeleton h-10 w-full rounded-lg" />
+            ) : topMatch ? (
+              <button onClick={() => setSelected(topMatch)} className="group w-full text-left">
+                <p className="font-bold leading-snug transition-colors group-hover:text-brand-ink">
                   {topMatch.title}
                 </p>
-                <p className="mt-1 text-xs text-zinc-500">
-                  {topMatch.source_platform} · {topMatch.discipline}
+                <p className="mt-1 text-xs text-ink-3">
+                  {topMatch.source_platform} · {topMatch.discipline} · {timeAgo(topMatch.timestamp)}
                 </p>
               </button>
             ) : (
-              <p className="text-sm text-zinc-500">{loading ? "Scanning sources…" : "No strong match yet — check back soon."}</p>
+              <p className="text-sm text-ink-2">No strong match yet — check back soon.</p>
             )}
           </div>
 
-          <div className="animate-fade-up rounded-2xl border border-indigo-200/60 bg-gradient-to-br from-indigo-50 to-white p-5 dark:border-indigo-900/40 dark:from-indigo-950/30 dark:to-zinc-900" style={{ animationDelay: "60ms" }}>
-            <p className="mb-2 text-xs font-bold uppercase tracking-wider text-indigo-600 dark:text-indigo-400">
-              📰 Trending in Tech
+          <div
+            className="animate-fade-up rounded-2xl border border-line bg-card p-5"
+            style={{ animationDelay: "60ms" }}
+          >
+            <p className="mb-3 flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider text-news-ink">
+              <NewspaperIcon className="h-3.5 w-3.5" />
+              Trending in tech
             </p>
-            {trending.length > 0 ? (
-              <ul className="flex flex-col gap-1.5">
+            {loading ? (
+              <div className="flex flex-col gap-2">
+                {[0, 1, 2].map((i) => (
+                  <div key={i} className="skeleton h-8 w-full rounded-lg" />
+                ))}
+              </div>
+            ) : trending.length > 0 ? (
+              <ul className="flex flex-col gap-2">
                 {trending.map((t, i) => (
                   <li key={i} className="text-sm leading-snug">
-                    <button onClick={() => setSelected(t)} className="text-left font-semibold hover:text-indigo-600 dark:hover:text-indigo-400 line-clamp-1">
+                    <button
+                      onClick={() => setSelected(t)}
+                      className="line-clamp-1 text-left font-semibold transition-colors hover:text-brand-ink"
+                    >
                       {t.title}
                     </button>
-                    <span className="text-xs text-zinc-500">{t.source_platform} · {timeAgo(t.timestamp)}</span>
+                    <span className="text-xs text-ink-3">
+                      {t.source_platform} · {timeAgo(t.timestamp)}
+                    </span>
                   </li>
                 ))}
               </ul>
             ) : (
-              <p className="text-sm text-zinc-500">{loading ? "Loading stories…" : "No stories right now."}</p>
+              <p className="text-sm text-ink-2">No stories right now.</p>
             )}
           </div>
         </section>
 
-        {/* Controls */}
-        <div className="mb-6 flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+        {/* Heading + search */}
+        <div className="mb-5 flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
           <div>
-            <h2 className="text-3xl font-bold mb-1">Your Feed</h2>
-            <p className="text-zinc-500 dark:text-zinc-400 text-sm">
-              {filteredItems.length} results for {major} students
-              {selectedDiscipline !== "All" && ` · filtered by ${selectedDiscipline}`}
+            <h2 className="mb-1 text-3xl font-bold">Your feed</h2>
+            <p className="text-sm text-ink-2">
+              {loading
+                ? "Scanning sources…"
+                : `${filteredItems.length} result${filteredItems.length === 1 ? "" : "s"} for ${major} students`}
+              {selectedDiscipline !== "All" && ` · ${selectedDiscipline}`}
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-3">
-            <input
-              type="text"
-              placeholder="Search your feed…"
-              className="w-full md:w-64 px-4 py-2 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500 transition-all"
+            <SearchField
               value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
+              onChange={setSearchTerm}
+              placeholder="Search your feed…"
+              className="w-full md:w-64"
             />
-            <select
+            <Select
+              label="Major"
               value={major}
-              onChange={(e) => setMajor(e.target.value)}
-              className="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-xl px-3 py-2 outline-none focus:ring-2 focus:ring-indigo-500 text-sm font-medium"
+              onChange={(v) => {
+                setLoading(true);
+                setMajor(v);
+              }}
             >
-              {DISCIPLINES.filter((d) => d !== "All").map((d) => (
-                <option key={d} value={d}>{d}</option>
-              ))}
-            </select>
+              <option value="Software Engineering">Software Engineering</option>
+            </Select>
           </div>
         </div>
 
         {/* Filter bar */}
-        <div className="mb-4 flex flex-wrap items-center gap-2">
-          <select
+        <div className="mb-6 flex flex-wrap items-center gap-2">
+          <Select
+            label="Item type"
             value={itemType}
-            onChange={(e) => setItemType(e.target.value as typeof itemType)}
-            className="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-xl px-3 py-2 text-sm font-medium outline-none focus:ring-2 focus:ring-indigo-500"
+            onChange={(v) => setItemType(v as typeof itemType)}
+            icon={<LayersIcon className="h-4 w-4" />}
           >
             {TYPE_OPTIONS.map((t) => (
-              <option key={t} value={t}>📦 {t === "All" ? "All types" : t}</option>
+              <option key={t} value={t}>
+                {t === "All" ? "All types" : t}
+              </option>
             ))}
-          </select>
-          <select
+          </Select>
+          <Select
+            label="Source"
             value={sourceFilter}
-            onChange={(e) => setSourceFilter(e.target.value)}
-            className="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-xl px-3 py-2 text-sm font-medium outline-none focus:ring-2 focus:ring-indigo-500"
+            onChange={setSourceFilter}
+            icon={<GlobeIcon className="h-4 w-4" />}
           >
-            <option value="All">🌐 All sources</option>
+            <option value="All">All sources</option>
             {allSources.map((s) => (
-              <option key={s} value={s}>{s}</option>
+              <option key={s} value={s}>
+                {s}
+              </option>
             ))}
-          </select>
-          <select
+          </Select>
+          <Select
+            label="Freshness"
             value={freshness}
-            onChange={(e) => setFreshness(e.target.value as typeof freshness)}
-            className="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-xl px-3 py-2 text-sm font-medium outline-none focus:ring-2 focus:ring-indigo-500"
+            onChange={(v) => setFreshness(v as typeof freshness)}
+            icon={<ClockIcon className="h-4 w-4" />}
           >
             {FRESHNESS.map((f) => (
-              <option key={f.label} value={f.label}>⏱️ {f.label}</option>
+              <option key={f.label} value={f.label}>
+                {f.label}
+              </option>
             ))}
-          </select>
-          <select
+          </Select>
+          <Select
+            label="Sort order"
             value={sort}
-            onChange={(e) => setSort(e.target.value as typeof sort)}
-            className="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-xl px-3 py-2 text-sm font-medium outline-none focus:ring-2 focus:ring-indigo-500"
+            onChange={(v) => setSort(v as typeof sort)}
+            icon={<SortIcon className="h-4 w-4" />}
           >
             {SORTS.map((s) => (
-              <option key={s} value={s}>📊 {s}</option>
+              <option key={s} value={s}>
+                {s}
+              </option>
             ))}
-          </select>
-          {(itemType !== "All" || sourceFilter !== "All" || freshness !== "Any time" || sort !== "Relevance") && (
+          </Select>
+          {filtersActive && (
             <button
-              onClick={() => { setItemType("All"); setSourceFilter("All"); setFreshness("Any time"); setSort("Relevance"); }}
-              className="text-xs font-semibold text-indigo-600 hover:underline dark:text-indigo-400"
+              onClick={resetFilters}
+              className="rounded-lg px-2 py-1 text-xs font-semibold text-brand-ink hover:underline"
             >
               Reset
             </button>
           )}
         </div>
 
-        <div className="mb-8 overflow-x-auto scrollbar-hide">
-          <div className="flex gap-2">
-            {DISCIPLINES.map((discipline) => (
-              <button
-                key={discipline}
-                onClick={() => setSelectedDiscipline(discipline)}
-                className={`px-3.5 py-1.5 rounded-full text-xs font-semibold whitespace-nowrap transition-colors ${
-                  selectedDiscipline === discipline
-                    ? "bg-indigo-600 text-white"
-                    : "bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 text-zinc-600 dark:text-zinc-400 hover:border-indigo-400"
-                }`}
-              >
-                {discipline}
-              </button>
-            ))}
+        {allDisciplines.length > 1 && (
+          <div className="scrollbar-hide mb-8 overflow-x-auto">
+            <div className="flex gap-2">
+              {["All", ...allDisciplines].map((discipline) => (
+                <button
+                  key={discipline}
+                  onClick={() => setSelectedDiscipline(discipline)}
+                  aria-pressed={selectedDiscipline === discipline}
+                  className={`whitespace-nowrap rounded-full border px-3.5 py-1.5 text-xs font-semibold transition-colors ${
+                    selectedDiscipline === discipline
+                      ? "border-brand bg-brand text-on-brand"
+                      : "border-line bg-card text-ink-2 hover:border-line-strong hover:text-ink"
+                  }`}
+                >
+                  {discipline}
+                </button>
+              ))}
+            </div>
           </div>
-        </div>
+        )}
 
         {/* Feed */}
         {loading ? (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
-            {[1, 2, 3, 4, 5, 6].map((i) => (
-              <div key={i} className="h-52 w-full animate-pulse rounded-2xl bg-zinc-200 dark:bg-zinc-800" />
-            ))}
-          </div>
-        ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
+          <CardSkeletonGrid />
+        ) : error ? (
+          <ErrorState message={error} onRetry={retry} />
+        ) : filteredItems.length > 0 ? (
+          <div className={CARD_GRID}>
             {filteredItems.map((item, idx) => (
               <ItemCard key={`${item.url}-${idx}`} item={item} index={idx} onOpen={setSelected} />
             ))}
           </div>
-        )}
-
-        {!loading && filteredItems.length === 0 && (
-          <div className="text-center py-20 bg-white dark:bg-zinc-900 rounded-3xl border border-dashed border-zinc-300 dark:border-zinc-700">
-            <p className="text-zinc-500 dark:text-zinc-400">No opportunities match your search or filters.</p>
-            <button
-              onClick={() => { setSearchTerm(""); setSelectedDiscipline("All"); }}
-              className="mt-4 text-indigo-600 font-semibold text-sm hover:underline"
-            >
-              Clear all filters
-            </button>
-          </div>
+        ) : (
+          <EmptyState
+            title="Nothing matches those filters"
+            hint="Try a broader search term, or clear the filters to see the whole feed."
+            actionLabel="Clear search and filters"
+            onAction={() => {
+              setSearchTerm("");
+              setSelectedDiscipline("All");
+              resetFilters();
+            }}
+          />
         )}
       </main>
 
       <ItemModal item={selected} onClose={() => setSelected(null)} />
-
-      <footer className="mt-auto border-t border-zinc-200 py-8 text-center text-sm text-zinc-500 dark:border-zinc-800">
-        <p>© 2026 Anti-FOMO. Aggregated from Hacker News, Phoronix, TLDR, Lassonde, Luma, Levels.fyi, Pitt CSC & Simplify.</p>
-      </footer>
+      <Footer />
     </div>
   );
 }

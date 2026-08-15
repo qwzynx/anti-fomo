@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
 import Link from "next/link";
-import { getToken } from "../lib/api";
+import { TOKEN_KEY } from "../lib/api";
+import { useStoredValue } from "../lib/browserStore";
+import ThemeToggle from "./ThemeToggle";
 
 const NAV = [
   { href: "/", label: "Feed", key: "feed" },
@@ -16,49 +17,50 @@ export default function Header({
   active?: "feed" | "internships" | "hub";
   children?: React.ReactNode;
 }) {
-  const [signedIn, setSignedIn] = useState(false);
-
-  useEffect(() => {
-    setSignedIn(getToken() !== null);
-  }, []);
+  // Subscribed rather than read once in an effect, so signing in or out
+  // updates the header immediately instead of on the next full page load.
+  const signedIn = useStoredValue(TOKEN_KEY, "") !== "";
 
   return (
-    <header className="sticky top-0 z-20 w-full border-b border-zinc-200 glass dark:border-zinc-800">
-      <div className="mx-auto flex max-w-6xl items-center justify-between gap-4 p-4 flex-wrap">
-        <Link href="/" className="flex items-center gap-2 shrink-0">
-          <div className="h-8 w-8 rounded-lg bg-gradient-to-br from-indigo-500 to-violet-600 flex items-center justify-center text-white font-bold shadow-sm">
+    <header className="glass sticky top-0 z-20 w-full border-b border-line">
+      <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-4 px-6 py-3.5">
+        <Link href="/" className="flex shrink-0 items-center gap-2.5">
+          <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br from-brand to-violet-600 text-sm font-bold text-on-brand shadow-[var(--shadow-card)]">
             AF
-          </div>
-          <h1 className="text-xl font-bold tracking-tight">Anti-FOMO</h1>
+          </span>
+          <span className="font-display text-lg font-bold tracking-tight">Anti-FOMO</span>
         </Link>
 
-        <nav className="flex items-center gap-1 text-sm font-medium">
-          {NAV.map((n) => (
-            <Link
-              key={n.key}
-              href={n.href}
-              className={`rounded-full px-3.5 py-1.5 transition-colors ${
-                active === n.key
-                  ? "bg-indigo-600/10 text-indigo-600 dark:bg-indigo-400/10 dark:text-indigo-400"
-                  : "text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100"
-              }`}
-            >
-              {n.label}
-            </Link>
-          ))}
+        <div className="flex items-center gap-2">
+          <nav aria-label="Primary" className="flex items-center gap-1 text-sm font-medium">
+            {NAV.map((n) => (
+              <Link
+                key={n.key}
+                href={n.href}
+                aria-current={active === n.key ? "page" : undefined}
+                className={`rounded-full px-3.5 py-1.5 transition-colors ${
+                  active === n.key
+                    ? "bg-brand-soft text-brand-ink"
+                    : "text-ink-2 hover:bg-sunken hover:text-ink"
+                }`}
+              >
+                {n.label}
+              </Link>
+            ))}
+          </nav>
+
+          <ThemeToggle />
+
           <Link
             href={signedIn ? "/dashboard" : "/login"}
-            className={`ml-2 rounded-full px-4 py-1.5 font-semibold transition-all ${
-              active === "hub"
-                ? "bg-indigo-600 text-white"
-                : "bg-indigo-600 text-white hover:bg-indigo-500 hover:shadow-md hover:shadow-indigo-600/20"
-            }`}
+            aria-current={active === "hub" ? "page" : undefined}
+            className="rounded-full bg-brand px-4 py-1.5 text-sm font-semibold text-on-brand transition-colors hover:bg-brand-hover"
           >
             {signedIn ? "Student Hub" : "Sign in"}
           </Link>
-        </nav>
+        </div>
 
-        {children && <div className="w-full md:w-auto md:flex-1 md:order-none order-last">{children}</div>}
+        {children && <div className="order-last w-full md:order-none md:w-auto md:flex-1">{children}</div>}
       </div>
     </header>
   );

@@ -1,8 +1,10 @@
 "use client";
 
-import { useState } from "react";
+import { useId, useState } from "react";
 import { useRouter } from "next/navigation";
 import Header from "../../components/Header";
+import Footer from "../../components/Footer";
+import { AlertIcon } from "../../components/icons";
 import { api, setToken, User } from "../../lib/api";
 
 const MAJORS = ["Software Engineering"];
@@ -21,6 +23,7 @@ export default function LoginPage() {
   const [major, setMajor] = useState(MAJORS[0]);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const ids = useId();
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -44,33 +47,43 @@ export default function LoginPage() {
     }
   }
 
+  // Inputs sit on the sunken surface with a visible border. They previously
+  // used the same colour as the card they sit on plus a transparent border,
+  // which made every field invisible in dark mode.
   const inputClass =
-    "w-full px-4 py-2.5 bg-zinc-100 dark:bg-zinc-900 border border-transparent rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 transition-all";
+    "w-full rounded-lg border border-line bg-sunken px-4 py-2.5 text-ink transition-colors placeholder:text-ink-3 hover:border-line-strong focus:outline-none";
+  const labelClass = "mb-1.5 block text-xs font-semibold text-ink-2";
 
   return (
-    <div className="flex min-h-screen flex-col bg-zinc-50 font-sans dark:bg-black text-zinc-900 dark:text-zinc-100">
+    <div className="flex min-h-screen flex-col bg-page font-sans text-ink">
       <Header />
 
       <main className="flex flex-1 items-center justify-center px-6 py-16">
-        <div className="animate-fade-up w-full max-w-md rounded-3xl border border-zinc-200 bg-white p-8 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
-          <h2 className="text-2xl font-bold mb-1">
+        <div className="animate-fade-up w-full max-w-md rounded-3xl border border-line bg-card p-8 shadow-[var(--shadow-card)]">
+          <h2 className="mb-1 text-2xl font-bold">
             {mode === "login" ? "Welcome back" : "Create your account"}
           </h2>
-          <p className="text-sm text-zinc-500 dark:text-zinc-400 mb-6">
+          <p className="mb-6 text-sm text-ink-2">
             {mode === "login"
               ? "Sign in to your student hub."
               : "Join to get a personalized student hub."}
           </p>
 
-          <div className="mb-6 grid grid-cols-2 rounded-lg bg-zinc-100 p-1 text-sm font-medium dark:bg-zinc-800">
+          <div
+            role="tablist"
+            aria-label="Authentication mode"
+            className="mb-6 grid grid-cols-2 rounded-lg bg-sunken p-1 text-sm font-medium"
+          >
             {(["login", "register"] as const).map((m) => (
               <button
                 key={m}
+                role="tab"
+                aria-selected={mode === m}
                 onClick={() => { setMode(m); setError(null); }}
                 className={`rounded-md py-1.5 transition-colors ${
                   mode === m
-                    ? "bg-white shadow-sm dark:bg-zinc-700"
-                    : "text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300"
+                    ? "bg-card text-ink shadow-[var(--shadow-card)]"
+                    : "text-ink-3 hover:text-ink"
                 }`}
               >
                 {m === "login" ? "Sign in" : "Register"}
@@ -81,44 +94,77 @@ export default function LoginPage() {
           <form onSubmit={handleSubmit} className="flex flex-col gap-4">
             {mode === "register" && (
               <>
-                <input
-                  type="text"
-                  placeholder="Full name"
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  className={inputClass}
-                />
-                <select
-                  value={major}
-                  onChange={(e) => setMajor(e.target.value)}
-                  className={inputClass}
-                >
-                  {MAJORS.map((m) => (
-                    <option key={m} value={m}>{m}</option>
-                  ))}
-                </select>
+                <div>
+                  <label htmlFor={`${ids}-name`} className={labelClass}>
+                    Full name
+                  </label>
+                  <input
+                    id={`${ids}-name`}
+                    type="text"
+                    autoComplete="name"
+                    placeholder="Ada Lovelace"
+                    value={name}
+                    onChange={(e) => setName(e.target.value)}
+                    className={inputClass}
+                  />
+                </div>
+                <div>
+                  <label htmlFor={`${ids}-major`} className={labelClass}>
+                    Major
+                  </label>
+                  <select
+                    id={`${ids}-major`}
+                    value={major}
+                    onChange={(e) => setMajor(e.target.value)}
+                    className={inputClass}
+                  >
+                    {MAJORS.map((m) => (
+                      <option key={m} value={m}>{m}</option>
+                    ))}
+                  </select>
+                </div>
               </>
             )}
-            <input
-              type="email"
-              required
-              placeholder="Email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              className={inputClass}
-            />
-            <input
-              type="password"
-              required
-              minLength={mode === "register" ? 8 : undefined}
-              placeholder={mode === "register" ? "Password (min. 8 characters)" : "Password"}
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              className={inputClass}
-            />
+
+            <div>
+              <label htmlFor={`${ids}-email`} className={labelClass}>
+                Email
+              </label>
+              <input
+                id={`${ids}-email`}
+                type="email"
+                required
+                autoComplete="email"
+                placeholder="you@university.edu"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                className={inputClass}
+              />
+            </div>
+
+            <div>
+              <label htmlFor={`${ids}-password`} className={labelClass}>
+                Password
+              </label>
+              <input
+                id={`${ids}-password`}
+                type="password"
+                required
+                minLength={mode === "register" ? 8 : undefined}
+                autoComplete={mode === "register" ? "new-password" : "current-password"}
+                placeholder={mode === "register" ? "At least 8 characters" : "Your password"}
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                className={inputClass}
+              />
+            </div>
 
             {error && (
-              <p className="rounded-lg bg-red-50 px-4 py-2.5 text-sm text-red-700 dark:bg-red-900/20 dark:text-red-300">
+              <p
+                role="alert"
+                className="flex items-start gap-2 rounded-lg bg-danger-soft px-4 py-2.5 text-sm text-danger-ink"
+              >
+                <AlertIcon className="mt-0.5 h-4 w-4 shrink-0" />
                 {error}
               </p>
             )}
@@ -126,7 +172,7 @@ export default function LoginPage() {
             <button
               type="submit"
               disabled={submitting}
-              className="mt-2 rounded-lg bg-indigo-600 py-2.5 font-semibold text-white transition-colors hover:bg-indigo-500 disabled:opacity-50"
+              className="mt-2 rounded-lg bg-brand py-2.5 font-semibold text-on-brand transition-colors hover:bg-brand-hover disabled:opacity-50"
             >
               {submitting
                 ? "Please wait…"
@@ -135,6 +181,8 @@ export default function LoginPage() {
           </form>
         </div>
       </main>
+
+      <Footer />
     </div>
   );
 }

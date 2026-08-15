@@ -2,16 +2,17 @@
 
 import { useState } from "react";
 import { ScrapedItem, logoFor, timeAgo } from "../lib/api";
+import { ArrowRightIcon, StarIcon } from "./icons";
 
 export function typeBadgeClass(type: ScrapedItem["item_type"]): string {
   switch (type) {
     case "Internship":
     case "Job":
-      return "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300";
+      return "bg-job-soft text-job-ink";
     case "Event":
-      return "bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-300";
+      return "bg-event-soft text-event-ink";
     default:
-      return "bg-indigo-100 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-300";
+      return "bg-news-soft text-news-ink";
   }
 }
 
@@ -64,7 +65,7 @@ export default function ItemCard({
     <button
       onClick={() => onOpen(item)}
       style={{ animationDelay: `${Math.min(index, 12) * 30}ms` }}
-      className="animate-fade-up group relative flex w-full flex-col gap-3 rounded-2xl border border-zinc-200 bg-white p-5 text-left shadow-sm transition-all hover:-translate-y-0.5 hover:border-indigo-500 hover:shadow-lg hover:shadow-indigo-600/5 dark:border-zinc-800 dark:bg-zinc-900 dark:hover:border-indigo-400"
+      className="animate-fade-up group relative flex w-full flex-col gap-3 rounded-2xl border border-line bg-card p-5 text-left shadow-[var(--shadow-card)] transition-all duration-200 hover:-translate-y-0.5 hover:border-brand hover:shadow-[var(--shadow-lift)]"
     >
       <div className="flex items-start justify-between gap-2">
         <div className="flex items-center gap-2.5">
@@ -75,39 +76,41 @@ export default function ItemCard({
               alt=""
               width={36}
               height={36}
+              loading="lazy"
               onError={() => setLogoFailed(true)}
-              className="h-9 w-9 rounded-lg bg-zinc-100 object-contain p-1 dark:bg-zinc-800"
+              className="h-9 w-9 rounded-lg bg-sunken object-contain p-1"
             />
           ) : (
-            <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-zinc-100 text-sm font-bold text-zinc-500 dark:bg-zinc-800">
+            <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-sunken text-sm font-bold text-ink-3">
               {primary.charAt(0).toUpperCase()}
             </div>
           )}
           <span
-            className={`text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full ${typeBadgeClass(item.item_type)}`}
+            className={`rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider ${typeBadgeClass(item.item_type)}`}
           >
             {item.item_type}
           </span>
         </div>
         {item.relevance_score >= 10 && (
-          <span className="shrink-0 rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-bold text-amber-700 dark:bg-amber-900/30 dark:text-amber-300">
-            ⭐ TOP MATCH
+          <span className="flex shrink-0 items-center gap-1 rounded-full bg-star-soft px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-star-ink">
+            <StarIcon className="h-3 w-3" />
+            Top match
           </span>
         )}
       </div>
 
       <div className="flex flex-col gap-0.5">
-        <h3 className="text-lg font-bold leading-tight group-hover:text-indigo-600 dark:group-hover:text-indigo-400 line-clamp-2">
+        <h3 className="line-clamp-2 text-lg font-bold leading-tight transition-colors group-hover:text-brand-ink">
           {primary}
         </h3>
         {secondary && (
-          <p className="text-sm font-medium text-zinc-600 dark:text-zinc-400 line-clamp-1">{secondary}</p>
+          <p className="line-clamp-1 text-sm font-medium text-ink-2">{secondary}</p>
         )}
-        <span className="text-xs text-zinc-400 font-medium mt-0.5">{item.source_platform}</span>
+        <span className="mt-0.5 text-xs font-medium text-ink-3">{item.source_platform}</span>
       </div>
 
       {!secondary && (
-        <p className="line-clamp-2 text-sm leading-relaxed text-zinc-600 dark:text-zinc-400">
+        <p className="line-clamp-2 text-sm leading-relaxed text-ink-2">
           {item.content_text || "Open for details."}
         </p>
       )}
@@ -117,7 +120,7 @@ export default function ItemCard({
           {tags.map((t) => (
             <span
               key={t}
-              className="rounded-md bg-zinc-100 px-2 py-0.5 text-[11px] font-medium text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400"
+              className="rounded-md bg-sunken px-2 py-0.5 text-[11px] font-medium text-ink-2"
             >
               {t}
             </span>
@@ -125,10 +128,11 @@ export default function ItemCard({
         </div>
       )}
 
-      <div className="mt-auto flex items-center justify-between border-t border-zinc-100 pt-3 text-[11px] font-medium text-zinc-400 dark:border-zinc-800">
+      <div className="mt-auto flex items-center justify-between border-t border-line pt-3 text-[11px] font-medium text-ink-3">
         <span>{timeAgo(item.timestamp)}</span>
-        <span className="text-indigo-500 opacity-0 transition-opacity group-hover:opacity-100">
-          View details →
+        <span className="flex items-center gap-1 text-brand-ink opacity-0 transition-opacity group-hover:opacity-100">
+          View details
+          <ArrowRightIcon className="h-3 w-3" />
         </span>
       </div>
     </button>
