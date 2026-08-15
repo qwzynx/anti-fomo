@@ -74,7 +74,9 @@ fn parse_deadline(range: &str) -> Option<DateTime<Utc>> {
             let (day, year) = right.split_once(", ")?;
             let month = left.split_whitespace().next()?;
             NaiveDate::parse_from_str(&format!("{month} {day}, {year}"), "%b %d, %Y")
-                .or_else(|_| NaiveDate::parse_from_str(&format!("{month} {day}, {year}"), "%B %d, %Y"))
+                .or_else(|_| {
+                    NaiveDate::parse_from_str(&format!("{month} {day}, {year}"), "%B %d, %Y")
+                })
                 .ok()
         })?;
 

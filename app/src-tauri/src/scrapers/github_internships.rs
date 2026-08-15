@@ -65,8 +65,7 @@ pub const NEW_GRAD: GithubInternships = GithubInternships {
 /// or `1mo`. Parsing it matters: without it every row is stamped `Utc::now()`,
 /// so a listing posted a month ago claims to be brand new and the recency term
 /// lets these three large repos monopolise the top of the feed.
-static AGE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^(\d+)\s*(h|d|w|mo|y|yr)$").unwrap());
+static AGE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(\d+)\s*(h|d|w|mo|y|yr)$").unwrap());
 
 fn parse_age(raw: &str, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
     let caps = AGE.captures(raw.trim())?;

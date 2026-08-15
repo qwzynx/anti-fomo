@@ -180,8 +180,7 @@ pub struct ItemStates {
 }
 
 pub fn load_states(conn: &Connection) -> Result<ItemStates> {
-    let mut stmt =
-        conn.prepare("SELECT url, saved_at, dismissed_at, seen_at FROM item_state")?;
+    let mut stmt = conn.prepare("SELECT url, saved_at, dismissed_at, seen_at FROM item_state")?;
     let mut states = ItemStates::default();
 
     let rows = stmt.query_map([], |row| {
@@ -458,9 +457,14 @@ mod tests {
         // The whole reason `snapshot` exists: star something, let the items
         // cache drop it, and the saved list must still render it.
         let mut conn = mem();
-        let it = Item::new("Intern", "Simplify", ItemType::Internship, "https://x.test/1")
-            .with_content("Toronto, ON");
-        save_items(&mut conn, &[it.clone()]).unwrap();
+        let it = Item::new(
+            "Intern",
+            "Simplify",
+            ItemType::Internship,
+            "https://x.test/1",
+        )
+        .with_content("Toronto, ON");
+        save_items(&mut conn, std::slice::from_ref(&it)).unwrap();
         set_saved(&conn, &it.url, true, Some(&it)).unwrap();
 
         conn.execute("DELETE FROM items", []).unwrap();
@@ -525,7 +529,7 @@ mod tests {
     fn pruning_orphan_states_spares_saved_rows() {
         let mut conn = mem();
         let cached = Item::new("cached", "S", ItemType::Article, "https://x.test/live");
-        save_items(&mut conn, &[cached.clone()]).unwrap();
+        save_items(&mut conn, std::slice::from_ref(&cached)).unwrap();
 
         mark_seen(&conn, &cached.url).unwrap(); // seen + still cached  → kept
         mark_seen(&conn, "https://x.test/gone").unwrap(); // seen + uncached  → dropped
@@ -549,6 +553,9 @@ mod tests {
         conn.pragma_update(None, "user_version", 0).unwrap();
         migrate(&conn).unwrap();
 
-        assert!(load_states(&conn).unwrap().saved.contains("https://x.test/1"));
+        assert!(load_states(&conn)
+            .unwrap()
+            .saved
+            .contains("https://x.test/1"));
     }
 }

@@ -1,0 +1,86 @@
+"use client";
+
+import { useSyncExternalStore } from "react";
+import { MoonIcon, SunIcon } from "./icons";
+
+export type Theme = "light" | "dark";
+
+export const THEME_KEY = "antifomo_theme";
+
+/** Toggles the `dark` class on <html>, the same strategy the desktop app uses
+ *  so both clients share one stylesheet contract. Always one of the two themes
+ *  — there is no "follow the OS" state. Kept in sync with layout.tsx's boot
+ *  script. */
+export function applyTheme(theme: Theme) {
+  document.documentElement.classList.toggle("dark", theme === "dark");
+}
+
+const listeners = new Set<() => void>();
+
+function subscribe(callback: () => void) {
+  listeners.add(callback);
+  window.addEventListener("storage", callback);
+  return () => {
+    listeners.delete(callback);
+    window.removeEventListener("storage", callback);
+  };
+}
+
+/** The stored choice, or the OS preference as the first-visit default. Once
+ *  the user picks, their choice sticks regardless of what the OS does. */
+function readTheme(): Theme {
+  try {
+    const stored = localStorage.getItem(THEME_KEY);
+    if (stored === "light" || stored === "dark") return stored;
+    return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+  } catch {
+    return "dark";
+  }
+}
+
+const OPTIONS: { value: Theme; label: string; Icon: typeof SunIcon }[] = [
+  { value: "light", label: "Light", Icon: SunIcon },
+  { value: "dark", label: "Dark", Icon: MoonIcon },
+];
+
+export default function ThemeToggle() {
+  // The server cannot know the OS preference, so it renders "dark" and
+  // hydration swaps in the real value. useSyncExternalStore is the sanctioned
+  // way to do that without a mismatch warning.
+  const theme = useSyncExternalStore(subscribe, readTheme, () => "dark" as Theme);
+
+  function choose(next: Theme) {
+    localStorage.setItem(THEME_KEY, next);
+    applyTheme(next);
+    listeners.forEach((l) => l());
+  }
+
+  return (
+    <div
+      role="group"
+      aria-label="Colour theme"
+      className="flex items-center gap-0.5 rounded-full border border-line bg-line-soft p-0.5"
+    >
+      {OPTIONS.map(({ value, label, Icon }) => {
+        const active = theme === value;
+        return (
+          <button
+            key={value}
+            type="button"
+            onClick={() => choose(value)}
+            aria-label={label}
+            aria-pressed={active}
+            title={label}
+            className={`flex h-7 w-7 items-center justify-center rounded-full transition-colors ${
+              active
+                ? "bg-surface text-foreground"
+                : "text-subtle hover:text-foreground"
+            }`}
+          >
+            <Icon className="h-3.5 w-3.5" />
+          </button>
+        );
+      })}
+    </div>
+  );
+}

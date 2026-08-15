@@ -387,7 +387,9 @@ fn diversify(items: Vec<Item>) -> Vec<Item> {
         });
 
         for source in round {
-            let bucket = buckets.get_mut(source).expect("source in round has a bucket");
+            let bucket = buckets
+                .get_mut(source)
+                .expect("source in round has a bucket");
             for _ in 0..PER_SOURCE_PER_ROUND {
                 match bucket.pop_front() {
                     Some(item) => out.push(item),
@@ -497,7 +499,13 @@ mod tests {
     #[test]
     fn diversify_preserves_every_item() {
         let items: Vec<Item> = (0..50)
-            .map(|i| item(&format!("i-{i}"), &format!("src-{}", i % 7), ItemType::Article))
+            .map(|i| {
+                item(
+                    &format!("i-{i}"),
+                    &format!("src-{}", i % 7),
+                    ItemType::Article,
+                )
+            })
             .collect();
         let ranked = rank(items, DEFAULT_MAJOR);
         assert_eq!(ranked.len(), 50);
@@ -536,7 +544,8 @@ mod tests {
     #[test]
     fn fresher_item_outranks_stale_one_of_equal_kind() {
         let now = Utc::now();
-        let stale = item("old", "S", ItemType::Article).with_timestamp(now - chrono::Duration::days(10));
+        let stale =
+            item("old", "S", ItemType::Article).with_timestamp(now - chrono::Duration::days(10));
         let fresh = item("new", "S", ItemType::Article).with_timestamp(now);
 
         let ranked = personalize_at(vec![stale, fresh], DEFAULT_MAJOR, &[], now);
@@ -571,7 +580,10 @@ mod tests {
 
         assert!(ranked[0].matched_interests.len() >= 4);
         // Five matches would be 20 points uncapped; the cap holds it to 8.
-        assert_eq!(ranked[0].relevance_score, Some(MAX_INTEREST_SCORE + RECENCY_WEIGHT));
+        assert_eq!(
+            ranked[0].relevance_score,
+            Some(MAX_INTEREST_SCORE + RECENCY_WEIGHT)
+        );
     }
 
     #[test]

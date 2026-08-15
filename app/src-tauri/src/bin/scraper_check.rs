@@ -7,7 +7,6 @@
 
 use std::collections::BTreeMap;
 
-use anti_fomo_lib::models::ItemType;
 use anti_fomo_lib::rank::{personalize, DEFAULT_MAJOR};
 use anti_fomo_lib::scrapers;
 

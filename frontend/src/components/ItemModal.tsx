@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect } from "react";
+import { useCallback, useEffect, useId, useRef } from "react";
 import { ScrapedItem, domainOf, logoFor } from "../lib/api";
 import { splitTitle, tagsFor, typeBadgeClass } from "./ItemCard";
+import { CloseIcon, ExternalLinkIcon, MapPinIcon } from "./icons";
 
 function ctaLabel(item: ScrapedItem): string {
   const domain = domainOf(item.url);
@@ -10,14 +11,14 @@ function ctaLabel(item: ScrapedItem): string {
     case "Internship":
     case "Job":
       return item.source_platform === "Simplify"
-        ? "Apply via Simplify ↗"
-        : "Apply on Company Page ↗";
+        ? "Apply via Simplify"
+        : "Apply on company page";
     case "Event":
       return domain.includes("lu.ma") || item.source_platform === "Luma"
-        ? "Register on Luma ↗"
-        : "View Event ↗";
+        ? "Register on Luma"
+        : "View event";
     default:
-      return `Read on ${domain || item.source_platform} ↗`;
+      return `Read on ${domain || item.source_platform}`;
   }
 }
 
@@ -38,6 +39,9 @@ function sourceBlurb(item: ScrapedItem): string {
   }
 }
 
+const FOCUSABLE =
+  'a[href], button:not([disabled]), input, select, textarea, [tabindex]:not([tabindex="-1"])';
+
 export default function ItemModal({
   item,
   onClose,
@@ -45,18 +49,65 @@ export default function ItemModal({
   item: ScrapedItem | null;
   onClose: () => void;
 }) {
+  const panelRef = useRef<HTMLDivElement>(null);
+  const restoreFocusRef = useRef<HTMLElement | null>(null);
+  // True only when the press *started* on the backdrop. Without this a drag
+  // that begins inside the panel and releases outside it counts as a backdrop
+  // click, so selecting text or slightly missing a button closes the dialog.
+  const pressedBackdrop = useRef(false);
+  const titleId = useId();
+
   useEffect(() => {
     if (!item) return;
+
+    restoreFocusRef.current = document.activeElement as HTMLElement | null;
+    panelRef.current?.focus();
+
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape") {
+        onClose();
+        return;
+      }
+      if (e.key !== "Tab" || !panelRef.current) return;
+
+      // Keep Tab inside the dialog while it is open.
+      const focusable = Array.from(
+        panelRef.current.querySelectorAll<HTMLElement>(FOCUSABLE)
+      ).filter((el) => el.offsetParent !== null);
+      if (focusable.length === 0) return;
+
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault();
+        first.focus();
+      }
     };
+
     window.addEventListener("keydown", onKey);
     document.body.style.overflow = "hidden";
+
     return () => {
       window.removeEventListener("keydown", onKey);
       document.body.style.overflow = "";
+      restoreFocusRef.current?.focus?.();
     };
   }, [item, onClose]);
+
+  const onBackdropPointerDown = useCallback((e: React.PointerEvent) => {
+    pressedBackdrop.current = e.target === e.currentTarget;
+  }, []);
+
+  const onBackdropClick = useCallback(
+    (e: React.MouseEvent) => {
+      if (e.target === e.currentTarget && pressedBackdrop.current) onClose();
+      pressedBackdrop.current = false;
+    },
+    [onClose]
+  );
 
   if (!item) return null;
 
@@ -68,15 +119,18 @@ export default function ItemModal({
   return (
     <div
       className="animate-fade-in fixed inset-0 z-50 flex items-end justify-center bg-black/50 p-0 backdrop-blur-sm sm:items-center sm:p-6"
-      onClick={onClose}
-      role="dialog"
-      aria-modal="true"
+      onPointerDown={onBackdropPointerDown}
+      onClick={onBackdropClick}
     >
       <div
-        onClick={(e) => e.stopPropagation()}
-        className="animate-fade-up flex max-h-[88vh] w-full max-w-xl flex-col overflow-hidden rounded-t-3xl border border-zinc-200 bg-white shadow-2xl dark:border-zinc-800 dark:bg-zinc-900 sm:rounded-3xl"
+        ref={panelRef}
+        tabIndex={-1}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        className="animate-fade-up flex max-h-[88vh] w-full max-w-xl flex-col overflow-hidden rounded-t-3xl border border-line bg-elevated focus:outline-none sm:rounded-3xl"
       >
-        <div className="flex items-start justify-between gap-4 border-b border-zinc-100 p-6 dark:border-zinc-800">
+        <div className="flex items-start justify-between gap-4 border-b border-line p-6">
           <div className="flex items-center gap-3">
             {logo ? (
               // eslint-disable-next-line @next/next/no-img-element
@@ -85,55 +139,53 @@ export default function ItemModal({
                 alt=""
                 width={48}
                 height={48}
-                className="h-12 w-12 rounded-xl bg-zinc-100 object-contain p-1.5 dark:bg-zinc-800"
+                className="h-12 w-12 rounded-xl bg-line-soft object-contain p-1.5"
               />
             ) : null}
             <div>
               <span
-                className={`text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full ${typeBadgeClass(item.item_type)}`}
+                className={`rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider ${typeBadgeClass(item.item_type)}`}
               >
                 {item.item_type}
               </span>
-              <h2 className="mt-1.5 text-xl font-bold leading-tight">{primary}</h2>
+              <h2 id={titleId} className="mt-1.5 text-xl font-bold leading-tight">
+                {primary}
+              </h2>
               {secondary && (
-                <p className="text-sm font-medium text-zinc-600 dark:text-zinc-400">{secondary}</p>
+                <p className="text-sm font-medium text-muted">{secondary}</p>
               )}
             </div>
           </div>
-          <div className="flex shrink-0 items-center gap-2">
-            <a
-              href={item.url}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="hidden rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-indigo-500 sm:block"
-            >
-              {cta}
-            </a>
-            <button
-              onClick={onClose}
-              aria-label="Close"
-              className="flex h-8 w-8 items-center justify-center rounded-full text-zinc-400 transition-colors hover:bg-zinc-100 hover:text-zinc-700 dark:hover:bg-zinc-800 dark:hover:text-zinc-200"
-            >
-              ✕
-            </button>
-          </div>
+          <button
+            onClick={onClose}
+            aria-label="Close"
+            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-subtle transition-colors hover:bg-line-soft hover:text-foreground"
+          >
+            <CloseIcon className="h-4 w-4" />
+          </button>
         </div>
 
         <div className="flex-1 overflow-y-auto p-6">
-          <p className="mb-4 text-xs font-medium uppercase tracking-wide text-zinc-400">
+          <p className="mb-4 text-xs font-medium uppercase tracking-wide text-subtle">
             {sourceBlurb(item)} · {new Date(item.timestamp).toLocaleString()}
           </p>
 
           {item.location && (
-            <div className="mb-4 rounded-xl bg-zinc-50 p-4 dark:bg-zinc-800/60">
-              <p className="text-xs font-bold uppercase tracking-wide text-zinc-400 mb-1">📍 Locations</p>
-              <p className="text-sm text-zinc-700 dark:text-zinc-300">
+            <div className="mb-4 rounded-xl bg-line-soft p-4">
+              <p className="mb-1 flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide text-subtle">
+                <MapPinIcon className="h-3.5 w-3.5" />
+                Locations
+              </p>
+              <p className="text-sm text-muted">
                 {item.location.split("|").map((l) => l.trim()).filter(Boolean).join(" · ")}
               </p>
               {item.location_tags && item.location_tags.length > 0 && (
                 <div className="mt-2 flex flex-wrap gap-1.5">
                   {item.location_tags.map((t) => (
-                    <span key={t} className="rounded-md bg-white px-2 py-0.5 text-[11px] font-semibold text-zinc-600 shadow-sm dark:bg-zinc-700 dark:text-zinc-300">
+                    <span
+                      key={t}
+                      className="rounded-md bg-surface px-2 py-0.5 text-[11px] font-semibold text-muted"
+                    >
                       {t}
                     </span>
                   ))}
@@ -142,8 +194,9 @@ export default function ItemModal({
             </div>
           )}
 
-          <p className="whitespace-pre-line text-[15px] leading-relaxed text-zinc-700 dark:text-zinc-300">
-            {item.content_text || "No further details were scraped for this item — open the source for the full picture."}
+          <p className="whitespace-pre-line text-[15px] leading-relaxed text-muted">
+            {item.content_text ||
+              "No further details were scraped for this item — open the source for the full picture."}
           </p>
 
           {(tags.length > 0 || item.discipline) && (
@@ -153,7 +206,7 @@ export default function ItemModal({
                 .map((t) => (
                   <span
                     key={t}
-                    className="rounded-full bg-zinc-100 px-3 py-1 text-xs font-medium text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400"
+                    className="rounded-full bg-line-soft px-3 py-1 text-xs font-medium text-muted"
                   >
                     {t}
                   </span>
@@ -162,15 +215,17 @@ export default function ItemModal({
           )}
         </div>
 
-        <div className="border-t border-zinc-100 p-4 dark:border-zinc-800">
+        <div className="border-t border-line p-4">
           <a
             href={item.url}
             target="_blank"
             rel="noopener noreferrer"
-            className="block w-full rounded-xl bg-indigo-600 py-3 text-center font-semibold text-white transition-all hover:bg-indigo-500 hover:shadow-lg hover:shadow-indigo-600/25"
+            className="flex w-full items-center justify-center gap-2 rounded-xl bg-brand py-3 text-center font-semibold text-brand-fg transition-all hover:bg-brand-hover hover:"
           >
             {cta}
+            <ExternalLinkIcon className="h-4 w-4" />
           </a>
+          <p className="mt-2 text-center text-[11px] text-subtle">Opens in a new tab</p>
         </div>
       </div>
     </div>
