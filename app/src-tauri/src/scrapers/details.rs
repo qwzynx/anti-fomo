@@ -255,9 +255,18 @@ pub async fn fetch(client: &reqwest::Client, chain: &[Handler]) -> JobDetail {
     }
 
     let mut status = DetailStatus::Unsupported;
+    // A handler can learn a deadline or a pay range from a page that told us
+    // nothing about the job itself — a bare schema.org block with a
+    // `validThrough` and no description is common. Those facts are carried
+    // along the walk so the next handler's prose does not discard them.
+    let mut facts = JobDetail::default();
+
     for (index, handler) in chain.iter().enumerate() {
         let detail = fetch_one(client, handler).await;
         if !detail.has_text() {
+            if detail.has_facts() {
+                facts = merge_facts(facts, &detail);
+            }
             // A hard failure outranks "parsed fine, said nothing", which
             // outranks "we never had a handler".
             if detail.status == DetailStatus::Failed || status == DetailStatus::Unsupported {
@@ -265,6 +274,7 @@ pub async fn fetch(client: &reqwest::Client, chain: &[Handler]) -> JobDetail {
             }
             continue;
         }
+        let detail = merge_facts(detail, &facts);
 
         // Prose with no sections in it is the one case worth spending a second
         // request on: simplify.jobs hands back requirements already split, and
@@ -283,7 +293,28 @@ pub async fn fetch(client: &reqwest::Client, chain: &[Handler]) -> JobDetail {
         }
         return detail;
     }
+
+    // Nothing in the chain described the job, but something may still have
+    // told us when it closes. That is worth storing, and worth recording as a
+    // real answer so the URL leaves the queue.
+    if facts.has_facts() {
+        facts.status = DetailStatus::Ok;
+        return facts;
+    }
     JobDetail::with_status(status)
+}
+
+/// Fills in a detail's deadline and pay from facts gathered earlier in the
+/// walk, without touching its text.
+fn merge_facts(mut detail: JobDetail, facts: &JobDetail) -> JobDetail {
+    detail.closes_at = detail.closes_at.or(facts.closes_at);
+    if detail.salary_min.is_none() && detail.salary_max.is_none() {
+        detail.salary_min = facts.salary_min;
+        detail.salary_max = facts.salary_max;
+        detail.salary_currency = facts.salary_currency.clone();
+        detail.salary_period = facts.salary_period.clone();
+    }
+    detail
 }
 
 /// Fills the gaps in `detail` from `extra`, field by field. The first
@@ -295,6 +326,15 @@ fn merge(mut detail: JobDetail, extra: JobDetail) -> JobDetail {
     detail.perks = detail.perks.or(extra.perks);
     if detail.tagged_skills.is_empty() {
         detail.tagged_skills = extra.tagged_skills;
+    }
+    // The employer's own answer wins, but a mirror that knows the deadline
+    // when the employer's page did not is still the only place we will get it.
+    detail.closes_at = detail.closes_at.or(extra.closes_at);
+    if detail.salary_min.is_none() && detail.salary_max.is_none() {
+        detail.salary_min = extra.salary_min;
+        detail.salary_max = extra.salary_max;
+        detail.salary_currency = extra.salary_currency;
+        detail.salary_period = extra.salary_period;
     }
     detail.status = DetailStatus::Ok;
     detail
@@ -374,7 +414,7 @@ async fn page_text(client: &reqwest::Client, url: &str) -> anyhow::Result<Option
 /// Turns a split description into the row we store. `Empty` rather than `Ok`
 /// when nothing came back, so the coverage check can tell a handler that works
 /// from one that merely does not crash.
-fn detail_of(sections: Sections, tagged_skills: Vec<String>) -> JobDetail {
+pub(crate) fn detail_of(sections: Sections, tagged_skills: Vec<String>) -> JobDetail {
     let mut detail = JobDetail {
         description: field(&sections.overview),
         requirements: field(&sections.requirements),
@@ -382,6 +422,7 @@ fn detail_of(sections: Sections, tagged_skills: Vec<String>) -> JobDetail {
         perks: field(&sections.perks),
         tagged_skills,
         status: DetailStatus::Ok,
+        ..Default::default()
     };
     if !detail.has_text() {
         detail.status = DetailStatus::Empty;
@@ -552,6 +593,11 @@ struct WorkdayResponse {
 struct WorkdayPosting {
     #[serde(rename = "jobDescription", default)]
     job_description: Option<String>,
+    /// `YYYY-MM-DD`. Workday also ships `jobPostingEndDateAsText` and
+    /// `timeLeftToApply` saying the same thing in prose; this is the one
+    /// worth parsing.
+    #[serde(rename = "endDate", default)]
+    end_date: Option<String>,
 }
 
 async fn fetch_workday(
@@ -565,11 +611,39 @@ async fn fetch_workday(
     let Some(response) = json::<WorkdayResponse>(client, url).await? else {
         return Ok(JobDetail::with_status(DetailStatus::Empty));
     };
-    let html = response
-        .job_posting_info
-        .and_then(|p| p.job_description)
+    let info = response.job_posting_info;
+    let html = info
+        .as_ref()
+        .and_then(|p| p.job_description.clone())
         .unwrap_or_default();
-    Ok(detail_of(sections::split(&html), Vec::new()))
+    let mut detail = detail_of(sections::split(&html), Vec::new());
+    // Workday states the closing date outright. This is the single largest
+    // source of real deadlines in the pipeline — every Canadian bank tenant
+    // sets it — and the app was already fetching this response and dropping
+    // the field on the floor.
+    detail.closes_at = info
+        .as_ref()
+        .and_then(|p| p.end_date.as_deref())
+        .and_then(parse_ymd);
+    if let Some(pay) = crate::pay::parse(&html) {
+        detail.salary_min = pay.min;
+        detail.salary_max = pay.max;
+        detail.salary_currency = pay.currency;
+        detail.salary_period = pay.period;
+    }
+    if detail.status == DetailStatus::Empty && detail.has_facts() {
+        detail.status = DetailStatus::Ok;
+    }
+    Ok(detail)
+}
+
+/// A bare `YYYY-MM-DD`, read as end-of-day UTC: a posting whose end date is
+/// today is still open today.
+fn parse_ymd(raw: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+    chrono::NaiveDate::parse_from_str(raw.trim(), "%Y-%m-%d")
+        .ok()?
+        .and_hms_opt(23, 59, 59)
+        .map(|naive| naive.and_utc())
 }
 
 // --- Workable ---
@@ -656,7 +730,20 @@ fn parse_page(html: &str) -> JobDetail {
     if let Some(description) = &posting.description {
         out.merge(sections::split(description));
     }
-    detail_of(out, posting.skills)
+    let mut detail = detail_of(out, posting.skills);
+    detail.closes_at = posting.valid_through;
+    if let Some(pay) = posting.salary {
+        detail.salary_min = pay.min;
+        detail.salary_max = pay.max;
+        detail.salary_currency = pay.currency;
+        detail.salary_period = pay.period;
+    }
+    // A page whose only useful content was a deadline is not `Empty` — it told
+    // us something. Saying otherwise would send it back to the queue forever.
+    if detail.status == DetailStatus::Empty && detail.has_facts() {
+        detail.status = DetailStatus::Ok;
+    }
+    detail
 }
 
 // --- simplify.jobs ---
@@ -803,7 +890,14 @@ static JOB_BANK_HEADING: LazyLock<Selector> =
 /// The sections of a Job Bank posting that describe the application process
 /// rather than the job. They parse perfectly well, which is the problem: left
 /// in, every posting's overview ends with an email address.
-const JOB_BANK_SKIP: &[&str] = &["how to apply", "who can apply", "advertised until", "contact"];
+///
+/// "Advertised until" is *not* in this list any more. It was, and it was the
+/// one section on the page that carried the application deadline — parsed,
+/// then thrown away.
+const JOB_BANK_SKIP: &[&str] = &["how to apply", "who can apply", "contact"];
+
+/// The heading whose body is the closing date rather than a section of prose.
+const JOB_BANK_DEADLINE: &str = "advertised until";
 
 /// Job Bank labels its own sections, but as `<h2>`/`<h3>` inside `<section>`
 /// wrappers rather than as one description blob, so the generic split runs per
@@ -811,18 +905,50 @@ const JOB_BANK_SKIP: &[&str] = &["how to apply", "who can apply", "advertised un
 fn parse_job_bank(html: &str) -> JobDetail {
     let doc = Html::parse_document(html);
     let mut out = Sections::default();
+    let mut closes_at = None;
+    let mut salary = None;
     for section in doc.select(&JOB_BANK_BODY) {
         let heading = section
             .select(&JOB_BANK_HEADING)
             .next()
             .map(|h| collapse_ws(&h.text().collect::<String>()).to_lowercase())
             .unwrap_or_default();
+        if heading.starts_with(JOB_BANK_DEADLINE) {
+            let text = collapse_ws(&section.text().collect::<String>());
+            closes_at = job_bank_deadline(&text);
+            continue;
+        }
         if JOB_BANK_SKIP.iter().any(|skip| heading.starts_with(skip)) {
             continue;
         }
-        out.merge(sections::split(&section.inner_html()));
+        let body = sections::split(&section.inner_html());
+        if salary.is_none() {
+            salary = crate::pay::parse(&collapse_ws(&section.text().collect::<String>()));
+        }
+        out.merge(body);
     }
-    detail_of(out, Vec::new())
+    let mut detail = detail_of(out, Vec::new());
+    detail.closes_at = closes_at;
+    if let Some(pay) = salary {
+        detail.salary_min = pay.min;
+        detail.salary_max = pay.max;
+        detail.salary_currency = pay.currency;
+        detail.salary_period = pay.period;
+    }
+    if detail.status == DetailStatus::Empty && detail.has_facts() {
+        detail.status = DetailStatus::Ok;
+    }
+    detail
+}
+
+/// Job Bank writes the date as "Advertised until: 2026-09-18" or
+/// "Advertised until 2026-09-18". Both shapes appear; the date does not move.
+fn job_bank_deadline(text: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+    static DATE: LazyLock<regex::Regex> =
+        LazyLock::new(|| regex::Regex::new(r"(\d{4}-\d{2}-\d{2})").unwrap());
+    DATE.captures(text)
+        .and_then(|c| c.get(1))
+        .and_then(|m| parse_ymd(m.as_str()))
 }
 
 #[cfg(test)]

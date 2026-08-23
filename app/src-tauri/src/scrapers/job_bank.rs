@@ -144,12 +144,27 @@ impl JobBank {
                     .and_then(parse_posted)
                     .unwrap_or_else(Utc::now);
 
+                // The salary cell is the one place a Job Bank listing states
+                // pay, and it does so on almost every posting — far more often
+                // than a private employer's page does.
+                let salary_text = text_of(article, &SALARY);
+                let pay = salary_text.as_deref().and_then(crate::pay::parse);
+
                 Some(
                     Item {
                         // Job Bank titles are lowercase NOC occupation names
                         // ("developer, software"), which the keyword classifier
                         // handles poorly; the query already constrains the field.
                         discipline: Some("Software Engineering".to_string()),
+                        company: (company != "Employer").then(|| company.clone()),
+                        salary_min: pay.as_ref().and_then(|p| p.min),
+                        salary_max: pay.as_ref().and_then(|p| p.max),
+                        // Job Bank is a Canadian federal board; an unqualified
+                        // "$" on it is not US dollars.
+                        salary_currency: pay
+                            .as_ref()
+                            .map(|p| p.currency.clone().unwrap_or_else(|| "CAD".to_string())),
+                        salary_period: pay.as_ref().and_then(|p| p.period.clone()),
                         ..Item::new(
                             format!("{title} at {company}"),
                             self.name,

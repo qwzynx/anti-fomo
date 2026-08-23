@@ -2,7 +2,7 @@
   import { logoFor, timeAgo, type ScrapedItem } from "$lib/api";
   import { feed } from "$lib/feed.svelte";
   import { Bookmark, BookmarkCheck, X, iconForType } from "$lib/icons";
-  import { splitTitle, typeBadgeClass } from "$lib/item";
+  import { closesLabel, closesSoon, splitTitle, typeBadgeClass } from "$lib/item";
   import { skillMatch } from "$lib/skills";
 
   // One result, everywhere a result is listed. The redesign has no card grid
@@ -66,12 +66,21 @@
     parts.secondary ?? (metaText === item.source_platform ? null : item.source_platform),
   );
 
-  /** Everything the dense variant has room for, on one line. */
-  const denseLine = $derived(
-    [parts.secondary, isRole ? item.location?.split("|")[0].trim() : item.source_platform, timeAgo(item.timestamp)]
+  /** A role's own deadline, when its page published one. */
+  const deadline = $derived(isRole ? closesLabel(item) : null);
+  const urgent = $derived(isRole && closesSoon(item));
+
+  /**
+   * Everything the dense variant has room for, on one line: company/source and
+   * location lead in the row's usual colour, then a trailing segment that gets
+   * the urgency colour when it is a deadline rather than a plain timestamp.
+   */
+  const denseLead = $derived(
+    [parts.secondary, isRole ? item.location?.split("|")[0].trim() : item.source_platform]
       .filter(Boolean)
       .join(" · "),
   );
+  const denseTail = $derived(deadline ?? timeAgo(item.timestamp));
 
   // A new item means a fresh logo attempt.
   $effect(() => {
@@ -138,19 +147,34 @@
     </h3>
     {#if dense || subText}
       <p class="truncate text-xs text-subtle {dense ? 'mt-0.5' : 'mt-px'}">
-        {dense ? denseLine : subText}
+        {#if dense}
+          {denseLead}{denseLead ? " · " : ""}<span
+            class={deadline && urgent ? "font-semibold text-danger" : ""}>{denseTail}</span
+          >
+        {:else}
+          {subText}
+        {/if}
       </p>
     {/if}
     <!-- Below sm the two fixed columns have nowhere to go, so they fold in. -->
     {#if !dense && metaText}
-      <p class="truncate text-xs text-muted sm:hidden">{metaText} · {timeAgo(item.timestamp)}</p>
+      <p class="truncate text-xs text-muted sm:hidden">
+        {metaText} · {timeAgo(item.timestamp)}{#if deadline}{" · "}<span
+            class={urgent ? "font-semibold text-danger" : ""}>{deadline}</span
+          >{/if}
+      </p>
     {/if}
   </div>
 
   {#if !dense && metaText}
-    <p class="hidden w-[150px] shrink-0 truncate text-xs text-muted sm:block lg:w-[220px]">
-      {metaText}
-    </p>
+    <div class="hidden w-[150px] shrink-0 sm:block lg:w-[220px]">
+      <p class="truncate text-xs text-muted">{metaText}</p>
+      {#if deadline}
+        <p class="mt-0.5 truncate text-[11px] font-semibold {urgent ? 'text-danger' : 'text-subtle'}">
+          {deadline}
+        </p>
+      {/if}
+    </div>
   {/if}
 
   {#if match}

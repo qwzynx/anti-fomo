@@ -92,6 +92,17 @@ pub struct JobDetail {
     /// signal available, because a human or the source's own pipeline picked
     /// them rather than a keyword scan.
     pub tagged_skills: Vec<String>,
+    /// The application deadline, when the posting's own page published one —
+    /// Workday's `endDate`, schema.org's `validThrough`, Job Bank's
+    /// "Advertised until". Stored beside the description for the same reason
+    /// the description is: `save_items` rewrites the `items` row on every
+    /// refresh and would erase it.
+    pub closes_at: Option<DateTime<Utc>>,
+    /// Published pay found on the posting's page, normalised by `pay::parse`.
+    pub salary_min: Option<f64>,
+    pub salary_max: Option<f64>,
+    pub salary_currency: Option<String>,
+    pub salary_period: Option<String>,
     pub status: DetailStatus,
 }
 
@@ -101,6 +112,14 @@ impl JobDetail {
             status,
             ..Default::default()
         }
+    }
+
+    /// True when the fetch learned a deadline or a pay range. Deliberately
+    /// separate from [`has_text`](Self::has_text): a page that yields only a
+    /// `validThrough` has still not told us what the job is, so it must not
+    /// end the handler chain — but the date is worth keeping.
+    pub fn has_facts(&self) -> bool {
+        self.closes_at.is_some() || self.salary_min.is_some() || self.salary_max.is_some()
     }
 
     /// True when anything worth storing came back.
@@ -114,6 +133,23 @@ impl JobDetail {
         .iter()
         .any(|f| f.as_ref().is_some_and(|s| !s.trim().is_empty()))
             || !self.tagged_skills.is_empty()
+    }
+}
+
+/// One term of the relevance score, as the UI shows it. `label` is display
+/// text, not an identifier — nothing switches on it.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct ScoreTerm {
+    pub label: String,
+    pub points: f64,
+}
+
+impl ScoreTerm {
+    pub fn new(label: impl Into<String>, points: f64) -> Self {
+        ScoreTerm {
+            label: label.into(),
+            points,
+        }
     }
 }
 
@@ -139,6 +175,39 @@ pub struct Item {
     #[serde(default)]
     pub simplify_id: Option<String>,
 
+    /// The employer, as its own field rather than a fragment of `title`.
+    /// Sources that know it say so; everything else falls back to
+    /// [`company_from_title`]. This is what the prestige term, the employer
+    /// filter and the A-Z sort all key on, and it is why "Company name" used
+    /// to sort by role.
+    #[serde(default)]
+    pub company: Option<String>,
+    /// When applications close. Absent for the majority — most sources simply
+    /// do not publish one — which is a different thing from "closes today",
+    /// so every sort and filter over this treats `None` as unknown and puts it
+    /// last rather than coercing it to a date.
+    #[serde(default)]
+    pub closes_at: Option<DateTime<Utc>>,
+    /// Published compensation, and only published compensation. Nothing here
+    /// is ever estimated: a guessed number and a disclosed one look identical
+    /// once they are both a range on a card.
+    #[serde(default)]
+    pub salary_min: Option<f64>,
+    #[serde(default)]
+    pub salary_max: Option<f64>,
+    #[serde(default)]
+    pub salary_currency: Option<String>,
+    /// "year" | "month" | "week" | "day" | "hour" — what `salary_min`/`max`
+    /// are denominated in. `pay::annual_equivalent` is what makes two postings
+    /// on different periods comparable.
+    #[serde(default)]
+    pub salary_period: Option<String>,
+    /// Intern | New grad | Junior | Mid | Senior | Lead, read off the title.
+    /// Stored rather than derived because the internships hub filters on it
+    /// and a filter should not re-run a classifier over the whole cache.
+    #[serde(default)]
+    pub seniority: Option<String>,
+
     // --- derived, never stored on the `items` row ---
     // These are recomputed on every read: the first three by
     // `rank::personalize`, the last two by joining `item_state`.
@@ -154,6 +223,15 @@ pub struct Item {
     /// The subset of `required_skills` the user has declared they have.
     #[serde(default)]
     pub matched_skills: Vec<String>,
+    /// 1-4, strongest first, from `companies::tier` with the user's overrides
+    /// applied. Derived on read so an override takes effect without a refresh.
+    #[serde(default)]
+    pub company_tier: Option<u8>,
+    /// Every scoring term that fired, with what it contributed. The detail
+    /// pane renders this: a ranking the reader cannot interrogate is
+    /// indistinguishable from an arbitrary one.
+    #[serde(default)]
+    pub score_breakdown: Vec<ScoreTerm>,
 
     // The fetched posting, joined from `job_details` on read. Absent for the
     // postings the chain in `scrapers::details` could not serve — those report
@@ -197,9 +275,18 @@ impl Item {
             location: None,
             location_tags: Vec::new(),
             simplify_id: None,
+            company: None,
+            closes_at: None,
+            salary_min: None,
+            salary_max: None,
+            salary_currency: None,
+            salary_period: None,
+            seniority: None,
             matched_interests: Vec::new(),
             required_skills: Vec::new(),
             matched_skills: Vec::new(),
+            company_tier: None,
+            score_breakdown: Vec::new(),
             description: None,
             requirements: None,
             responsibilities: None,
@@ -226,4 +313,32 @@ impl Item {
         self.location = location.filter(|s| !s.trim().is_empty());
         self
     }
+
+    pub fn with_company(mut self, company: impl Into<String>) -> Self {
+        let name = company.into();
+        self.company = Some(name).filter(|s| !s.trim().is_empty());
+        self
+    }
+
+    pub fn with_closes_at(mut self, closes_at: Option<DateTime<Utc>>) -> Self {
+        self.closes_at = closes_at;
+        self
+    }
+}
+
+/// Recovers the employer from a `"{role} at {company}"` title.
+///
+/// Splits on the **last** " at ", matching `splitTitle` in `lib/item.ts` —
+/// "Software Engineer, Data at Palantir at Denver" is one role at Palantir,
+/// not a role called "Software Engineer, Data" at "Palantir at Denver". A
+/// title with no separator has no company to recover, and says so.
+pub fn company_from_title(title: &str) -> Option<String> {
+    let (_, company) = title.rsplit_once(" at ")?;
+    let company = company.trim();
+    // A trailing fragment that is really a location ("... at Toronto, ON") is
+    // worse than no answer, since it would become a bucket in every group-by.
+    if company.is_empty() || company.len() > 60 {
+        return None;
+    }
+    Some(company.to_string())
 }

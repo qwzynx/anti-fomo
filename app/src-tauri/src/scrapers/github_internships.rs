@@ -197,6 +197,11 @@ impl Scraper for GithubInternships {
                         // These repos are software-only, so skip the keyword
                         // classifier and label them directly.
                         discipline: Some("Software Engineering".to_string()),
+                        // The repos state the employer outright. It used to be
+                        // formatted into the title and dropped, which left the
+                        // employer filter and the prestige term with nothing
+                        // but a string to guess from.
+                        company: (company != "Unknown").then(|| company.clone()),
                         simplify_id: listing
                             .id
                             .filter(|id| !id.is_empty())

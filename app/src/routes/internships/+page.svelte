@@ -7,17 +7,18 @@
   import ItemRow from "$lib/components/ItemRow.svelte";
   import PageHeader from "$lib/components/PageHeader.svelte";
   import RowSkeleton from "$lib/components/RowSkeleton.svelte";
+  import SortMenu from "$lib/components/SortMenu.svelte";
   import { feed } from "$lib/feed.svelte";
-  import { Briefcase, ChevronDown, Filter, Search, SlidersHorizontal, X } from "$lib/icons";
+  import { Briefcase, ChevronDown, Filter, Search, X } from "$lib/icons";
   import {
     FRESHNESS,
     HUB_DISCIPLINES,
-    HUB_SORTS,
     LOCATIONS,
     MODALITIES,
     SPECIALTIES,
     freshnessCutoff,
     matchesSpecialty,
+    sortItems,
     toggle,
     type FreshnessLabel,
     type HubSort,
@@ -50,7 +51,7 @@
   let locations = $state<string[]>([]);
   let freshness = $state<FreshnessLabel>("Any time");
   let goodMatchOnly = $state(false);
-  let sort = $state<HubSort>("Relevance");
+  let sort = $state<HubSort>("Best match");
 
   const PAGE = 40;
   let shown = $state(PAGE);
@@ -93,14 +94,7 @@
       return true;
     });
 
-    switch (sort) {
-      case "Newest first":
-        return [...result].sort((a, b) => b.timestamp.localeCompare(a.timestamp));
-      case "Company name":
-        return [...result].sort((a, b) => a.title.localeCompare(b.title));
-      default:
-        return [...result].sort((a, b) => (b.relevance_score ?? 0) - (a.relevance_score ?? 0));
-    }
+    return sortItems(result, sort);
   });
 
   // Send the list back to the top when the filters change it, but leave paging
@@ -259,72 +253,68 @@
 
   <!-- One filter surface. Chips carry state; nothing hides in a sheet. -->
   <div class="shrink-0 pb-3">
-    <div class="scrollbar-hide -mx-4 overflow-x-auto px-4 sm:mx-0 sm:overflow-visible sm:px-0">
-      <div class="flex items-center gap-2 sm:flex-wrap">
-        {#each quickChips as chip (chip.label)}
-          <button
-            onclick={chip.onToggle}
-            aria-pressed={chip.active}
-            class="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-full px-3 text-[13px] transition-colors
-                   {chip.active
-              ? 'bg-brand font-semibold text-brand-fg'
-              : 'border border-line bg-surface font-medium text-muted hover:border-subtle'}"
-          >
-            {chip.label}
-            {#if chip.active}
-              <X size={12} strokeWidth={2.5} class="shrink-0" />
-            {/if}
-          </button>
-        {/each}
-
-        <button
-          onclick={() => (moreOpen = !moreOpen)}
-          aria-expanded={moreOpen}
-          aria-label="Filters"
-          class="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-full border px-3 text-[13px] font-semibold transition-colors
-                 {moreOpen
-            ? 'border-brand bg-brand-soft text-brand-soft-fg'
-            : 'border-line bg-surface text-muted hover:border-subtle'}"
-        >
-          <Filter size={13} strokeWidth={2.25} class="shrink-0" />
-          Filters
-          {#if activeFilters > 0}
-            <span
-              class="rounded-full px-1.5 text-[11px] font-bold tabular-nums
-                     {moreOpen ? 'bg-brand-soft-fg/15' : 'bg-line text-subtle'}"
+    <div class="flex items-center gap-2">
+      <!-- Its own scroller, not the whole bar's: mixing overflow-x-auto with
+           the sort menu's absolutely-positioned popover would let this axis
+           clip the other one off the bottom. -->
+      <div
+        class="scrollbar-hide -mx-4 min-w-0 flex-1 overflow-x-auto px-4 sm:mx-0 sm:overflow-visible sm:px-0"
+      >
+        <div class="flex items-center gap-2 sm:flex-wrap">
+          {#each quickChips as chip (chip.label)}
+            <button
+              onclick={chip.onToggle}
+              aria-pressed={chip.active}
+              class="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-full px-3 text-[13px] transition-colors
+                     {chip.active
+                ? 'bg-brand font-semibold text-brand-fg'
+                : 'border border-line bg-surface font-medium text-muted hover:border-subtle'}"
             >
-              {activeFilters}
-            </span>
-          {/if}
-          <ChevronDown
-            size={13}
-            strokeWidth={2.25}
-            class="shrink-0 transition-transform {moreOpen ? 'rotate-180' : ''}"
-          />
-        </button>
+              {chip.label}
+              {#if chip.active}
+                <X size={12} strokeWidth={2.5} class="shrink-0" />
+              {/if}
+            </button>
+          {/each}
 
-        {#if activeFilters > 0}
           <button
-            onclick={clearFilters}
-            class="shrink-0 text-[13px] font-semibold text-brand hover:underline"
+            onclick={() => (moreOpen = !moreOpen)}
+            aria-expanded={moreOpen}
+            aria-label="Filters"
+            class="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-full border px-3 text-[13px] font-semibold transition-colors
+                   {moreOpen
+              ? 'border-brand bg-brand-soft text-brand-soft-fg'
+              : 'border-line bg-surface text-muted hover:border-subtle'}"
           >
-            Clear all
+            <Filter size={13} strokeWidth={2.25} class="shrink-0" />
+            Filters
+            {#if activeFilters > 0}
+              <span
+                class="rounded-full px-1.5 text-[11px] font-bold tabular-nums
+                       {moreOpen ? 'bg-brand-soft-fg/15' : 'bg-line text-subtle'}"
+              >
+                {activeFilters}
+              </span>
+            {/if}
+            <ChevronDown
+              size={13}
+              strokeWidth={2.25}
+              class="shrink-0 transition-transform {moreOpen ? 'rotate-180' : ''}"
+            />
           </button>
-        {/if}
 
-        <label class="ml-auto hidden shrink-0 items-center gap-1.5 text-[13px] font-medium text-muted sm:flex">
-          <SlidersHorizontal size={14} class="shrink-0 text-subtle" />
-          <span class="sr-only">Sort by</span>
-          <select
-            bind:value={sort}
-            class="cursor-pointer appearance-none bg-transparent font-medium outline-none"
-          >
-            {#each HUB_SORTS as option (option)}
-              <option value={option}>{option === "Relevance" ? "Best match" : option}</option>
-            {/each}
-          </select>
-        </label>
+          {#if activeFilters > 0}
+            <button
+              onclick={clearFilters}
+              class="shrink-0 text-[13px] font-semibold text-brand hover:underline"
+            >
+              Clear all
+            </button>
+          {/if}
+        </div>
       </div>
+
+      <SortMenu bind:value={sort} />
     </div>
 
     {#if moreOpen}

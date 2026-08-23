@@ -9,7 +9,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::models::{DetailStatus, Item, ItemType, JobDetail};
 
-const SCHEMA_VERSION: i32 = 6;
+const SCHEMA_VERSION: i32 = 7;
 
 pub fn open(path: &std::path::Path) -> Result<Connection> {
     if let Some(parent) = path.parent() {
@@ -56,6 +56,19 @@ fn migrate(conn: &Connection) -> Result<()> {
             -- because the enrichment pass runs off the database, not off the
             -- Vec the scrape happened to return.
             simplify_id     TEXT,
+            -- The employer, kept out of `title` so it can be filtered,
+            -- grouped and sorted on. Nullable: news and events have none.
+            company         TEXT,
+            -- Scrape-time facts. The enrichment pass discovers these too, and
+            -- stores its answers in `job_details`; `attach_details` prefers
+            -- the fetched value and falls back to whichever of these the list
+            -- endpoint happened to carry.
+            closes_at       TEXT,
+            salary_min      REAL,
+            salary_max      REAL,
+            salary_currency TEXT,
+            salary_period   TEXT,
+            seniority       TEXT,
             -- URL is the listing's real identity. The old backend declared
             -- uniqueness on (title, source_platform), but it never actually
             -- wrote to the database, so the flaw never surfaced: Pitt CSC
@@ -66,6 +79,8 @@ fn migrate(conn: &Connection) -> Result<()> {
 
         CREATE INDEX IF NOT EXISTS idx_items_type ON items (item_type);
         CREATE INDEX IF NOT EXISTS idx_items_timestamp ON items (timestamp DESC);
+        CREATE INDEX IF NOT EXISTS idx_items_closes ON items (closes_at);
+        CREATE INDEX IF NOT EXISTS idx_items_company ON items (company);
 
         CREATE TABLE IF NOT EXISTS settings (
             key   TEXT PRIMARY KEY,
@@ -128,7 +143,41 @@ fn migrate(conn: &Connection) -> Result<()> {
            AND length(description) > 400;
         "#,
     )?;
+
+    // `job_details` predates these columns and must survive the bump with its
+    // rows intact — it represents real network work. So they are added in
+    // place rather than by rebuilding the table. An existing `ok` row simply
+    // reads back with no deadline, which is the honest answer: the fetch that
+    // produced it was not looking for one.
+    for (column, decl) in [
+        ("closes_at", "TEXT"),
+        ("salary_min", "REAL"),
+        ("salary_max", "REAL"),
+        ("salary_currency", "TEXT"),
+        ("salary_period", "TEXT"),
+    ] {
+        add_column_if_missing(conn, "job_details", column, decl)?;
+    }
+
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+    Ok(())
+}
+
+/// Adds a column to a table that must not be dropped, skipping it when the
+/// column is already there. SQLite has no `ADD COLUMN IF NOT EXISTS`, and
+/// `PRAGMA table_info` is the documented way to ask.
+fn add_column_if_missing(conn: &Connection, table: &str, column: &str, decl: &str) -> Result<()> {
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+    let existing: HashSet<String> = stmt
+        .query_map([], |row| row.get::<_, String>(1))?
+        .flatten()
+        .collect();
+    if existing.contains(column) {
+        return Ok(());
+    }
+    // Table and column names here are literals from the caller above, never
+    // user input.
+    conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {decl}"))?;
     Ok(())
 }
 
@@ -142,8 +191,10 @@ pub fn save_items(conn: &mut Connection, items: &[Item]) -> Result<usize> {
             INSERT INTO items
                 (title, source_platform, item_type, url, content_text,
                  timestamp, discipline, relevance_score, location, location_tags,
-                 simplify_id)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+                 simplify_id, company, closes_at, salary_min, salary_max,
+                 salary_currency, salary_period, seniority)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
+                    ?15, ?16, ?17, ?18)
             ON CONFLICT (url) DO UPDATE SET
                 title           = excluded.title,
                 source_platform = excluded.source_platform,
@@ -156,7 +207,18 @@ pub fn save_items(conn: &mut Connection, items: &[Item]) -> Result<usize> {
                 location_tags   = excluded.location_tags,
                 -- Only ever gained, never cleared: one source knowing the id
                 -- and another not should not lose it on the second write.
-                simplify_id     = COALESCE(excluded.simplify_id, items.simplify_id)
+                simplify_id     = COALESCE(excluded.simplify_id, items.simplify_id),
+                -- Same rule, same reason: two sources can carry the same
+                -- posting and only one of them publish a deadline or a pay
+                -- range. Whichever refresh writes second must not erase what
+                -- the first one learned.
+                company         = COALESCE(excluded.company, items.company),
+                closes_at       = COALESCE(excluded.closes_at, items.closes_at),
+                salary_min      = COALESCE(excluded.salary_min, items.salary_min),
+                salary_max      = COALESCE(excluded.salary_max, items.salary_max),
+                salary_currency = COALESCE(excluded.salary_currency, items.salary_currency),
+                salary_period   = COALESCE(excluded.salary_period, items.salary_period),
+                seniority       = COALESCE(excluded.seniority, items.seniority)
             "#,
         )?;
 
@@ -173,6 +235,13 @@ pub fn save_items(conn: &mut Connection, items: &[Item]) -> Result<usize> {
                 item.location,
                 serde_json::to_string(&item.location_tags)?,
                 item.simplify_id,
+                item.company,
+                item.closes_at.map(|d| d.to_rfc3339()),
+                item.salary_min,
+                item.salary_max,
+                item.salary_currency,
+                item.salary_period,
+                item.seniority,
             ])?;
         }
     }
@@ -184,7 +253,8 @@ pub fn load_items(conn: &Connection) -> Result<Vec<Item>> {
     let mut stmt = conn.prepare(
         "SELECT title, source_platform, item_type, url, content_text,
                 timestamp, discipline, relevance_score, location, location_tags,
-                simplify_id
+                simplify_id, company, closes_at, salary_min, salary_max,
+                salary_currency, salary_period, seniority
          FROM items ORDER BY timestamp DESC",
     )?;
 
@@ -205,6 +275,15 @@ pub fn load_items(conn: &Connection) -> Result<Vec<Item>> {
             location: row.get(8)?,
             location_tags: serde_json::from_str(&tags).unwrap_or_default(),
             simplify_id: row.get(10)?,
+            company: row.get(11)?,
+            closes_at: row
+                .get::<_, Option<String>>(12)?
+                .and_then(|s| parse_rfc3339(&s)),
+            salary_min: row.get(13)?,
+            salary_max: row.get(14)?,
+            salary_currency: row.get(15)?,
+            salary_period: row.get(16)?,
+            seniority: row.get(17)?,
             // Derived on read: `annotate` fills the saved/seen flags from
             // `item_state`, `attach_details` fills the fetched posting from
             // `job_details`, and `rank::personalize` fills the interest and
@@ -212,6 +291,8 @@ pub fn load_items(conn: &Connection) -> Result<Vec<Item>> {
             matched_interests: Vec::new(),
             required_skills: Vec::new(),
             matched_skills: Vec::new(),
+            company_tier: None,
+            score_breakdown: Vec::new(),
             description: None,
             requirements: None,
             responsibilities: None,
@@ -223,6 +304,14 @@ pub fn load_items(conn: &Connection) -> Result<Vec<Item>> {
     })?;
 
     Ok(rows.filter_map(Result::ok).collect())
+}
+
+/// Reads a stored RFC 3339 timestamp, discarding one we cannot parse rather
+/// than dropping the whole row over it.
+fn parse_rfc3339(s: &str) -> Option<DateTime<Utc>> {
+    DateTime::parse_from_rfc3339(s)
+        .ok()
+        .map(|d| d.with_timezone(&Utc))
 }
 
 /// Drops entries older than `days` so the local store doesn't grow forever.
@@ -285,7 +374,8 @@ pub fn annotate(items: &mut [Item], states: &ItemStates) {
 pub fn load_details(conn: &Connection) -> Result<HashMap<String, JobDetail>> {
     let mut stmt = conn.prepare(
         "SELECT url, description, requirements, responsibilities, perks,
-                tagged_skills, status
+                tagged_skills, status, closes_at, salary_min, salary_max,
+                salary_currency, salary_period
          FROM job_details",
     )?;
 
@@ -300,6 +390,13 @@ pub fn load_details(conn: &Connection) -> Result<HashMap<String, JobDetail>> {
                 responsibilities: row.get(3)?,
                 perks: row.get(4)?,
                 tagged_skills: serde_json::from_str(&tagged).unwrap_or_default(),
+                closes_at: row
+                    .get::<_, Option<String>>(7)?
+                    .and_then(|s| parse_rfc3339(&s)),
+                salary_min: row.get(8)?,
+                salary_max: row.get(9)?,
+                salary_currency: row.get(10)?,
+                salary_period: row.get(11)?,
                 status: DetailStatus::from_label(&status),
             },
         ))
@@ -320,6 +417,18 @@ pub fn attach_details(items: &mut [Item], details: &HashMap<String, JobDetail>) 
         item.responsibilities = detail.responsibilities.clone();
         item.perks = detail.perks.clone();
         item.tagged_skills = detail.tagged_skills.clone();
+        // The posting's own page outranks whatever the list endpoint said —
+        // but only where it actually found something. A fetch that failed
+        // must not blank a deadline the scrape already knew.
+        if detail.closes_at.is_some() {
+            item.closes_at = detail.closes_at;
+        }
+        if detail.salary_min.is_some() || detail.salary_max.is_some() {
+            item.salary_min = detail.salary_min;
+            item.salary_max = detail.salary_max;
+            item.salary_currency = detail.salary_currency.clone();
+            item.salary_period = detail.salary_period.clone();
+        }
     }
 }
 
@@ -333,8 +442,9 @@ pub fn save_details(conn: &mut Connection, rows: &[(String, JobDetail)]) -> Resu
             r#"
             INSERT INTO job_details
                 (url, description, requirements, responsibilities, perks,
-                 tagged_skills, status, fetched_at)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                 tagged_skills, status, fetched_at, closes_at, salary_min,
+                 salary_max, salary_currency, salary_period)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
             ON CONFLICT (url) DO UPDATE SET
                 description      = excluded.description,
                 requirements     = excluded.requirements,
@@ -342,7 +452,12 @@ pub fn save_details(conn: &mut Connection, rows: &[(String, JobDetail)]) -> Resu
                 perks            = excluded.perks,
                 tagged_skills    = excluded.tagged_skills,
                 status           = excluded.status,
-                fetched_at       = excluded.fetched_at
+                fetched_at       = excluded.fetched_at,
+                closes_at        = excluded.closes_at,
+                salary_min       = excluded.salary_min,
+                salary_max       = excluded.salary_max,
+                salary_currency  = excluded.salary_currency,
+                salary_period    = excluded.salary_period
             "#,
         )?;
         for (url, detail) in rows {
@@ -355,6 +470,11 @@ pub fn save_details(conn: &mut Connection, rows: &[(String, JobDetail)]) -> Resu
                 serde_json::to_string(&detail.tagged_skills)?,
                 detail.status.as_str(),
                 now,
+                detail.closes_at.map(|d| d.to_rfc3339()),
+                detail.salary_min,
+                detail.salary_max,
+                detail.salary_currency,
+                detail.salary_period,
             ])?;
         }
     }
@@ -362,25 +482,15 @@ pub fn save_details(conn: &mut Connection, rows: &[(String, JobDetail)]) -> Resu
     Ok(rows.len())
 }
 
-/// The enrichment work queue: opportunities we have never tried to fetch.
+/// Every posting we have already tried to fetch, successfully or not.
 ///
-/// Returns the URL and the simplify.jobs id when the source knew one, since
-/// that decides which handler can serve the posting. Newest first, so a
-/// backlog drains in the order the user is most likely to be reading.
-pub fn urls_needing_details(
-    conn: &Connection,
-    limit: usize,
-) -> Result<Vec<(String, Option<String>)>> {
-    let mut stmt = conn.prepare(
-        "SELECT url, simplify_id FROM items
-         WHERE item_type IN ('Job', 'Internship')
-           AND url NOT IN (SELECT url FROM job_details)
-         ORDER BY timestamp DESC
-         LIMIT ?1",
-    )?;
-    let rows = stmt.query_map(params![limit as i64], |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
-    })?;
+/// This is the "already attempted" ledger that makes enrichment incremental.
+/// It is returned as a set rather than used as a `NOT IN` subquery because the
+/// work queue is now ordered by relevance, which is computed in memory — SQL
+/// cannot see a company's tier or the reader's skills.
+pub fn urls_with_details(conn: &Connection) -> Result<HashSet<String>> {
+    let mut stmt = conn.prepare("SELECT url FROM job_details")?;
+    let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
     Ok(rows.flatten().collect())
 }
 

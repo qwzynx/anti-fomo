@@ -7,7 +7,7 @@
 
 use std::collections::BTreeMap;
 
-use anti_fomo_lib::rank::{personalize, DEFAULT_MAJOR};
+use anti_fomo_lib::rank::{personalize, Profile, DEFAULT_MAJOR};
 use anti_fomo_lib::scrapers;
 
 #[tokio::main]
@@ -64,7 +64,11 @@ async fn main() {
 
     // A feed where one source owns the whole first page is a ranking failure
     // even when every scraper reports healthy, so check the head composition.
-    let ranked = personalize(items, DEFAULT_MAJOR, &[], &[]);
+    let profile = Profile {
+        major: DEFAULT_MAJOR.to_string(),
+        ..Default::default()
+    };
+    let ranked = personalize(items, &profile);
     let head: Vec<&str> = ranked
         .iter()
         .take(20)

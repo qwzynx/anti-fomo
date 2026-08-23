@@ -34,6 +34,117 @@ export function splitTitle(item: ScrapedItem): { primary: string; secondary: str
   return { primary: item.title, secondary: null };
 }
 
+/**
+ * The employer a role sorts and groups by. Sources that know it say so;
+ * everything else falls back to the same "at Company" split the title
+ * already renders, rather than a second, divergent guess.
+ */
+export function companyOf(item: ScrapedItem): string | null {
+  return item.company?.trim() || splitTitle(item).secondary;
+}
+
+// --- pay, mirrored from `pay.rs` ------------------------------------------
+// Kept in TS rather than round-tripped through a command because it is pure
+// arithmetic over fields the item already carries. Any change here needs the
+// matching change in `pay::annual_equivalent` / `pay::format`, the same way
+// `skillMatch` above tracks `MIN_SKILLS_TO_SCORE`.
+
+const HOURS_PER_YEAR = 2080;
+const WEEKS_PER_YEAR = 52;
+const MONTHS_PER_YEAR = 12;
+const DAYS_PER_YEAR = 260;
+const MIN_ANNUAL = 10_000;
+const MAX_ANNUAL = 2_000_000;
+
+/**
+ * Normalises a posting's pay to what it would earn over a year, so an hourly
+ * co-op rate and a salaried new-grad offer sort against each other honestly.
+ * `null` for anything that did not disclose a figure — never a guess.
+ */
+export function payAnnualEquivalent(item: ScrapedItem): number | null {
+  const { salary_min, salary_max, salary_period } = item;
+  if (salary_min == null && salary_max == null) return null;
+  const value =
+    salary_min != null && salary_max != null
+      ? (salary_min + salary_max) / 2
+      : (salary_min ?? salary_max)!;
+  const multiplier =
+    salary_period === "hour"
+      ? HOURS_PER_YEAR
+      : salary_period === "day"
+        ? DAYS_PER_YEAR
+        : salary_period === "week"
+          ? WEEKS_PER_YEAR
+          : salary_period === "month"
+            ? MONTHS_PER_YEAR
+            : salary_period === "year"
+              ? 1
+              : value < 1_000
+                ? HOURS_PER_YEAR
+                : 1;
+  const annual = value * multiplier;
+  return annual >= MIN_ANNUAL && annual <= MAX_ANNUAL ? annual : null;
+}
+
+/** How a posting's pay reads on a card. `null` when nothing was disclosed. */
+export function formatPay(item: ScrapedItem): string | null {
+  const { salary_min, salary_max, salary_currency, salary_period } = item;
+  if (salary_min == null && salary_max == null) return null;
+
+  const unit =
+    salary_period === "hour"
+      ? "/hr"
+      : salary_period === "day"
+        ? "/day"
+        : salary_period === "week"
+          ? "/wk"
+          : salary_period === "month"
+            ? "/mo"
+            : salary_period === "year"
+              ? "/yr"
+              : "";
+  const money = (v: number) =>
+    v >= 10_000 ? `${Math.round(v / 1000)}k` : Number.isInteger(v) ? `${v}` : v.toFixed(2);
+  const currency = salary_currency ?? "USD";
+  const symbol = currency === "GBP" ? "£" : currency === "EUR" ? "€" : "$";
+
+  const body =
+    salary_min != null && salary_max != null && Math.abs(salary_max - salary_min) > 0.001
+      ? `${symbol}${money(salary_min)}–${symbol}${money(salary_max)}`
+      : `${symbol}${money(salary_min ?? salary_max!)}`;
+  const suffix = currency === "CAD" ? " CAD" : "";
+  return `${body}${unit}${suffix}`;
+}
+
+// --- deadlines --------------------------------------------------------------
+
+/** Whole days until a posting's own deadline. `null` when it published none. */
+export function closesInDays(item: ScrapedItem): number | null {
+  if (!item.closes_at) return null;
+  return Math.round((new Date(item.closes_at).getTime() - Date.now()) / 86_400_000);
+}
+
+/**
+ * Short deadline label for a card or the detail pane. Distinct from the event
+ * countdown in `saved` — a role past its deadline is still worth reading, so
+ * this says "Closed" rather than "Already passed".
+ */
+export function closesLabel(item: ScrapedItem): string | null {
+  const days = closesInDays(item);
+  if (days === null) return null;
+  if (days < 0) return "Closed";
+  if (days === 0) return "Closes today";
+  if (days === 1) return "Closes tomorrow";
+  if (days <= 21) return `Closes in ${days} days`;
+  return `Closes ${new Date(item.closes_at!).toLocaleDateString(undefined, { month: "short", day: "numeric" })}`;
+}
+
+/** Close enough to call out with urgency styling rather than a plain label. */
+export function closesSoon(item: ScrapedItem): boolean {
+  const days = closesInDays(item);
+  return days !== null && days >= 0 && days <= 3;
+}
+
 /** Extracts short attribute tags from an item's metadata. */
 export function tagsFor(item: ScrapedItem): string[] {
   const tags: string[] = [];

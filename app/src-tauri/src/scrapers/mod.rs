@@ -8,13 +8,16 @@ use async_trait::async_trait;
 use std::collections::HashSet;
 use std::time::Duration;
 
+use crate::companies;
 use crate::location::normalize_location;
-use crate::models::Item;
-use crate::rank::classify_item;
+use crate::models::{company_from_title, Item};
+use crate::rank::{classify_item, classify_seniority};
 
+pub mod ats;
 pub mod daily_dev;
 pub mod details;
 pub mod devpost;
+pub mod employers;
 pub mod github_internships;
 pub mod hacker_news;
 pub mod hn_top_links;
@@ -56,11 +59,18 @@ pub fn all_scrapers() -> Vec<Box<dyn Scraper>> {
         Box::new(rss::LASSONDE),
         Box::new(tldr::TldrTech),
         Box::new(daily_dev::DailyDev),
-        // Opportunities
+        // Opportunities — aggregators first, then the employers' own boards.
+        // The aggregators decide what to carry, which is why the direct
+        // boards exist: a CIBC co-op posting is on cibc.wd3 and nowhere else.
         Box::new(github_internships::PITT_CSC),
         Box::new(github_internships::SIMPLIFY),
         Box::new(github_internships::NEW_GRAD),
         Box::new(job_bank::JOB_BANK),
+        Box::new(ats::workday::WorkdayBoards),
+        Box::new(ats::greenhouse::GreenhouseBoards),
+        Box::new(ats::lever::LeverBoards),
+        Box::new(ats::ashby::AshbyBoards),
+        Box::new(ats::smartrecruiters::SmartRecruitersBoards),
         // Events
         Box::new(luma::Luma),
         Box::new(devpost::Devpost),
@@ -105,6 +115,17 @@ pub async fn fetch_all() -> Vec<Item> {
         }
         if item.discipline.is_none() {
             item.discipline = Some(classify_item(&item));
+        }
+        // Backfilled here rather than in each scraper so a source that knows
+        // its employer and one that only has "{role} at {company}" in a title
+        // both end up with the same canonical name — otherwise the employer
+        // filter shows "Shopify" and "Shopify Inc." as two companies.
+        if item.company.is_none() {
+            item.company = company_from_title(&item.title);
+        }
+        item.company = item.company.as_deref().map(companies::canonical);
+        if item.seniority.is_none() {
+            item.seniority = classify_seniority(&item.title);
         }
         item.location_tags = normalize_location(item.location.as_deref());
         deduped.push(item);

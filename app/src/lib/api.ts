@@ -13,12 +13,32 @@ export interface ScrapedItem {
   location_tags?: string[];
   /** The simplify.jobs posting id, when the source supplied one. */
   simplify_id?: string | null;
+  /** The employer, as its own field rather than a fragment of `title`. */
+  company?: string | null;
+  /**
+   * When applications close, RFC 3339. Most postings publish no deadline, and
+   * `null` means exactly that — unknown, not "closes today". Every sort over
+   * this puts unknown last rather than coercing it to a date.
+   */
+  closes_at?: string | null;
+  /** Published compensation only. Nothing here is ever estimated. */
+  salary_min?: number | null;
+  salary_max?: number | null;
+  salary_currency?: string | null;
+  /** "year" | "month" | "week" | "day" | "hour". */
+  salary_period?: string | null;
+  /** Intern | New grad | Junior | Mid | Senior | Lead, read off the title. */
+  seniority?: string | null;
   /** Which of the user's interest tags fired, so a card can explain its rank. */
   matched_interests?: string[];
   /** Catalog skills this posting asks for. Opportunities only. */
   required_skills?: string[];
   /** The subset of `required_skills` the user has declared. */
   matched_skills?: string[];
+  /** 1-4, strongest first, with the user's per-company overrides applied. */
+  company_tier?: number | null;
+  /** Every scoring term that fired, for the "why this ranks here" panel. */
+  score_breakdown?: ScoreTerm[];
   /**
    * The posting as the employer wrote it, once the enrichment pass has fetched
    * it. Absent where it could not, which is what makes the detail pane explain
@@ -33,6 +53,12 @@ export interface ScrapedItem {
   tagged_skills?: string[];
   saved?: boolean;
   seen?: boolean;
+}
+
+/** One term of the relevance score. `label` is display text, not an id. */
+export interface ScoreTerm {
+  label: string;
+  points: number;
 }
 
 /** One category of the Rust-owned skill catalog. */

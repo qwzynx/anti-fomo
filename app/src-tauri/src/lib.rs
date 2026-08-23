@@ -1,7 +1,9 @@
-pub mod commands;
+pub mod companies;
+mod commands;
 pub mod db;
 pub mod location;
 pub mod models;
+pub mod pay;
 pub mod rank;
 pub mod scrapers;
 pub mod skills;

@@ -143,6 +143,8 @@ const REQUIREMENT: &[&str] = &[
     "what you'll need",
     "what you will need",
     "what you’ll need",
+    "what we require",
+    "what we look for",
     "what we're looking for",
     "what we are looking for",
     "what we’re looking for",

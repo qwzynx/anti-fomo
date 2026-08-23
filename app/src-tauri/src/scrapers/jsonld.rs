@@ -16,13 +16,18 @@
 //! reads a field a machine wrote for machines. A page without the tag yields
 //! nothing rather than yielding its navigation menu.
 
+use chrono::{DateTime, NaiveDate, Utc};
 use scraper::{Html, Selector};
 use serde_json::Value;
 use std::sync::LazyLock;
 
+use crate::pay::{self, Pay};
+
 /// The fields of `JobPosting` worth having. All optional — most sites fill
 /// `description` and nothing else, and a few fill the rest properly.
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
+///
+/// Not `Eq`: `baseSalary` carries floats.
+#[derive(Debug, Default, Clone, PartialEq)]
 pub struct JobPostingLd {
     /// HTML, near enough always: the spec says text, and every ATS puts markup
     /// in it anyway.
@@ -34,15 +39,36 @@ pub struct JobPostingLd {
     pub benefits: Option<String>,
     /// `skills`, which a handful of sites fill with a real list.
     pub skills: Vec<String>,
+    /// `hiringOrganization.name` — the employer, stated rather than parsed out
+    /// of a title.
+    pub company: Option<String>,
+    /// `validThrough`, the application deadline. This one field is why the
+    /// deadline coverage extends past the handful of ATSs with a dedicated
+    /// handler: every page the `Page` handler already reads can carry it.
+    pub valid_through: Option<DateTime<Utc>>,
+    /// `baseSalary`, as a structured range rather than a sentence.
+    pub salary: Option<Pay>,
 }
 
 impl JobPostingLd {
+    /// True when the block told us nothing. Deliberately ignores the facts
+    /// below the text fields: a page carrying only a `validThrough` has still
+    /// not said what the job is, so it must not end the handler chain — but
+    /// `has_facts` on the resulting `JobDetail` keeps the date.
     pub fn is_empty(&self) -> bool {
         self.description.is_none()
             && self.responsibilities.is_none()
             && self.qualifications.is_none()
             && self.benefits.is_none()
             && self.skills.is_empty()
+    }
+
+    /// True when nothing at all came back, text or facts.
+    pub fn is_blank(&self) -> bool {
+        self.is_empty()
+            && self.company.is_none()
+            && self.valid_through.is_none()
+            && self.salary.is_none()
     }
 }
 
@@ -59,7 +85,7 @@ pub fn find(html: &str) -> Option<JobPostingLd> {
         };
         if let Some(node) = find_posting(&value) {
             let posting = read(node);
-            if !posting.is_empty() {
+            if !posting.is_blank() {
                 return Some(posting);
             }
         }
@@ -111,6 +137,57 @@ fn read(node: &Value) -> JobPostingLd {
             text_of(node.get("benefits")),
         ]),
         skills: list_of(node.get("skills")),
+        company: node
+            .get("hiringOrganization")
+            .and_then(|o| text_of(o.get("name")).or_else(|| text_of(Some(o))))
+            .filter(|n| !n.trim().is_empty()),
+        valid_through: text_of(node.get("validThrough")).as_deref().and_then(parse_date),
+        salary: node.get("baseSalary").and_then(base_salary),
+    }
+}
+
+/// schema.org dates come as a full RFC 3339 timestamp or a bare `YYYY-MM-DD`,
+/// and both are common. A bare date is read as end-of-day UTC: a deadline of
+/// "2026-09-18" means the 18th is still open.
+fn parse_date(raw: &str) -> Option<DateTime<Utc>> {
+    let raw = raw.trim();
+    if let Ok(dt) = DateTime::parse_from_rfc3339(raw) {
+        return Some(dt.with_timezone(&Utc));
+    }
+    NaiveDate::parse_from_str(raw, "%Y-%m-%d")
+        .ok()?
+        .and_hms_opt(23, 59, 59)
+        .map(|naive| naive.and_utc())
+}
+
+/// `baseSalary` is a `MonetaryAmount` whose `value` is either a
+/// `QuantitativeValue` with `minValue`/`maxValue`, or a bare number.
+fn base_salary(node: &Value) -> Option<Pay> {
+    let currency = node
+        .get("currency")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    let value = node.get("value")?;
+
+    let (min, max, unit) = match value {
+        Value::Object(map) => (
+            map.get("minValue").and_then(number),
+            map.get("maxValue").and_then(number),
+            map.get("unitText").and_then(|v| v.as_str()).map(str::to_string),
+        ),
+        other => (number(other), None, None),
+    };
+    // A single figure with no range still reads as a min; `from_parts` decides
+    // whether it normalises to a believable wage.
+    let min = min.or_else(|| value.get("value").and_then(number));
+    pay::from_parts(min, max, currency, unit)
+}
+
+fn number(value: &Value) -> Option<f64> {
+    match value {
+        Value::Number(n) => n.as_f64(),
+        Value::String(s) => s.replace(',', "").trim().parse().ok(),
+        _ => None,
     }
 }
 

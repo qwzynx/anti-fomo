@@ -61,6 +61,26 @@ fn strip_prize(raw: &str) -> String {
 /// `"Aug 04 - 31, 2026"` omits the repeated month on the right. The deadline is
 /// what matters for ranking — the recency term measures distance from now, so a
 /// hackathon closing this week outranks one closing in three months.
+/// The left half of the same range — when submissions opened, which is the
+/// date the recency term wants. A range we cannot read leaves the caller to
+/// fall back rather than guessing.
+fn parse_open(range: &str) -> Option<DateTime<Utc>> {
+    let (left, _) = range.split_once(" - ")?;
+    let left = left.trim();
+    // "Aug 04" has no year of its own — it is on the right half.
+    let year = range.rsplit_once(", ").map(|(_, y)| y.trim().to_string())?;
+    let with_year = if left.contains(',') {
+        left.to_string()
+    } else {
+        format!("{left}, {year}")
+    };
+    NaiveDate::parse_from_str(&with_year, "%b %d, %Y")
+        .or_else(|_| NaiveDate::parse_from_str(&with_year, "%B %d, %Y"))
+        .ok()?
+        .and_hms_opt(0, 0, 0)
+        .map(|naive| naive.and_utc())
+}
+
 fn parse_deadline(range: &str) -> Option<DateTime<Utc>> {
     let (left, right) = range.split_once(" - ")?;
     let right = right.trim();
@@ -157,16 +177,20 @@ impl Devpost {
                     parts.push(themes.join(", "));
                 }
 
-                let ts = h
-                    .submission_period_dates
-                    .as_deref()
-                    .and_then(parse_deadline)
-                    .unwrap_or_else(Utc::now);
+                // The close date is a deadline, not a posted date. It used
+                // to be written into `timestamp`, which conflated two
+                // different facts on the one field every other source uses
+                // for "when this appeared" — and left the app with no way to
+                // say when a hackathon actually closes. It now goes where it
+                // belongs, and the recency term reads the opening date.
+                let closes_at = h.submission_period_dates.as_deref().and_then(parse_deadline);
+                let opens_at = h.submission_period_dates.as_deref().and_then(parse_open);
 
                 Some(
                     Item::new(title, self.source_name(), ItemType::Event, url)
                         .with_content(parts.join(" · "))
-                        .with_timestamp(ts)
+                        .with_timestamp(opens_at.unwrap_or_else(Utc::now))
+                        .with_closes_at(closes_at)
                         .with_location(Some(where_)),
                 )
             })

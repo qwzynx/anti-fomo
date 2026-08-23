@@ -2,9 +2,22 @@
   import { openUrl } from "@tauri-apps/plugin-opener";
   import { logoFor, timeAgo, type ScrapedItem } from "$lib/api";
   import { feed } from "$lib/feed.svelte";
-  import { ArrowUpRight, Bookmark, BookmarkCheck, MapPin, Sparkles, X, iconForType } from "$lib/icons";
   import {
+    ArrowUpRight,
+    Banknote,
+    Bookmark,
+    BookmarkCheck,
+    Hourglass,
+    MapPin,
+    Sparkles,
+    X,
+    iconForType,
+  } from "$lib/icons";
+  import {
+    closesLabel,
+    closesSoon,
     ctaLabel,
+    formatPay,
     hasScrapedPosting,
     sourceBlurb,
     splitTitle,
@@ -54,6 +67,10 @@
       .filter(Boolean)
       .join(" · "),
   );
+
+  const deadline = $derived(closesLabel(item));
+  const urgent = $derived(closesSoon(item));
+  const pay = $derived(formatPay(item));
 
   // Discipline, attribute tags and source, deduped.
   const chips = $derived([
@@ -151,6 +168,35 @@
          timestamp at a reader who wanted "3 hours ago". -->
     <p class="text-sm text-muted">{meta}</p>
     <p class="mb-4 text-xs text-subtle">{sourceBlurb(item)}</p>
+
+    {#if deadline || pay}
+      <div class="mb-4 flex flex-wrap gap-2">
+        {#if deadline}
+          <div class="min-w-[140px] flex-1 rounded-xl p-3 {urgent ? 'bg-danger-soft' : 'bg-line-soft'}">
+            <p
+              class="flex items-center gap-1.5 text-[11px] font-bold tracking-wide uppercase {urgent
+                ? 'text-danger'
+                : 'text-subtle'}"
+            >
+              <Hourglass size={12} />
+              Deadline
+            </p>
+            <p class="mt-1 text-sm font-semibold {urgent ? 'text-danger' : 'text-foreground'}">
+              {deadline}
+            </p>
+          </div>
+        {/if}
+        {#if pay}
+          <div class="min-w-[140px] flex-1 rounded-xl bg-line-soft p-3">
+            <p class="flex items-center gap-1.5 text-[11px] font-bold tracking-wide text-subtle uppercase">
+              <Banknote size={12} />
+              Compensation
+            </p>
+            <p class="mt-1 text-sm font-semibold text-foreground">{pay}</p>
+          </div>
+        {/if}
+      </div>
+    {/if}
 
     {#if item.matched_interests && item.matched_interests.length > 0}
       <div class="mb-4 flex flex-wrap items-center gap-1.5">

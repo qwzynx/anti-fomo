@@ -22,13 +22,17 @@ const REFRESH_TTL_SECONDS: i64 = 600;
 const RETENTION_DAYS: i64 = 60;
 /// Descriptions fetched per refresh. The first handful of refreshes drain the
 /// backlog of a fresh cache; steady state is the new postings of the day,
-/// which is well under this.
-const DETAIL_BUDGET: usize = 200;
+/// which is well under this. Raised from 200 when the direct employer boards
+/// landed: at ~200 a refresh, a cache of several thousand opportunities takes
+/// dozens of refreshes to cover, and the reader would be looking at
+/// description-less rows for days. Measured at 56 ms a posting, 600 at 12-wide
+/// is about three seconds.
+const DETAIL_BUDGET: usize = 600;
 /// Simultaneous detail requests. Measured against simplify.jobs: 10 concurrent
 /// finish in 0.84s where serial takes 15.7s, with no rate limiting seen. Kept
 /// modest because the chain now spreads across a dozen hosts, one of which
 /// (Job Bank) is a government server the list scraper already treats politely.
-const DETAIL_CONCURRENCY: usize = 8;
+const DETAIL_CONCURRENCY: usize = 12;
 /// How many rows to consider per refresh before routing. Larger than the
 /// budget because deciding a URL is unservable is free, and clearing those out
 /// is what keeps a source we cannot fetch from blocking the queue.
@@ -38,6 +42,16 @@ const KEY_MAJOR: &str = "major";
 const KEY_LAST_REFRESH: &str = "last_refresh";
 const KEY_INTERESTS: &str = "interests";
 const KEY_SKILLS: &str = "skills";
+/// The ranking weights, as a JSON `rank::Weights`. Absent until the user has
+/// moved a slider, and any missing field falls back to the shipped default —
+/// `Weights` is `#[serde(default)]` so an older value survives a new term.
+const KEY_WEIGHTS: &str = "weights";
+/// Per-company tier overrides, as a JSON object of canonical name to tier.
+const KEY_COMPANY_TIERS: &str = "company_tiers";
+/// A `location_tags` value the reader wants to favour, e.g. "Toronto".
+const KEY_HOME_REGION: &str = "home_region";
+/// Which seniority bands the reader is looking for, as a JSON array.
+const KEY_TARGET_SENIORITY: &str = "target_seniority";
 
 type CmdResult<T> = Result<T, String>;
 
@@ -89,12 +103,40 @@ fn current_interests(state: &AppState) -> Vec<String> {
 /// a JSON array whose absence or corruption simply means "no skills", which
 /// zeroes the coverage term rather than failing a read.
 fn current_skills(state: &AppState) -> Vec<String> {
+    json_setting(state, KEY_SKILLS)
+}
+
+/// Reads one JSON-valued setting, degrading to the type's default rather than
+/// failing the whole read. A corrupt `weights` value zeroes nothing — it falls
+/// back to the shipped defaults.
+fn json_setting<T: serde::de::DeserializeOwned + Default>(state: &AppState, key: &str) -> T {
     let conn = state.db.lock().unwrap();
-    db::get_setting(&conn, KEY_SKILLS)
+    db::get_setting(&conn, key)
         .ok()
         .flatten()
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or_default()
+}
+
+/// Everything the scorer needs about the reader, read in one place so no
+/// caller can rank against half a profile.
+fn current_profile(state: &AppState, major: Option<String>) -> rank::Profile {
+    let home_region = {
+        let conn = state.db.lock().unwrap();
+        db::get_setting(&conn, KEY_HOME_REGION)
+            .ok()
+            .flatten()
+            .filter(|s| !s.trim().is_empty())
+    };
+    rank::Profile {
+        major: major.unwrap_or_else(|| current_major(state)),
+        interests: current_interests(state),
+        skills: current_skills(state),
+        weights: json_setting(state, KEY_WEIGHTS),
+        company_tiers: json_setting(state, KEY_COMPANY_TIERS),
+        home_region,
+        target_seniority: json_setting(state, KEY_TARGET_SENIORITY),
+    }
 }
 
 fn last_refresh(state: &AppState) -> Option<DateTime<Utc>> {
@@ -134,10 +176,8 @@ fn visible_items(state: &AppState) -> CmdResult<Vec<Item>> {
 /// Ranked feed, capped like the old `/api/feed`.
 #[tauri::command]
 pub fn get_feed(state: State<'_, AppState>, major: Option<String>) -> CmdResult<Vec<Item>> {
-    let major = major.unwrap_or_else(|| current_major(&state));
-    let interests = current_interests(&state);
-    let user_skills = current_skills(&state);
-    let mut ranked = personalize(visible_items(&state)?, &major, &interests, &user_skills);
+    let profile = current_profile(&state, major);
+    let mut ranked = personalize(visible_items(&state)?, &profile);
     ranked.truncate(FEED_LIMIT);
     Ok(ranked)
 }
@@ -145,14 +185,12 @@ pub fn get_feed(state: State<'_, AppState>, major: Option<String>) -> CmdResult<
 /// Jobs and internships only, uncapped — the old `/api/internships`.
 #[tauri::command]
 pub fn get_internships(state: State<'_, AppState>, major: Option<String>) -> CmdResult<Vec<Item>> {
-    let major = major.unwrap_or_else(|| current_major(&state));
-    let interests = current_interests(&state);
-    let user_skills = current_skills(&state);
+    let profile = current_profile(&state, major);
     let opportunities = visible_items(&state)?
         .into_iter()
         .filter(|i| i.item_type.is_opportunity())
         .collect();
-    Ok(personalize(opportunities, &major, &interests, &user_skills))
+    Ok(personalize(opportunities, &profile))
 }
 
 /// Everything the user starred, newest first. Served from the `item_state`
@@ -286,19 +324,37 @@ pub async fn refresh(app: AppHandle, force: bool) -> CmdResult<Option<usize>> {
 async fn enrich_details(app: &AppHandle) -> CmdResult<usize> {
     let state = app.state::<AppState>();
 
-    let candidates = {
+    // Rank order, not insertion order. With several thousand opportunities in
+    // the cache the budget only ever covers a slice of the backlog, and it
+    // should be the slice the reader is about to scroll through — a posting
+    // ranked four hundredth can wait for the next refresh. `diversify` also
+    // spreads the queue across employers, so no single Workday tenant's
+    // backlog monopolises a refresh.
+    let attempted = {
         let conn = state.db.lock().unwrap();
-        db::urls_needing_details(&conn, DETAIL_CANDIDATES).map_err(err)?
+        db::urls_with_details(&conn).map_err(err)?
     };
+    let profile = current_profile(&state, None);
+    let opportunities: Vec<Item> = visible_items(&state)?
+        .into_iter()
+        .filter(|i| i.item_type.is_opportunity())
+        .collect();
+    let candidates: Vec<(String, Option<String>)> = personalize(opportunities, &profile)
+        .into_iter()
+        .filter(|i| !attempted.contains(&i.url))
+        .take(DETAIL_CANDIDATES)
+        .map(|i| (i.url, i.simplify_id))
+        .collect();
+
     if candidates.is_empty() {
         return Ok(0);
     }
 
     // Routing is a pure function of the URL, so deciding that we cannot serve
-    // a posting costs nothing. Recording those separately matters: a source
-    // that stamps its rows `Utc::now()` sorts its unroutable postings to the
-    // front of the queue, where they would otherwise consume the whole budget
-    // for several refreshes without a single request being made.
+    // a posting costs nothing. Recording those separately matters: an
+    // unroutable posting that ranks well sits at the front of the queue, where
+    // it would otherwise consume the whole budget for several refreshes
+    // without a single request being made.
     let mut unsupported = Vec::new();
     let mut queue = Vec::new();
     for (url, simplify_id) in candidates {
@@ -360,8 +416,36 @@ fn persist(app: &AppHandle, items: Vec<Item>) -> CmdResult<usize> {
     // skills for, so the memo has to go with it.
     skills::clear_memo();
 
+    // Lever and Ashby return the whole posting in the same response as the
+    // listing. Those descriptions are harvested here rather than left on the
+    // enrichment queue — several thousand requests for text already in hand —
+    // and they go into `job_details`, not onto the row: `save_items`
+    // overwrites `content_text` every refresh and would erase them.
+    let seeded: Vec<(String, models::JobDetail)> = items
+        .iter()
+        .filter_map(|item| {
+            let detail = models::JobDetail {
+                description: item.description.clone(),
+                requirements: item.requirements.clone(),
+                responsibilities: item.responsibilities.clone(),
+                perks: item.perks.clone(),
+                tagged_skills: item.tagged_skills.clone(),
+                closes_at: item.closes_at,
+                salary_min: item.salary_min,
+                salary_max: item.salary_max,
+                salary_currency: item.salary_currency.clone(),
+                salary_period: item.salary_period.clone(),
+                status: models::DetailStatus::Ok,
+            };
+            detail.has_text().then(|| (item.url.clone(), detail))
+        })
+        .collect();
+
     let mut conn = state.db.lock().unwrap();
     db::save_items(&mut conn, &items).map_err(err)?;
+    if !seeded.is_empty() {
+        db::save_details(&mut conn, &seeded).map_err(err)?;
+    }
     db::prune_older_than(&conn, RETENTION_DAYS).map_err(err)?;
     // Runs after the prune so seen/dismissed rows for listings that have aged
     // out go with them. Saved rows are kept regardless.
