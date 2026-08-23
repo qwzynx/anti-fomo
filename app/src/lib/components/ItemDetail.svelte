@@ -58,8 +58,14 @@
 
   $effect(() => {
     const url = item.url;
-    fetched = feed.peekDetail(url);
-    if (fetched !== undefined) return;
+    // Read the cache into a local first: assigning straight to `fetched` and
+    // then checking `fetched !== undefined` below made this effect both read
+    // and write the same state in one pass, which Svelte's dev build flags as
+    // an infinite update loop — the write reschedules the effect, whose
+    // rerun reads the value it just wrote, forever. `peeked` breaks the cycle.
+    const peeked = feed.peekDetail(url);
+    fetched = peeked;
+    if (peeked !== undefined) return;
 
     let live = true;
     void feed.detail(url).then((d) => {
