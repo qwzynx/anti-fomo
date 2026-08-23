@@ -8,7 +8,7 @@
   import PageHeader from "$lib/components/PageHeader.svelte";
   import RowSkeleton from "$lib/components/RowSkeleton.svelte";
   import { feed } from "$lib/feed.svelte";
-  import { Briefcase, Plus, Search, SlidersHorizontal, X } from "$lib/icons";
+  import { Briefcase, ChevronDown, Filter, Search, SlidersHorizontal, X } from "$lib/icons";
   import {
     FRESHNESS,
     HUB_DISCIPLINES,
@@ -280,10 +280,27 @@
         <button
           onclick={() => (moreOpen = !moreOpen)}
           aria-expanded={moreOpen}
-          class="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-full border border-dashed border-line bg-surface px-3 text-[13px] font-medium text-muted transition-colors hover:border-subtle"
+          aria-label="Filters"
+          class="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-full border px-3 text-[13px] font-semibold transition-colors
+                 {moreOpen
+            ? 'border-brand bg-brand-soft text-brand-soft-fg'
+            : 'border-line bg-surface text-muted hover:border-subtle'}"
         >
-          <Plus size={13} strokeWidth={2} class="shrink-0 transition-transform {moreOpen ? 'rotate-45' : ''}" />
-          More
+          <Filter size={13} strokeWidth={2.25} class="shrink-0" />
+          Filters
+          {#if activeFilters > 0}
+            <span
+              class="rounded-full px-1.5 text-[11px] font-bold tabular-nums
+                     {moreOpen ? 'bg-brand-soft-fg/15' : 'bg-line text-subtle'}"
+            >
+              {activeFilters}
+            </span>
+          {/if}
+          <ChevronDown
+            size={13}
+            strokeWidth={2.25}
+            class="shrink-0 transition-transform {moreOpen ? 'rotate-180' : ''}"
+          />
         </button>
 
         {#if activeFilters > 0}

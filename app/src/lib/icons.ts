@@ -22,6 +22,7 @@ export {
   Cpu,
   Database,
   Eye,
+  Filter,
   Flame,
   Gift,
   Home,
