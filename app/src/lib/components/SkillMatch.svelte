@@ -2,18 +2,20 @@
   import type { ScrapedItem } from "$lib/api";
   import { feed } from "$lib/feed.svelte";
   import { skillCategoryIcon } from "$lib/icons";
+  import { fromPosting } from "$lib/item";
   import { groupByCategory } from "$lib/skills";
   import SkillChip from "./SkillChip.svelte";
 
-  // What this role wants, and how much of it the user has. The chips are
+  // What this posting wants, and how much of it the user has. The chips are
   // live: tapping one edits the profile, which is the point — a skills list
   // built while reading jobs stays truer than one filled in once and
   // forgotten.
   //
-  // The heading follows the evidence. When the enrichment pass reached this
-  // posting these skills were read out of its own requirements, so it says so;
-  // otherwise they came from `skills::ROLES` inferring from the job title, and
-  // claiming the posting "asked for" them would overstate what we know.
+  // The heading follows the evidence, and the two cases never mix. Where the
+  // enrichment pass reached the posting, every skill here was read out of the
+  // employer's own requirements. Where it did not — roughly one posting in
+  // eleven — they came from `skills::ROLES` guessing at the job title, and the
+  // panel says so rather than claiming the posting asked for them.
   let { item }: { item: ScrapedItem } = $props();
 
   /** Segments in the meter. Fixed, so the bar reads the same on every job. */
@@ -26,13 +28,13 @@
     required.length === 0 ? 0 : Math.round((have / required.length) * SEGMENTS),
   );
   const summary = $derived(`${have} of ${required.length} skills`);
-  const fromPosting = $derived(Boolean(item.requirements || item.responsibilities));
+  const scraped = $derived(fromPosting(item));
 </script>
 
 <div class="mb-4 rounded-xl bg-line-soft p-4">
   <div class="mb-3 flex flex-wrap items-center gap-x-3 gap-y-1.5">
     <p class="text-xs font-bold tracking-wide text-subtle uppercase">
-      {fromPosting ? "Skills this posting asks for" : "Typically wanted for this role"}
+      {scraped ? "Skills this posting asks for" : "Typically wanted for this role"}
     </p>
     <!-- The label carries the figure, so this is one image to a screen reader
          rather than ten meaningless segments. -->
@@ -68,9 +70,9 @@
 
   <div class="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-line pt-2.5">
     <p class="text-[11px] text-subtle">
-      Tap a skill to say whether you have it.{fromPosting
+      Tap a skill to say whether you have it.{scraped
         ? ""
-        : " Inferred from the role — check the posting."}
+        : " Guessed from the job title — this posting's page could not be read."}
     </p>
     <button
       onclick={() => feed.openSkillsForm()}

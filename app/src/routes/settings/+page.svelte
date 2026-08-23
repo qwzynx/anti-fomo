@@ -102,9 +102,9 @@
       </span>
     </div>
     <p class="mb-4 text-sm text-muted">
-      What you can actually build. Every job is matched against the skills its role
-      typically wants, so you can see how much of it you already cover — and the ones you
-      fit rank higher.
+      What you can actually build. Every job is matched against the skills its own posting
+      asks for, so you can see how much of it you already cover — and the ones you fit
+      rank higher.
     </p>
 
     {#if skillGroups.length > 0}

@@ -18,9 +18,23 @@ Everything ships from `/app`:
   - `scrapers/` — one module per source, all implementing the `Scraper` trait and
     run concurrently. A source that fails logs and returns nothing; it must never
     take the whole refresh down.
-  - `location.rs`, `rank.rs` — pure functions (location tagging, discipline
-    classification, interest-tag matching, recency decay, relevance scoring,
-    round-robin per-source diversification). Unit-tested.
+    - `details.rs` is the exception: a second phase that runs *after* the scrape
+      and works on URLs rather than sources. `route()` returns an ordered chain
+      per posting — the employer's ATS API, then the page's schema.org
+      `JobPosting`, then simplify.jobs as a mirror — and `fetch()` walks it
+      until something returns text. Adding an employer means adding a variant
+      there, not a new `Scraper`. `sections.rs` recovers the Requirements /
+      Responsibilities / Perks split from an HTML description and is the only
+      module that knows those heading words; `jsonld.rs` reads the schema.org
+      block. Verify with `cargo run --bin detail_check`.
+  - `location.rs`, `rank.rs`, `skills.rs` — pure functions (location tagging,
+    discipline classification, interest-tag matching, recency decay, relevance
+    scoring, round-robin per-source diversification, skill extraction).
+    Unit-tested. **A posting's skills come from its own fetched text.**
+    `skills::ROLES` guesses from the job title and runs *only* where the
+    enrichment pass came back empty; `skills::from_posting` is the switch, and
+    `fromPosting` in `lib/item.ts` must keep answering it the same way, since
+    that is what words the UI's heading.
   - `db.rs` — SQLite via `rusqlite` (bundled). Items are a rebuildable cache keyed
     by URL. `settings` and `item_state` are the durable tables and must survive a
     schema bump, so they are created with `IF NOT EXISTS` and never dropped.

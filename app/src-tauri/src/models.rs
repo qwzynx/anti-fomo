@@ -156,8 +156,8 @@ pub struct Item {
     pub matched_skills: Vec<String>,
 
     // The fetched posting, joined from `job_details` on read. Absent for the
-    // sources we cannot fetch, which is what makes the UI fall back to
-    // role-inferred skills and the old placeholder copy.
+    // postings the chain in `scrapers::details` could not serve, which is what
+    // makes `skills::extract` fall back to role inference and the UI say so.
     #[serde(default)]
     pub description: Option<String>,
     #[serde(default)]

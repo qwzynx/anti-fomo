@@ -105,3 +105,21 @@ export function sourceBlurb(item: ScrapedItem): string {
       return `Aggregated from ${item.source_platform}.`;
   }
 }
+
+/**
+ * Whether the enrichment pass reached this posting, so the UI is showing what
+ * the employer wrote rather than what its job title implies.
+ *
+ * Mirrors `skills::from_posting` in Rust field for field, and has to: that is
+ * the same test the backend uses to decide whether to fall back to
+ * `skills::ROLES`, so a heading derived from a different rule would eventually
+ * claim a posting "asks for" a skill nobody read off it.
+ */
+export function fromPosting(item: ScrapedItem): boolean {
+  return Boolean(
+    item.requirements?.trim() ||
+      item.responsibilities?.trim() ||
+      item.description?.trim() ||
+      item.tagged_skills?.length,
+  );
+}

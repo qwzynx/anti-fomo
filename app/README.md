@@ -145,25 +145,52 @@ own marks live in a separate durable `item_state` table keyed by URL:
 - **seen** dims an already-opened card and applies the −3 ranking penalty.
 
 `item_state` is created with `IF NOT EXISTS` and is never dropped by a schema
-bump (currently `user_version` 4). Orphan rows are pruned after each refresh.
+bump (currently `user_version` 5). Orphan rows are pruned after each refresh.
 
 ## Job descriptions
 
 Every opportunity source reads a *list* endpoint, so a scraped posting arrives
 with 24–70 characters of `content_text` that is mostly the office location.
-Measured over a full cache, literal skill extraction fired on 4% of postings.
+What the employer requires, what the job involves and what it pays for are on
+the posting's own page and nowhere else.
 
 So a refresh has a **second phase**. After the scrape is persisted, up to 200
 postings that have never been tried get their real description fetched, eight
-at a time, and the UI is told to re-rank when the batch lands. Two handlers:
+at a time, and the UI is told to re-rank when the batch lands.
+`scrapers::details::route` returns an ordered *chain* per posting and
+`fetch` walks it until something comes back with text — the employer's own
+words first, a mirror last:
 
-- **simplify.jobs** — the three GitHub repos publish
-  `.github/scripts/listings.json` beside their README, which carries a posting
-  `id`. `simplify.jobs/p/{id}` has already split the posting into
-  `requirements`, `responsibilities`, tagged `skills` and company `benefits`,
-  so there is no parsing to redo. Covers the ~91–99% of those repos' rows that
-  Simplify itself contributed.
-- **Job Bank Canada** — its own pages, whose sections are already labelled.
+1. **The ATS's own JSON API**, where the posting link names one we handle:
+   Workday (`/wday/cxs/…`, 31% of a real cache on its own), SmartRecruiters,
+   Greenhouse, Lever, Workable, Eightfold, plus Job Bank Canada's own pages.
+   Lever, SmartRecruiters and Workable label their sections themselves, which
+   beats any heading guess.
+2. **schema.org `JobPosting` metadata** on the posting's page. Every ATS wants
+   its listings in Google's job search, so the pages that hand a browser
+   nothing but a JavaScript shell still hand us the full description in a
+   documented shape. This is what serves the iCIMS family, Ashby, Microsoft
+   and the long tail of employer career sites.
+3. **simplify.jobs**, for the rows the three GitHub repos gave a posting `id`.
+   A mirror of the same posting, so it goes last — but a good one, and it also
+   carries tagged `skills`, which nothing else does.
+
+A handler that returns only unsegmented prose is not the end of the walk: if
+simplify.jobs is still in the chain it is tried too and merged in, since its
+pre-split requirements are what the prose was missing.
+
+Descriptions arrive as one HTML blob from most of these, so
+`scrapers::sections` recovers the Requirements / Responsibilities / Perks split
+from the employer's own headings — `<h3>`, a fully bold paragraph and a line
+ending in a colon all count, because whoever pasted the description into the
+ATS used whichever they felt like. It is the only module that knows those
+heading words.
+
+Measured over a 1,449-posting cache: **99% routable**, and a live sample of 200
+serves **94%** of what it routes — 83% with requirements, 75% with
+responsibilities, 59% with perks, at 54 ms per posting. Over the same sample,
+skills read off a posting rather than guessed from its title go from a mean of
+2.8 to 4.0, and the share with nothing to show falls from 42% to 29%.
 
 Results live in a durable `job_details` table, **not** on the `items` row:
 `save_items` overwrites `content_text` on every refresh, so a description
@@ -172,14 +199,20 @@ fail. That table is also the ledger that keeps enrichment incremental — a row
 means "already attempted", including a failure, so a dead link costs one
 request rather than one per refresh forever.
 
-Not attempted, by measurement: Workday (per-tenant API, JS-shell pages),
-TikTok/ByteDance (136 KB and 2.2s each), Levels.fyi (no descriptions, and 58%
-of rows have no link at all). Those postings fall back to the role inference in
-`skills::ROLES`, and the UI says "typically wanted for this role" rather than
-"asks for".
+Deliberately not attempted: a readability-style "grab the biggest block of
+text" fallback. Garbage text feeds garbage into skill matching, and a posting
+with no skills listed is a better answer than one credited with the words in a
+site's navigation menu.
 
-`cargo run --bin detail_check` reports coverage and what enrichment does to
-skill extraction, against the real cached database.
+The roughly one posting in eleven that still comes back with nothing — an
+expired listing, a page behind a login — falls back to the role inference in
+`skills::ROLES`, and the UI says "typically wanted for this role" rather than
+"asks for". Where the description *was* fetched, `ROLES` does not run at all:
+the skills shown are only what the employer wrote, because a list that is half
+read and half guessed gives the reader no way to tell which half to trust.
+
+`cargo run --bin detail_check` reports routing and live coverage per handler,
+and what enrichment does to skill extraction, against the real cached database.
 
 ## Commands
 

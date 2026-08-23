@@ -4,6 +4,7 @@
 export {
   ArrowLeft,
   ArrowUpRight,
+  BookOpen,
   Bookmark,
   BookmarkCheck,
   Brain,

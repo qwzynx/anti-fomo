@@ -62,30 +62,27 @@ async fn main() -> anyhow::Result<()> {
 
     // --- routing coverage, no network ---
     let mut routable = 0usize;
-    let mut by_route: HashMap<&str, usize> = HashMap::new();
+    let mut by_lead: HashMap<&str, usize> = HashMap::new();
+    let mut chain_len: HashMap<usize, usize> = HashMap::new();
     let mut unrouted_hosts: HashMap<String, usize> = HashMap::new();
 
     for item in &opportunities {
-        match details::route(&item.url, item.simplify_id.as_deref()) {
-            details::Route::Simplify(_) => {
+        let chain = details::route(&item.url, item.simplify_id.as_deref());
+        *chain_len.entry(chain.len()).or_default() += 1;
+        match chain.first() {
+            Some(handler) => {
                 routable += 1;
-                *by_route.entry("simplify.jobs").or_default() += 1;
+                *by_lead.entry(handler.name()).or_default() += 1;
             }
-            details::Route::JobBank(_) => {
-                routable += 1;
-                *by_route.entry("job bank").or_default() += 1;
-            }
-            details::Route::None => {
-                let host = url_host(&item.url);
-                *unrouted_hosts.entry(host).or_default() += 1;
-            }
+            None => *unrouted_hosts.entry(url_host(&item.url)).or_default() += 1,
         }
     }
 
     println!("=== routing (no network) ===");
-    let mut routes: Vec<_> = by_route.into_iter().collect();
-    routes.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
-    for (name, n) in &routes {
+    println!("  by the handler tried first:");
+    let mut leads: Vec<_> = by_lead.into_iter().collect();
+    leads.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
+    for (name, n) in &leads {
         println!("  {n:>5} ({:>4.1}%)  {name}", pct(*n, opportunities.len()));
     }
     println!(
@@ -93,19 +90,35 @@ async fn main() -> anyhow::Result<()> {
         pct(routable, opportunities.len())
     );
 
+    let mut lengths: Vec<_> = chain_len.into_iter().collect();
+    lengths.sort();
+    let fallbacks = lengths
+        .iter()
+        .map(|(len, n)| format!("{len} handler(s): {n}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    println!("  chain depth — {fallbacks}");
+
     let mut tail: Vec<_> = unrouted_hosts.into_iter().collect();
     tail.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
-    println!("\n  not routable, top hosts:");
-    for (host, n) in tail.iter().take(8) {
-        println!("  {n:>5} ({:>4.1}%)  {host}", pct(*n, opportunities.len()));
+    if !tail.is_empty() {
+        println!("\n  not routable, top hosts:");
+        for (host, n) in tail.iter().take(8) {
+            println!("  {n:>5} ({:>4.1}%)  {host}", pct(*n, opportunities.len()));
+        }
     }
 
     // --- live fetch of a sample ---
+    // Every nth posting rather than the first n: the cache is ordered by
+    // source, so the head of it is all one handler and would measure nothing.
+    let step = (opportunities.len() / sample.max(1)).max(1);
     let targets: Vec<_> = opportunities
         .iter()
+        .step_by(step)
         .filter_map(|i| {
-            let route = details::route(&i.url, i.simplify_id.as_deref());
-            (!matches!(route, details::Route::None)).then(|| (i.title.clone(), route))
+            let chain = details::route(&i.url, i.simplify_id.as_deref());
+            let lead = chain.first()?.name();
+            Some((i.title.clone(), lead, chain))
         })
         .take(sample)
         .collect();
@@ -119,10 +132,10 @@ async fn main() -> anyhow::Result<()> {
     let client = build_client()?;
     let started = std::time::Instant::now();
 
-    let results: Vec<(String, anti_fomo_lib::models::JobDetail)> = stream::iter(targets)
-        .map(|(title, route)| {
+    let results: Vec<(String, &str, anti_fomo_lib::models::JobDetail)> = stream::iter(targets)
+        .map(|(title, lead, chain)| {
             let client = client.clone();
-            async move { (title, details::fetch_one(&client, &route).await) }
+            async move { (title, lead, details::fetch(&client, &chain).await) }
         })
         .buffer_unordered(CONCURRENCY)
         .collect()
@@ -132,8 +145,13 @@ async fn main() -> anyhow::Result<()> {
     let mut status_counts: HashMap<&str, usize> = HashMap::new();
     let (mut with_req, mut with_resp, mut with_perks, mut with_tags) = (0, 0, 0, 0);
 
-    for (_, d) in &results {
+    let mut by_handler: HashMap<&str, (usize, usize)> = HashMap::new();
+
+    for (_, lead, d) in &results {
         *status_counts.entry(d.status.as_str()).or_default() += 1;
+        let entry = by_handler.entry(lead).or_default();
+        entry.0 += 1;
+        entry.1 += usize::from(d.status == DetailStatus::Ok);
         if d.requirements.is_some() {
             with_req += 1;
         }
@@ -163,6 +181,13 @@ async fn main() -> anyhow::Result<()> {
     println!("  {with_perks:>5} ({:>4.1}%)  have perks", pct(with_perks, n));
     println!("  {with_tags:>5} ({:>4.1}%)  have tagged skills", pct(with_tags, n));
 
+    println!("\n  by the handler tried first:");
+    let mut handlers: Vec<_> = by_handler.into_iter().collect();
+    handlers.sort_by_key(|(_, (tried, _))| std::cmp::Reverse(*tried));
+    for (name, (tried, ok)) in handlers {
+        println!("  {ok:>5} / {tried:<5} ({:>4.1}%)  {name}", pct(ok, tried));
+    }
+
     // --- what enrichment does to skill extraction ---
     println!("\n=== skill extraction, before vs after ===");
     let mut before_total = 0usize;
@@ -170,7 +195,7 @@ async fn main() -> anyhow::Result<()> {
     let mut before_none = 0usize;
     let mut after_none = 0usize;
 
-    for (title, detail) in results.iter().take(n) {
+    for (title, _, detail) in results.iter().take(n) {
         let Some(item) = opportunities.iter().find(|i| &i.title == title) else {
             continue;
         };
@@ -214,9 +239,10 @@ async fn main() -> anyhow::Result<()> {
     );
 
     println!("\n=== three samples ===");
-    for (title, d) in results.iter().filter(|(_, d)| d.status == DetailStatus::Ok).take(3) {
-        println!("\n  {}", title.chars().take(70).collect::<String>());
+    for (title, lead, d) in results.iter().filter(|(_, _, d)| d.status == DetailStatus::Ok).take(3) {
+        println!("\n  {} [{lead}]", title.chars().take(70).collect::<String>());
         for (label, field) in [
+            ("about", &d.description),
             ("requirements", &d.requirements),
             ("responsibilities", &d.responsibilities),
             ("perks", &d.perks),

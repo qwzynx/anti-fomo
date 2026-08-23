@@ -19,9 +19,11 @@ pub mod github_internships;
 pub mod hacker_news;
 pub mod hn_top_links;
 pub mod job_bank;
+pub mod jsonld;
 pub mod levels_fyi;
 pub mod luma;
 pub mod rss;
+pub mod sections;
 pub mod tldr;
 
 /// Several sources (notably the Lassonde WordPress feed) 403 anything that

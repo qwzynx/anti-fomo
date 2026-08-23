@@ -26,8 +26,8 @@ const RETENTION_DAYS: i64 = 60;
 const DETAIL_BUDGET: usize = 200;
 /// Simultaneous detail requests. Measured against simplify.jobs: 10 concurrent
 /// finish in 0.84s where serial takes 15.7s, with no rate limiting seen. Kept
-/// modest because Job Bank is a government server the list scraper already
-/// treats politely.
+/// modest because the chain now spreads across a dozen hosts, one of which
+/// (Job Bank) is a government server the list scraper already treats politely.
 const DETAIL_CONCURRENCY: usize = 8;
 /// How many rows to consider per refresh before routing. Larger than the
 /// budget because deciding a URL is unservable is free, and clearing those out
@@ -296,17 +296,17 @@ async fn enrich_details(app: &AppHandle) -> CmdResult<usize> {
 
     // Routing is a pure function of the URL, so deciding that we cannot serve
     // a posting costs nothing. Recording those separately matters: Levels.fyi
-    // stamps every row `Utc::now()`, so its 113 unroutable postings sort to
-    // the front of the queue and would otherwise consume the whole budget for
+    // stamps every row `Utc::now()`, so its unroutable postings sort to the
+    // front of the queue and would otherwise consume the whole budget for
     // several refreshes without a single request being made.
     let mut unsupported = Vec::new();
     let mut queue = Vec::new();
     for (url, simplify_id) in candidates {
-        let route = details::route(&url, simplify_id.as_deref());
-        if matches!(route, details::Route::None) {
+        let chain = details::route(&url, simplify_id.as_deref());
+        if chain.is_empty() {
             unsupported.push((url, models::JobDetail::with_status(models::DetailStatus::Unsupported)));
         } else if queue.len() < DETAIL_BUDGET {
-            queue.push((url, route));
+            queue.push((url, chain));
         }
     }
 
@@ -323,10 +323,10 @@ async fn enrich_details(app: &AppHandle) -> CmdResult<usize> {
     // opening 200 connections at once is neither polite nor faster. Note this
     // avoids `tokio::sync::Semaphore`, whose feature is not enabled here.
     let fetched: Vec<(String, models::JobDetail)> = stream::iter(queue)
-        .map(|(url, route)| {
+        .map(|(url, chain)| {
             let client = client.clone();
             async move {
-                let detail = details::fetch_one(&client, &route).await;
+                let detail = details::fetch(&client, &chain).await;
                 (url, detail)
             }
         })

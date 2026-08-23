@@ -194,7 +194,7 @@
         <div class="py-2">
           <p class="mb-5 text-[15px] leading-relaxed text-muted">
             Tell us what you already know how to do. Every job gets matched against the
-            skills its role typically wants, so you'll see at a glance how much of a role
+            skills its own posting asks for, so you'll see at a glance how much of a role
             you already cover — and postings you fit move up the list.
           </p>
           <ul class="flex flex-col gap-3">

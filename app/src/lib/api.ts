@@ -20,9 +20,10 @@ export interface ScrapedItem {
   /** The subset of `required_skills` the user has declared. */
   matched_skills?: string[];
   /**
-   * The fetched posting, for the sources we can reach. Absent everywhere else,
-   * which is what makes the UI fall back to role-inferred skills. The three
-   * section fields hold newline-separated bullets.
+   * The posting as the employer wrote it, once the enrichment pass has fetched
+   * it. Absent where it could not, which is what makes the UI fall back to
+   * role-inferred skills — see `fromPosting` in `lib/item`. All four fields
+   * hold newline-separated lines.
    */
   description?: string | null;
   requirements?: string | null;

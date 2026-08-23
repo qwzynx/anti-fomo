@@ -273,18 +273,19 @@ pub const SKILLS: &[Category] = &[
 
 /// Skills a role is understood to want, keyed by phrases in the job title.
 ///
-/// This exists because of what the sources actually give us. Every opportunity
-/// scraper reads a *list* endpoint — a GitHub table, a board's index page — so
-/// `content_text` arrives at 24-70 characters and is mostly the office
-/// location. Measured over a full cache of 1,535 postings, literal keyword
-/// extraction fired on 4% of them. Fetching 1,500 description pages per
-/// refresh is not an option this app has.
+/// **Last resort only.** [`extract`] uses this for a posting whose description
+/// the enrichment pass could not fetch, and for no other. What a posting asks
+/// for is written on the posting; a guess from the job title is a stand-in for
+/// not having read it, and the moment we have read it the guess is noise —
+/// worse than noise, since it would put "React" on a frontend posting that
+/// never mentions React and the user would have no way to tell which is which.
 ///
-/// Titles are the signal that survives: 59% name a recognisable role. So a
-/// "Frontend Engineer Intern" is credited with what frontend work wants, and
-/// the UI says "typically wanted" rather than claiming the posting named them.
-/// The remaining 41% — bare "Internship at Foo" — get nothing, which is the
-/// honest answer for a posting that told us nothing.
+/// It still earns its place. [`crate::scrapers::details`] routes 99% of a real
+/// cache and serves about 91% of what it routes, so roughly one posting in
+/// eleven has no description to read: an expired listing, a page behind a
+/// login, an employer whose site says nothing a machine can find. For those,
+/// a role's usual toolset beats a blank panel, and the UI labels it as the
+/// guess it is.
 ///
 /// Order is longest-phrase-first within a family so "data engineer" is not
 /// swallowed by "data". Every profile that matches contributes, so a
@@ -418,14 +419,15 @@ pub fn category_of(skill: &str) -> Option<&'static str> {
 
 /// Which catalog skills this posting wants, in catalog order.
 ///
-/// Two passes, unioned:
+/// Where the enrichment pass fetched the posting — [`from_posting`] — this is
+/// what the employer wrote and nothing else: catalog keywords found in the
+/// requirements, the duties and the description, plus any skill the source
+/// tagged the posting with. Where it did not, and only there, the role named
+/// in the title stands in via [`ROLES`].
 ///
-/// 1. **Literal** — catalog keywords appearing in the title or body. Precise,
-///    but our sources give so little body text that it alone covers 4% of the
-///    cache.
-/// 2. **Role** — what the role named in the title typically wants, from
-///    [`ROLES`]. This is what makes the feature work on real data, and it is
-///    why the UI is worded "typically wanted" rather than "required".
+/// The two never mix. A posting credited half with its own requirements and
+/// half with what its title suggests reads as one list, and the reader has no
+/// way to tell which half to trust.
 ///
 /// Only meaningful for opportunities — an article mentioning Kubernetes is not
 /// asking you to know it — so callers gate on
@@ -508,6 +510,20 @@ fn keywords_for<'a>(name: &str, keywords: &'a [&'a str], long: bool) -> &'a [&'a
 /// a line of scraped metadata, and [`AMBIGUOUS`] skills tighten up.
 const LONG_TEXT: usize = 400;
 
+/// Whether this posting's own text is in hand, and so whether [`extract`] is
+/// reporting what the employer asked for or guessing from the job title.
+///
+/// The UI asks the same question of the same fields to word its heading, so
+/// the two must agree: a panel headed "Skills this posting asks for" listing
+/// skills inferred from the title would be a straightforward lie.
+pub fn from_posting(item: &Item) -> bool {
+    [&item.requirements, &item.responsibilities, &item.description]
+        .into_iter()
+        .flatten()
+        .any(|text| !text.trim().is_empty())
+        || !item.tagged_skills.is_empty()
+}
+
 fn extract_uncached(item: &Item) -> Vec<String> {
     // Prefer what the posting actually asks for. The full description is
     // mostly company boilerplate, which is where false positives live, so it
@@ -553,9 +569,12 @@ fn extract_uncached(item: &Item) -> Vec<String> {
         }
     }
 
-    for (phrases, skills) in ROLES {
-        if phrases.iter().any(|p| title.contains(p)) {
-            wanted.extend(skills.iter().copied());
+    // Only where the posting itself said nothing. See [`ROLES`].
+    if !from_posting(item) {
+        for (phrases, skills) in ROLES {
+            if phrases.iter().any(|p| title.contains(p)) {
+                wanted.extend(skills.iter().copied());
+            }
         }
     }
 
@@ -729,9 +748,9 @@ mod tests {
     }
 
     #[test]
-    fn literal_hits_still_win_where_there_is_real_text() {
-        // Role inference is a fallback, not a replacement: a posting that does
-        // describe itself gets both.
+    fn the_scraped_line_is_read_as_well_as_the_role() {
+        // Nothing was fetched for this posting, so both passes run: whatever
+        // the one line of scraped text named, plus what the title implies.
         let found = extract(&posting(
             "Backend Engineer Intern",
             "You'll work in Rust on our Kafka pipeline.",
@@ -748,6 +767,38 @@ mod tests {
         let mut item = posting(title, "Location: Toronto, ON");
         item.requirements = Some(requirements.to_string());
         item
+    }
+
+    #[test]
+    fn a_fetched_posting_is_credited_with_nothing_it_did_not_say() {
+        // The whole point of fetching descriptions. This title would otherwise
+        // collect React, TypeScript and Web Accessibility from `ROLES`, none
+        // of which the employer mentioned.
+        let found = extract(&enriched(
+            "Frontend Engineer Intern",
+            "You write Svelte and you have shipped something with Tailwind.",
+        ));
+        assert!(found.iter().any(|s| s == "Svelte"), "{found:?}");
+        for guessed in ["React", "Web Accessibility"] {
+            assert!(!found.iter().any(|s| s == guessed), "guessed {guessed} in {found:?}");
+        }
+    }
+
+    #[test]
+    fn any_fetched_field_is_enough_to_stop_guessing() {
+        // A posting whose page gave us prose but no bullet lists still counts
+        // as read — `from_posting` and the UI's heading must agree on that.
+        for build in [
+            |item: &mut Item| item.description = Some("We build data pipelines.".into()),
+            |item: &mut Item| item.responsibilities = Some("Own a service end to end.".into()),
+            |item: &mut Item| item.tagged_skills = vec!["Python".into()],
+        ] {
+            let mut item = posting("Frontend Engineer Intern", "Location: Toronto, ON");
+            build(&mut item);
+            assert!(from_posting(&item));
+            let found = extract(&item);
+            assert!(!found.iter().any(|s| s == "React"), "guessed React in {found:?}");
+        }
     }
 
     #[test]

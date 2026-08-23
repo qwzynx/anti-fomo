@@ -9,7 +9,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::models::{DetailStatus, Item, ItemType, JobDetail};
 
-const SCHEMA_VERSION: i32 = 4;
+const SCHEMA_VERSION: i32 = 5;
 
 pub fn open(path: &std::path::Path) -> Result<Connection> {
     if let Some(parent) = path.parent() {
@@ -33,7 +33,8 @@ fn migrate(conn: &Connection) -> Result<()> {
     // rather than carrying migration logic. `settings`, `item_state` and
     // `job_details` hold the only data worth keeping and are never dropped —
     // `job_details` in particular represents real network work that would be
-    // expensive to redo.
+    // expensive to redo, though a bump does clear the attempts that came back
+    // with nothing. See the end of the batch.
     conn.execute_batch(
         r#"
         DROP TABLE IF EXISTS items;
@@ -104,6 +105,14 @@ fn migrate(conn: &Connection) -> Result<()> {
             status           TEXT NOT NULL,
             fetched_at       TEXT NOT NULL
         );
+
+        -- A schema bump is also when the handler chain in `scrapers::details`
+        -- has changed, and "already attempted" is only a useful answer while
+        -- the thing that attempted it is the same. Rows that came back with
+        -- text are real work and stay; the ones that did not are exactly the
+        -- postings a new handler exists to serve, and keeping them would lock
+        -- the improvement out of every cache that already exists.
+        DELETE FROM job_details WHERE status <> 'ok';
         "#,
     )?;
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
@@ -701,6 +710,31 @@ mod tests {
         assert!(states.seen.contains("https://x.test/live"));
         assert!(!states.seen.contains("https://x.test/gone"));
         assert!(states.saved.contains("https://x.test/star"));
+    }
+
+    #[test]
+    fn a_schema_bump_keeps_fetched_descriptions_and_clears_the_misses() {
+        let mut conn = mem();
+        let rows = [
+            ("https://x.test/served", DetailStatus::Ok),
+            ("https://x.test/unsupported", DetailStatus::Unsupported),
+            ("https://x.test/failed", DetailStatus::Failed),
+            ("https://x.test/empty", DetailStatus::Empty),
+        ]
+        .map(|(url, status)| {
+            let mut detail = JobDetail::with_status(status);
+            detail.requirements = Some("Rust".into());
+            (url.to_string(), detail)
+        });
+        save_details(&mut conn, &rows).unwrap();
+
+        conn.pragma_update(None, "user_version", 0).unwrap();
+        migrate(&conn).unwrap();
+
+        // The three misses are what a newly added handler exists to serve, so
+        // they go back on the queue; the one that worked is kept.
+        let kept: Vec<_> = load_details(&conn).unwrap().into_keys().collect();
+        assert_eq!(kept, ["https://x.test/served"]);
     }
 
     #[test]
