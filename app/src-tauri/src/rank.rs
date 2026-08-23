@@ -4,6 +4,7 @@
 use chrono::{DateTime, Utc};
 
 use crate::models::{Item, ItemType};
+use crate::skills;
 
 /// Keyword weights per academic discipline. The Python version shipped a single
 /// entry; the structure is kept so more majors slot in without a rewrite.
@@ -269,6 +270,14 @@ const MAJOR_WEIGHT: f64 = 10.0;
 /// a keyword-stuffed job description from outranking everything on breadth alone.
 const INTEREST_WEIGHT: f64 = 4.0;
 const MAX_INTEREST_SCORE: f64 = 8.0;
+/// Full value of the skill term, awarded when the user has every skill the
+/// posting names. Coverage-proportional rather than count-proportional, so a
+/// posting asking ten things you can all do beats one asking two — and the
+/// fraction makes the term self-capping, with no separate ceiling constant.
+const SKILL_WEIGHT: f64 = 6.0;
+/// A posting naming one lucky skill is not evidence of fit. Below this the
+/// term is skipped entirely rather than paying out a full-coverage bonus.
+const MIN_SKILLS_TO_SCORE: usize = 2;
 /// Full value of the recency term, awarded to something happening right now.
 const RECENCY_WEIGHT: f64 = 6.0;
 /// Hours for the recency term to halve: two days old is worth half, four days a
@@ -285,11 +294,17 @@ pub fn recency_score(timestamp: DateTime<Utc>, now: DateTime<Utc>) -> f64 {
     RECENCY_WEIGHT * 0.5_f64.powf(hours / RECENCY_HALF_LIFE_HOURS)
 }
 
-/// Scores every item against the user's major and interests, sorts by score,
-/// then applies the per-source diversification pass. Also records which
-/// interests fired, so the UI can explain the ranking.
-pub fn personalize(items: Vec<Item>, user_major: &str, interests: &[String]) -> Vec<Item> {
-    personalize_at(items, user_major, interests, Utc::now())
+/// Scores every item against the user's major, interests and skills, sorts by
+/// score, then applies the per-source diversification pass. Also records which
+/// interests fired and which skills the posting wants, so the UI can explain
+/// the ranking.
+pub fn personalize(
+    items: Vec<Item>,
+    user_major: &str,
+    interests: &[String],
+    user_skills: &[String],
+) -> Vec<Item> {
+    personalize_at(items, user_major, interests, user_skills, Utc::now())
 }
 
 /// [`personalize`] with an injectable clock, so the recency term is testable.
@@ -297,6 +312,7 @@ pub fn personalize_at(
     mut items: Vec<Item>,
     user_major: &str,
     interests: &[String],
+    user_skills: &[String],
     now: DateTime<Utc>,
 ) -> Vec<Item> {
     for item in &mut items {
@@ -319,10 +335,29 @@ pub fn personalize_at(
         score += (matched.len() as f64 * INTEREST_WEIGHT).min(MAX_INTEREST_SCORE);
         item.matched_interests = matched;
 
-        // 4. Recency
+        // 4. Skill coverage. Opportunities only: extraction is the expensive
+        // part of scoring, and "skills this posting asks for" is meaningless
+        // for an article that merely mentions a technology.
+        if item.item_type.is_opportunity() {
+            let required = skills::extract(item);
+            let matched: Vec<String> = required
+                .iter()
+                .filter(|s| user_skills.iter().any(|u| u == *s))
+                .cloned()
+                .collect();
+
+            if required.len() >= MIN_SKILLS_TO_SCORE {
+                score += SKILL_WEIGHT * (matched.len() as f64 / required.len() as f64);
+            }
+
+            item.matched_skills = matched;
+            item.required_skills = required;
+        }
+
+        // 5. Recency
         score += recency_score(item.timestamp, now);
 
-        // 5. Already-read items sink, so the feed keeps moving between refreshes.
+        // 6. Already-read items sink, so the feed keeps moving between refreshes.
         if item.seen {
             score -= 3.0;
         }
@@ -415,7 +450,7 @@ mod tests {
     fn rank(items: Vec<Item>, major: &str) -> Vec<Item> {
         let now = Utc::now();
         let items = items.into_iter().map(|i| i.with_timestamp(now)).collect();
-        personalize_at(items, major, &[], now)
+        personalize_at(items, major, &[], &[], now)
     }
 
     #[test]
@@ -548,7 +583,7 @@ mod tests {
             item("old", "S", ItemType::Article).with_timestamp(now - chrono::Duration::days(10));
         let fresh = item("new", "S", ItemType::Article).with_timestamp(now);
 
-        let ranked = personalize_at(vec![stale, fresh], DEFAULT_MAJOR, &[], now);
+        let ranked = personalize_at(vec![stale, fresh], DEFAULT_MAJOR, &[], &[], now);
         assert_eq!(ranked[0].title, "new");
     }
 
@@ -558,7 +593,7 @@ mod tests {
         let mut it = item("Research Intern", "S", ItemType::Internship).with_timestamp(now);
         it.content_text = "Work on PyTorch and computer vision for our LLM team".into();
 
-        let ranked = personalize_at(vec![it], "General", &["AI/ML".to_string()], now);
+        let ranked = personalize_at(vec![it], "General", &["AI/ML".to_string()], &[], now);
         assert_eq!(ranked[0].matched_interests, vec!["AI/ML"]);
         // opportunity (5) + one interest (4) + full recency (6)
         assert_eq!(ranked[0].relevance_score, Some(5.0 + 4.0 + RECENCY_WEIGHT));
@@ -576,7 +611,7 @@ mod tests {
             .iter()
             .map(|s| s.to_string())
             .collect();
-        let ranked = personalize_at(vec![it], "General", &wanted, now);
+        let ranked = personalize_at(vec![it], "General", &wanted, &[], now);
 
         assert!(ranked[0].matched_interests.len() >= 4);
         // Five matches would be 20 points uncapped; the cap holds it to 8.
@@ -595,13 +630,73 @@ mod tests {
     }
 
     #[test]
+    fn skill_coverage_scales_the_bonus() {
+        let now = Utc::now();
+        // A title with no recognisable role, so the only skills in play are
+        // the four the body names and the coverage maths is readable.
+        let mut it = item("Intern at Foo", "S", ItemType::Internship).with_timestamp(now);
+        it.content_text = "Python, Django and PostgreSQL on AWS.".into();
+
+        let have_all: Vec<String> = ["Python", "Django", "PostgreSQL", "AWS"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let full = personalize_at(vec![it.clone()], "General", &[], &have_all, now);
+        let half = personalize_at(
+            vec![it.clone()],
+            "General",
+            &[],
+            &["Python".to_string(), "Django".to_string()],
+            now,
+        );
+        let none = personalize_at(vec![it], "General", &[], &[], now);
+
+        // opportunity (5) + coverage × 6 + full recency
+        let base = 5.0 + RECENCY_WEIGHT;
+        assert_eq!(full[0].relevance_score, Some(base + SKILL_WEIGHT));
+        assert_eq!(half[0].relevance_score, Some(base + SKILL_WEIGHT / 2.0));
+        assert_eq!(none[0].relevance_score, Some(base));
+
+        assert_eq!(full[0].matched_skills.len(), 4);
+        assert!(full[0].required_skills.iter().any(|s| s == "PostgreSQL"));
+        assert!(none[0].matched_skills.is_empty());
+        // Required is recorded regardless of what the user has.
+        assert!(!none[0].required_skills.is_empty());
+    }
+
+    #[test]
+    fn a_posting_naming_one_skill_earns_nothing() {
+        let now = Utc::now();
+        let mut it = item("Ops Intern", "S", ItemType::Internship).with_timestamp(now);
+        it.content_text = "Some familiarity with Terraform.".into();
+
+        let ranked = personalize_at(vec![it], "General", &[], &["Terraform".to_string()], now);
+        assert_eq!(ranked[0].required_skills, vec!["Terraform"]);
+        assert_eq!(ranked[0].matched_skills, vec!["Terraform"]);
+        // Below MIN_SKILLS_TO_SCORE, so the term is skipped entirely.
+        assert_eq!(ranked[0].relevance_score, Some(5.0 + RECENCY_WEIGHT));
+    }
+
+    #[test]
+    fn articles_carry_no_skills() {
+        let now = Utc::now();
+        let mut it = item("Kubernetes at scale", "S", ItemType::Article).with_timestamp(now);
+        it.content_text = "Docker, Terraform and Python throughout.".into();
+
+        let ranked = personalize_at(vec![it], "General", &[], &["Docker".to_string()], now);
+        assert!(ranked[0].required_skills.is_empty());
+        assert!(ranked[0].matched_skills.is_empty());
+        assert_eq!(ranked[0].relevance_score, Some(RECENCY_WEIGHT));
+    }
+
+    #[test]
     fn seen_items_sink_below_unseen_equivalents() {
         let now = Utc::now();
         let mut read = item("read", "S", ItemType::Article).with_timestamp(now);
         read.seen = true;
         let unread = item("unread", "S", ItemType::Article).with_timestamp(now);
 
-        let ranked = personalize_at(vec![read, unread], DEFAULT_MAJOR, &[], now);
+        let ranked = personalize_at(vec![read, unread], DEFAULT_MAJOR, &[], &[], now);
         assert_eq!(ranked[0].title, "unread");
     }
 }

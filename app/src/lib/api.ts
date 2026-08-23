@@ -11,10 +11,33 @@ export interface ScrapedItem {
   relevance_score: number | null;
   location?: string | null;
   location_tags?: string[];
+  /** The simplify.jobs posting id, when the source supplied one. */
+  simplify_id?: string | null;
   /** Which of the user's interest tags fired, so a card can explain its rank. */
   matched_interests?: string[];
+  /** Catalog skills this posting asks for. Opportunities only. */
+  required_skills?: string[];
+  /** The subset of `required_skills` the user has declared. */
+  matched_skills?: string[];
+  /**
+   * The fetched posting, for the sources we can reach. Absent everywhere else,
+   * which is what makes the UI fall back to role-inferred skills. The three
+   * section fields hold newline-separated bullets.
+   */
+  description?: string | null;
+  requirements?: string | null;
+  responsibilities?: string | null;
+  perks?: string | null;
+  /** Skills the source itself tagged the posting with. */
+  tagged_skills?: string[];
   saved?: boolean;
   seen?: boolean;
+}
+
+/** One category of the Rust-owned skill catalog. */
+export interface SkillCategory {
+  name: string;
+  skills: string[];
 }
 
 export interface SourceHealth {
@@ -68,6 +91,14 @@ export const getInterests = () => invoke<string[]>("get_interests");
 
 export const setInterests = (interests: string[]) =>
   invoke<void>("set_interests", { interests });
+
+// --- skills ---
+
+export const listSkills = () => invoke<SkillCategory[]>("list_skills");
+
+export const getSkills = () => invoke<string[]>("get_skills");
+
+export const setSkills = (skills: string[]) => invoke<void>("set_skills", { skills });
 
 /** Returns the item count written, or null when the cache was still fresh. */
 export const refreshFeed = (force = false) => invoke<number | null>("refresh", { force });

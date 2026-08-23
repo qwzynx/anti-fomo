@@ -3,6 +3,7 @@
   import BottomNav from "$lib/components/BottomNav.svelte";
   import Header from "$lib/components/Header.svelte";
   import Sidebar from "$lib/components/Sidebar.svelte";
+  import SkillsWizard from "$lib/components/SkillsWizard.svelte";
   import { feed } from "$lib/feed.svelte";
   import { CircleAlert } from "$lib/icons";
   import { theme } from "$lib/theme.svelte";
@@ -55,3 +56,7 @@
 </div>
 
 <BottomNav />
+
+<!-- Mounted once here rather than per page: the settings button, the feed
+     banner and any job detail all open the same form through the store. -->
+<SkillsWizard />

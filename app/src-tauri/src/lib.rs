@@ -4,6 +4,7 @@ pub mod location;
 pub mod models;
 pub mod rank;
 pub mod scrapers;
+pub mod skills;
 
 use std::sync::atomic::AtomicBool;
 use std::sync::Mutex;
@@ -82,6 +83,9 @@ pub fn run() {
             commands::list_interests,
             commands::get_interests,
             commands::set_interests,
+            commands::list_skills,
+            commands::get_skills,
+            commands::set_skills,
             commands::get_setting,
             commands::set_setting,
             commands::list_sources,

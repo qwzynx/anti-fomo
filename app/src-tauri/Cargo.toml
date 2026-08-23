@@ -24,6 +24,12 @@ path = "src/main.rs"
 name = "scraper_check"
 path = "src/bin/scraper_check.rs"
 
+# Coverage check for description enrichment: how many cached postings a handler
+# can serve, and what enrichment does to skill extraction.
+[[bin]]
+name = "detail_check"
+path = "src/bin/detail_check.rs"
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 

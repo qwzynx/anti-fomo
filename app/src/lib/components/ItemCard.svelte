@@ -3,6 +3,7 @@
   import { feed } from "$lib/feed.svelte";
   import { Bookmark, BookmarkCheck, Sparkles, Star, X, iconForType } from "$lib/icons";
   import { splitTitle, tagsFor, typeBadgeClass } from "$lib/item";
+  import { skillMatch } from "$lib/skills";
 
   let {
     item,
@@ -24,6 +25,9 @@
   const tags = $derived(tagsFor(item));
   const TypeIcon = $derived(iconForType(item.item_type));
   const isTopMatch = $derived((item.relevance_score ?? 0) >= 15);
+  // Only once the user has a profile: "0/8 skills" on every card is a worse
+  // first impression than no badge at all.
+  const match = $derived(feed.skills.length > 0 ? skillMatch(item) : null);
 </script>
 
 <!--
@@ -140,14 +144,19 @@
   {/if}
 
   <!-- Why this ranked where it did, in the user's own vocabulary. -->
-  {#if item.matched_interests && item.matched_interests.length > 0}
+  {#if (item.matched_interests && item.matched_interests.length > 0) || match}
     <div class="flex flex-wrap items-center gap-1.5 text-brand">
       <Sparkles size={12} />
-      {#each item.matched_interests as interest (interest)}
+      {#each item.matched_interests ?? [] as interest (interest)}
         <span class="rounded-md bg-brand-soft px-2 py-0.5 text-[11px] font-semibold text-brand-soft-fg">
           {interest}
         </span>
       {/each}
+      {#if match}
+        <span class="rounded-md bg-brand-soft px-2 py-0.5 text-[11px] font-bold text-brand-soft-fg">
+          {match.have}/{match.total} skills
+        </span>
+      {/if}
     </div>
   {/if}
 

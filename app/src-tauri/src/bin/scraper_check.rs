@@ -64,7 +64,7 @@ async fn main() {
 
     // A feed where one source owns the whole first page is a ranking failure
     // even when every scraper reports healthy, so check the head composition.
-    let ranked = personalize(items, DEFAULT_MAJOR, &[]);
+    let ranked = personalize(items, DEFAULT_MAJOR, &[], &[]);
     let head: Vec<&str> = ranked
         .iter()
         .take(20)

@@ -145,7 +145,41 @@ own marks live in a separate durable `item_state` table keyed by URL:
 - **seen** dims an already-opened card and applies the −3 ranking penalty.
 
 `item_state` is created with `IF NOT EXISTS` and is never dropped by a schema
-bump (currently `user_version` 3). Orphan rows are pruned after each refresh.
+bump (currently `user_version` 4). Orphan rows are pruned after each refresh.
+
+## Job descriptions
+
+Every opportunity source reads a *list* endpoint, so a scraped posting arrives
+with 24–70 characters of `content_text` that is mostly the office location.
+Measured over a full cache, literal skill extraction fired on 4% of postings.
+
+So a refresh has a **second phase**. After the scrape is persisted, up to 200
+postings that have never been tried get their real description fetched, eight
+at a time, and the UI is told to re-rank when the batch lands. Two handlers:
+
+- **simplify.jobs** — the three GitHub repos publish
+  `.github/scripts/listings.json` beside their README, which carries a posting
+  `id`. `simplify.jobs/p/{id}` has already split the posting into
+  `requirements`, `responsibilities`, tagged `skills` and company `benefits`,
+  so there is no parsing to redo. Covers the ~91–99% of those repos' rows that
+  Simplify itself contributed.
+- **Job Bank Canada** — its own pages, whose sections are already labelled.
+
+Results live in a durable `job_details` table, **not** on the `items` row:
+`save_items` overwrites `content_text` on every refresh, so a description
+stored there would be destroyed by the next scrape whose fetch happened to
+fail. That table is also the ledger that keeps enrichment incremental — a row
+means "already attempted", including a failure, so a dead link costs one
+request rather than one per refresh forever.
+
+Not attempted, by measurement: Workday (per-tenant API, JS-shell pages),
+TikTok/ByteDance (136 KB and 2.2s each), Levels.fyi (no descriptions, and 58%
+of rows have no link at all). Those postings fall back to the role inference in
+`skills::ROLES`, and the UI says "typically wanted for this role" rather than
+"asks for".
+
+`cargo run --bin detail_check` reports coverage and what enrichment does to
+skill extraction, against the real cached database.
 
 ## Commands
 
@@ -161,6 +195,8 @@ bump (currently `user_version` 3). Orphan rows are pruned after each refresh.
 | `mark_seen(url)` | records an open |
 | `clear_dismissed()` | restores every hidden item |
 | `list_interests()` / `get_interests()` / `set_interests(interests)` | the interest tags |
+| `list_skills()` | the skill catalog, grouped into categories |
+| `get_skills()` / `set_skills(skills)` | the skills the user says they have |
 | `get_setting(key)` / `set_setting(key, value)` | local preferences |
 | `list_sources()` | distinct sources currently cached |
 

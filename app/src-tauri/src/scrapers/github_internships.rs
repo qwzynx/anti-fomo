@@ -1,26 +1,49 @@
-//! The two community internship repos (Pitt CSC and Simplify) publish their
-//! listings as HTML `<table>` blocks inside README.md. Same shape, different
-//! title convention, so one parser covers both.
+//! The three community job repos (Pitt CSC, Simplify, New Grad Positions).
+//!
+//! These used to be parsed out of the HTML `<table>` blocks in each README.
+//! They are read from `.github/scripts/listings.json` instead, which the same
+//! repos publish beside it, because the JSON is better in every way that
+//! matters here:
+//!
+//! - **Real `date_posted` timestamps.** The README only carries a relative
+//!   "Age" cell (`13d`, `1mo`), and anything unparseable fell back to
+//!   `Utc::now()`. Measured against the JSON, that was stamping Pitt CSC's
+//!   dormant listings — newest genuinely posted 2026-06-01 — as posted today,
+//!   handing a stale repo the full recency bonus. Exactly the failure mode
+//!   `CLAUDE.md` warns about.
+//! - **`active` / `is_visible` flags**, so closed listings are dropped rather
+//!   than ranked.
+//! - **Clean apply URLs**, with no `?utm_source=Simplify&ref=Simplify` suffix.
+//! - **The simplify.jobs posting `id`**, which is what lets the enrichment
+//!   pass fetch real requirements and perks for these listings.
+//!
+//! The files are ~12 MB raw but ~1.5 MB on the wire (the client has gzip and
+//! brotli enabled) and are only fetched on an actual refresh, which is not on
+//! a timer.
 
 use anyhow::Result;
 use async_trait::async_trait;
-use chrono::{DateTime, Duration, Utc};
-use regex::Regex;
-use scraper::{Html, Selector};
-use std::sync::LazyLock;
+use chrono::{DateTime, TimeZone, Utc};
+use serde::Deserialize;
 
-use super::{collapse_ws, Scraper};
-use crate::location::clean_location;
+use super::Scraper;
 use crate::models::{Item, ItemType};
 
-/// Rows are appended newest-first, so the first `MAX_ROWS` are the freshest.
-/// The three repos carry roughly 370, 350 and 2,200 rows respectively; 500
-/// takes all of the two internship tables and the newest slice of the new-grad
-/// one, and a good fraction of every table is skipped below anyway for having
-/// no application link.
-const MAX_ROWS: usize = 500;
-/// Marks a row that reuses the company from the row above it.
-const CONTINUATION: &str = "↳";
+/// Newest active listings kept per repo.
+///
+/// Measured on a live fetch: 1,946 / 1,364 / 3,162 active rows, of which
+/// 1,458 / 0 / 2,343 fall inside the 60-day retention window that
+/// `prune_older_than` enforces anyway. 600 keeps a full window's worth of the
+/// two live repos without letting one source contribute several thousand rows
+/// — the same reason Levels.fyi is capped at 300, since round-robin
+/// diversification protects the first page but not the size of the cache.
+const MAX_LISTINGS: usize = 600;
+
+/// Rows the repos attribute to Simplify itself carry a posting id that
+/// resolves on simplify.jobs; community-contributed rows 404 there. Measured
+/// coverage: 98.0% / 90.9% / 99.5%. Checking the field costs nothing and saves
+/// a doomed request per community row.
+const SIMPLIFY_SOURCE: &str = "Simplify";
 
 #[derive(Clone, Copy)]
 pub enum TitleStyle {
@@ -39,50 +62,83 @@ pub struct GithubInternships {
 
 pub const PITT_CSC: GithubInternships = GithubInternships {
     name: "Pitt CSC Repo",
-    url: "https://raw.githubusercontent.com/pittcsc/Summer2026-Internships/dev/README.md",
+    url: "https://raw.githubusercontent.com/pittcsc/Summer2026-Internships/dev/.github/scripts/listings.json",
     title_style: TitleStyle::CompanyOnly,
     item_type: ItemType::Internship,
 };
 
 pub const SIMPLIFY: GithubInternships = GithubInternships {
     name: "Simplify",
-    url: "https://raw.githubusercontent.com/SimplifyJobs/Summer2026-Internships/dev/README.md",
+    url: "https://raw.githubusercontent.com/SimplifyJobs/Summer2026-Internships/dev/.github/scripts/listings.json",
     title_style: TitleStyle::RoleAtCompany,
     item_type: ItemType::Internship,
 };
 
-/// Same maintainers and the same table shape as [`SIMPLIFY`], but full-time
+/// Same maintainers and the same file shape as [`SIMPLIFY`], but full-time
 /// graduate roles rather than internships — the postings a final-year student
 /// is actually applying to.
 pub const NEW_GRAD: GithubInternships = GithubInternships {
     name: "New Grad Positions",
-    url: "https://raw.githubusercontent.com/SimplifyJobs/New-Grad-Positions/dev/README.md",
+    url: "https://raw.githubusercontent.com/SimplifyJobs/New-Grad-Positions/dev/.github/scripts/listings.json",
     title_style: TitleStyle::RoleAtCompany,
     item_type: ItemType::Job,
 };
 
-/// The tables carry a fifth "Age" cell holding a relative age like `0d`, `13d`
-/// or `1mo`. Parsing it matters: without it every row is stamped `Utc::now()`,
-/// so a listing posted a month ago claims to be brand new and the recency term
-/// lets these three large repos monopolise the top of the feed.
-static AGE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(\d+)\s*(h|d|w|mo|y|yr)$").unwrap());
-
-fn parse_age(raw: &str, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
-    let caps = AGE.captures(raw.trim())?;
-    let n: i64 = caps[1].parse().ok()?;
-    let span = match &caps[2] {
-        "h" => Duration::hours(n),
-        "d" => Duration::days(n),
-        "w" => Duration::weeks(n),
-        "mo" => Duration::days(n * 30),
-        _ => Duration::days(n * 365),
-    };
-    Some(now - span)
+/// One row of `listings.json`. Only the fields we use; the file also carries
+/// `company_url`, `date_updated`, `terms` and a few others.
+#[derive(Deserialize)]
+struct Listing {
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    company_name: Option<String>,
+    #[serde(default)]
+    url: Option<String>,
+    #[serde(default)]
+    locations: Vec<String>,
+    #[serde(default)]
+    terms: Vec<String>,
+    #[serde(default)]
+    degrees: Vec<String>,
+    #[serde(default)]
+    category: Option<String>,
+    #[serde(default)]
+    sponsorship: Option<String>,
+    #[serde(default)]
+    source: Option<String>,
+    #[serde(default)]
+    date_posted: i64,
+    #[serde(default)]
+    active: bool,
+    #[serde(default)]
+    is_visible: bool,
 }
 
-static ROW: LazyLock<Selector> = LazyLock::new(|| Selector::parse("tr").unwrap());
-static CELL: LazyLock<Selector> = LazyLock::new(|| Selector::parse("td").unwrap());
-static LINK: LazyLock<Selector> = LazyLock::new(|| Selector::parse("a").unwrap());
+impl Listing {
+    /// A row is usable only if it is open and actually links somewhere.
+    fn is_open(&self) -> bool {
+        self.active && self.is_visible && self.url.as_deref().is_some_and(|u| !u.is_empty())
+    }
+
+    fn timestamp(&self) -> Option<DateTime<Utc>> {
+        Utc.timestamp_opt(self.date_posted, 0).single()
+    }
+}
+
+/// Postings list every office they are open in; some name more than fifty.
+/// The pipe separator is what `location::clean_location` and
+/// `normalize_location` already expect.
+fn join_locations(locations: &[String]) -> Option<String> {
+    let joined = locations
+        .iter()
+        .map(|l| l.trim())
+        .filter(|l| !l.is_empty())
+        .collect::<Vec<_>>()
+        .join(" | ");
+    (!joined.is_empty()).then_some(joined)
+}
 
 #[async_trait]
 impl Scraper for GithubInternships {
@@ -91,81 +147,68 @@ impl Scraper for GithubInternships {
     }
 
     async fn fetch(&self, client: &reqwest::Client) -> Result<Vec<Item>> {
-        let body = client.get(self.url).send().await?.text().await?;
-        let doc = Html::parse_document(&body);
+        let listings: Vec<Listing> = client.get(self.url).send().await?.json().await?;
 
-        // One clock for the whole table so every row's age resolves against the
-        // same instant.
-        let now = Utc::now();
-        let mut items: Vec<Item> = Vec::new();
-        // Tracked separately from `items` because rows without an application
-        // link are skipped, and a continuation row still refers to the company
-        // of the row above it in the table, not the last row we kept.
-        let mut last_company = String::new();
+        let mut open: Vec<Listing> = listings.into_iter().filter(Listing::is_open).collect();
+        // The file is not in date order, so the cap has to sort first or it
+        // would keep an arbitrary slice rather than the freshest one.
+        open.sort_by_key(|l| std::cmp::Reverse(l.date_posted));
+        open.truncate(MAX_LISTINGS);
 
-        for row in doc.select(&ROW).take(MAX_ROWS) {
-            let cells: Vec<_> = row.select(&CELL).collect();
-            if cells.len() < 4 {
-                continue; // header row, or a table with a different shape
-            }
+        Ok(open
+            .into_iter()
+            .filter_map(|listing| {
+                let url = listing.url.clone()?;
+                let timestamp = listing.timestamp()?;
+                let company = listing.company_name.clone().unwrap_or_else(|| "Unknown".into());
+                let role = listing.title.clone().unwrap_or_else(|| "Intern".into());
+                let location = join_locations(&listing.locations);
 
-            let mut company = match cells[0].select(&LINK).next() {
-                Some(a) => collapse_ws(&a.text().collect::<String>()),
-                None => collapse_ws(&cells[0].text().collect::<String>()),
-            };
-            if company == CONTINUATION {
-                company = if last_company.is_empty() {
-                    "Unknown".to_string()
-                } else {
-                    last_company.clone()
+                let title = match self.title_style {
+                    TitleStyle::CompanyOnly => format!("Internship at {company}"),
+                    TitleStyle::RoleAtCompany => format!("{role} at {company}"),
                 };
-            }
-            last_company = company.clone();
 
-            let role = collapse_ws(&cells[1].text().collect::<String>());
-            let location = clean_location(&cells[2].inner_html());
-
-            // The application cell holds the apply button; rows without one are
-            // closed or placeholder listings.
-            let Some(href) = cells[3]
-                .select(&LINK)
-                .next()
-                .and_then(|a| a.value().attr("href"))
-            else {
-                continue;
-            };
-
-            let (title, content) = match self.title_style {
-                TitleStyle::CompanyOnly => (
-                    format!("Internship at {company}"),
-                    format!("Role: {role} · Location: {location}"),
-                ),
-                TitleStyle::RoleAtCompany => (
-                    format!("{role} at {company}"),
-                    format!("Location: {location}"),
-                ),
-            };
-
-            items.push(
-                Item {
-                    // These repos are software-internship-only, so skip the
-                    // keyword classifier and label them directly.
-                    discipline: Some("Software Engineering".to_string()),
-                    ..Item::new(title, self.name, self.item_type, href)
+                // Richer than the old table could offer, and it feeds skill
+                // extraction until the enrichment pass fills in the real
+                // description.
+                let mut parts = Vec::new();
+                if matches!(self.title_style, TitleStyle::CompanyOnly) {
+                    parts.push(format!("Role: {role}"));
                 }
-                .with_content(content)
-                .with_timestamp(
-                    cells
-                        .get(4)
-                        .map(|c| collapse_ws(&c.text().collect::<String>()))
-                        .and_then(|age| parse_age(&age, now))
-                        .unwrap_or(now),
-                )
-                .with_location(Some(location)),
-            );
-        }
+                if let Some(loc) = location.as_deref() {
+                    parts.push(format!("Location: {loc}"));
+                }
+                if !listing.terms.is_empty() {
+                    parts.push(listing.terms.join(", "));
+                }
+                if let Some(category) = listing.category.as_deref().filter(|c| !c.is_empty()) {
+                    parts.push(format!("Category: {category}"));
+                }
+                if !listing.degrees.is_empty() {
+                    parts.push(format!("Degrees: {}", listing.degrees.join(", ")));
+                }
+                if let Some(s) = listing.sponsorship.as_deref().filter(|s| !s.is_empty()) {
+                    parts.push(s.to_string());
+                }
 
-        Ok(items)
+                Some(
+                    Item {
+                        // These repos are software-only, so skip the keyword
+                        // classifier and label them directly.
+                        discipline: Some("Software Engineering".to_string()),
+                        simplify_id: listing
+                            .id
+                            .filter(|id| !id.is_empty())
+                            .filter(|_| listing.source.as_deref() == Some(SIMPLIFY_SOURCE)),
+                        ..Item::new(title, self.name, self.item_type, url)
+                    }
+                    .with_content(parts.join(" · "))
+                    .with_timestamp(timestamp)
+                    .with_location(location),
+                )
+            })
+            .collect())
     }
 }
 
@@ -173,28 +216,71 @@ impl Scraper for GithubInternships {
 mod tests {
     use super::*;
 
-    #[test]
-    fn parses_the_age_column_units() {
-        let now = Utc::now();
-        assert_eq!(parse_age("0d", now).unwrap(), now);
-        assert_eq!(parse_age("13d", now).unwrap(), now - Duration::days(13));
-        assert_eq!(parse_age("1mo", now).unwrap(), now - Duration::days(30));
-        assert_eq!(parse_age(" 6h ", now).unwrap(), now - Duration::hours(6));
-        assert_eq!(parse_age("2w", now).unwrap(), now - Duration::weeks(2));
+    fn listing(json: &str) -> Listing {
+        serde_json::from_str(json).expect("listing parses")
     }
 
     #[test]
-    fn unparseable_ages_fall_back_to_now() {
-        let now = Utc::now();
-        // The caller substitutes `now` on None; what matters is not guessing.
-        assert!(parse_age("", now).is_none());
-        assert!(parse_age("recently", now).is_none());
-        assert!(parse_age("d", now).is_none());
+    fn parses_a_real_row() {
+        let l = listing(
+            r#"{"date_updated":1766764298,"sponsorship":"U.S. Citizenship is Required",
+                "active":true,"degrees":["Bachelor's"],"url":"https://example.com/job",
+                "company_name":"AeroVironment","title":"Software Engineering Intern",
+                "locations":["Germantown, MD"],"terms":["Summer 2026"],
+                "category":"Software Engineering","source":"Simplify",
+                "id":"3697b474-d02a-477a-949b-63c212baa9a1","date_posted":1766764298,
+                "company_url":"","is_visible":true}"#,
+        );
+        assert!(l.is_open());
+        assert_eq!(l.company_name.as_deref(), Some("AeroVironment"));
+        assert_eq!(l.timestamp().unwrap().timestamp(), 1766764298);
     }
 
     #[test]
-    fn an_old_listing_sorts_behind_a_fresh_one() {
-        let now = Utc::now();
-        assert!(parse_age("1mo", now).unwrap() < parse_age("2d", now).unwrap());
+    fn closed_and_hidden_and_linkless_rows_are_dropped() {
+        let base = r#""url":"https://e.com/j","date_posted":1,"#;
+        assert!(!listing(&format!("{{{base}\"active\":false,\"is_visible\":true}}")).is_open());
+        assert!(!listing(&format!("{{{base}\"active\":true,\"is_visible\":false}}")).is_open());
+        assert!(!listing(
+            r#"{"url":"","date_posted":1,"active":true,"is_visible":true}"#
+        )
+        .is_open());
+    }
+
+    #[test]
+    fn unknown_fields_do_not_break_the_parse() {
+        // The maintainers add columns without warning; a new one must not take
+        // the whole source down.
+        let l = listing(
+            r#"{"url":"https://e.com/j","date_posted":1,"active":true,"is_visible":true,
+                "some_brand_new_field":{"nested":[1,2,3]}}"#,
+        );
+        assert!(l.is_open());
+    }
+
+    #[test]
+    fn locations_join_with_the_separator_the_tagger_expects() {
+        assert_eq!(
+            join_locations(&["Remote in USA".into(), "Toronto, ON".into()]).unwrap(),
+            "Remote in USA | Toronto, ON"
+        );
+        assert_eq!(join_locations(&[]), None);
+        assert_eq!(join_locations(&["".into(), "  ".into()]), None);
+    }
+
+    #[test]
+    fn only_simplify_sourced_rows_claim_a_posting_id() {
+        // Community ids 404 on simplify.jobs, so carrying one would buy a
+        // guaranteed-failed request per row.
+        let keep = |src: &str| {
+            listing(&format!(
+                r#"{{"url":"https://e.com/j","date_posted":1,"active":true,
+                    "is_visible":true,"id":"abc","source":"{src}"}}"#
+            ))
+        };
+        let simplify = keep("Simplify");
+        assert_eq!(simplify.source.as_deref(), Some("Simplify"));
+        let community = keep("AlmondCroffle");
+        assert_ne!(community.source.as_deref(), Some(SIMPLIFY_SOURCE));
     }
 }

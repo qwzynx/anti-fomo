@@ -4,6 +4,8 @@
   import { feed } from "$lib/feed.svelte";
   import { ArrowUpRight, Bookmark, BookmarkCheck, MapPin, Sparkles, X, iconForType } from "$lib/icons";
   import { ctaLabel, sourceBlurb, splitTitle, tagsFor, typeBadgeClass } from "$lib/item";
+  import JobSections from "./JobSections.svelte";
+  import SkillMatch from "./SkillMatch.svelte";
 
   // Everything there is to say about one item, with no opinion about where it
   // is mounted. The modal wraps this in dialog chrome on phones; the jobs page
@@ -27,6 +29,10 @@
   const tags = $derived(tagsFor(item));
   const cta = $derived(ctaLabel(item));
   const TypeIcon = $derived(iconForType(item.item_type));
+  /** Whether the enrichment pass reached this posting. */
+  const enriched = $derived(
+    Boolean(item.requirements || item.responsibilities || item.perks || item.description),
+  );
   const locations = $derived(
     item.location
       ? item.location
@@ -134,6 +140,12 @@
       </div>
     {/if}
 
+    <!-- Rust only fills `required_skills` for jobs and internships, so this is
+         self-gating: an article never renders it. -->
+    {#if item.required_skills && item.required_skills.length > 0}
+      <SkillMatch {item} />
+    {/if}
+
     {#if locations.length > 0}
       <div class="mb-4 rounded-xl bg-line-soft p-4">
         <p
@@ -157,10 +169,15 @@
       </div>
     {/if}
 
-    <p class="text-[15px] leading-relaxed whitespace-pre-line text-muted">
-      {item.content_text ||
-        "No further details were scraped for this item — open the source for the full picture."}
-    </p>
+    <JobSections {item} />
+
+    <!-- The scraped one-liner is redundant once the real posting is here. -->
+    {#if !enriched}
+      <p class="text-[15px] leading-relaxed whitespace-pre-line text-muted">
+        {item.content_text ||
+          "No further details were scraped for this item — open the source for the full picture."}
+      </p>
+    {/if}
 
     {#if chips.length > 0}
       <div class="mt-6 flex flex-wrap gap-2">

@@ -181,7 +181,21 @@
     {@render widget("Happening soon", Calendar, "text-event", upcoming, "No upcoming events.", 120)}
   </section>
 
-  {#if feed.interests.length === 0 && !feed.loading}
+  <!-- Two setup nudges, but never both at once: stacked banners read as
+       clutter rather than as an invitation. Skills goes first, because it is
+       the one that changes what every job card says. -->
+  {#if feed.needsSkillsSetup && !feed.loading}
+    <button
+      onclick={() => feed.openSkillsForm()}
+      class="animate-fade-in mb-5 flex w-full items-center gap-2.5 rounded-xl border border-brand/30 bg-brand-soft px-4 py-3 text-left text-sm text-brand-soft-fg transition-colors hover:border-brand"
+    >
+      <Sparkles size={16} class="shrink-0" />
+      <span>
+        <span class="font-semibold">Tell us what you can build</span> and every job will show
+        how much of it you already cover.
+      </span>
+    </button>
+  {:else if feed.interests.length === 0 && !feed.loading}
     <a
       href="/settings"
       class="animate-fade-in mb-5 flex items-center gap-2.5 rounded-xl border border-brand/30 bg-brand-soft px-4 py-3 text-sm text-brand-soft-fg transition-colors hover:border-brand"

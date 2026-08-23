@@ -2,7 +2,17 @@
   import { timeAgo } from "$lib/api";
   import { feed } from "$lib/feed.svelte";
   import { DISCIPLINES } from "$lib/filters";
-  import { Check, Monitor, Moon, RefreshCw, RotateCcw, Sun } from "$lib/icons";
+  import {
+    Check,
+    Monitor,
+    Moon,
+    RefreshCw,
+    RotateCcw,
+    Sparkles,
+    Sun,
+    skillCategoryIcon,
+  } from "$lib/icons";
+  import { groupByCategory } from "$lib/skills";
   import { theme, type Theme } from "$lib/theme.svelte";
 
   const MAJORS = DISCIPLINES.filter((d) => d !== "All");
@@ -19,6 +29,7 @@
     feed.setInterests(next);
   }
 
+  const skillGroups = $derived(groupByCategory(feed.skills, feed.skillCatalog));
   const sources = $derived(feed.status?.sources ?? []);
   const quiet = $derived(sources.filter((s) => s.count === 0).length);
 </script>
@@ -81,6 +92,51 @@
         Clear all
       </button>
     {/if}
+  </section>
+
+  <section class="card mb-5 p-5">
+    <div class="mb-1 flex items-baseline justify-between gap-3">
+      <h3 class="text-lg font-bold">Your skills</h3>
+      <span class="shrink-0 text-xs font-medium text-subtle">
+        {feed.skills.length} selected
+      </span>
+    </div>
+    <p class="mb-4 text-sm text-muted">
+      What you can actually build. Every job is matched against the skills its role
+      typically wants, so you can see how much of it you already cover — and the ones you
+      fit rank higher.
+    </p>
+
+    {#if skillGroups.length > 0}
+      <div class="mb-4 flex flex-col gap-2.5">
+        {#each skillGroups as group (group.name)}
+          {@const Icon = skillCategoryIcon(group.name)}
+          <div class="flex flex-wrap items-center gap-1.5">
+            <span
+              class="mr-1 inline-flex shrink-0 items-center gap-1 text-[11px] font-bold tracking-wide text-subtle uppercase"
+            >
+              <Icon size={11} />
+              {group.name}
+            </span>
+            {#each group.skills as skill (skill)}
+              <span
+                class="rounded-md bg-line-soft px-2 py-0.5 text-[11px] font-semibold text-muted"
+              >
+                {skill}
+              </span>
+            {/each}
+          </div>
+        {/each}
+      </div>
+    {/if}
+
+    <button
+      onclick={() => feed.openSkillsForm()}
+      class="inline-flex items-center gap-1.5 rounded-xl bg-brand px-5 py-2.5 text-sm font-semibold text-brand-fg transition-all hover:bg-brand-hover hover:shadow-lg hover:shadow-brand/25"
+    >
+      <Sparkles size={15} strokeWidth={2.5} />
+      {feed.needsSkillsSetup ? "Set up your skills" : "Edit your skills"}
+    </button>
   </section>
 
   <section class="card mb-5 p-5">

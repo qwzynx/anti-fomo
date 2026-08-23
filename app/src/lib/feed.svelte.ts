@@ -2,9 +2,16 @@ import { listen } from "@tauri-apps/api/event";
 // Namespaced: several store methods below intentionally share a name with the
 // command they wrap, and `api.setSaved(…)` makes it obvious which is which.
 import * as api from "./api";
-import type { FeedStatus, ScrapedItem } from "./api";
+import type { FeedStatus, ScrapedItem, SkillCategory } from "./api";
 
 const DEFAULT_MAJOR = "Software Engineering";
+
+/**
+ * How long after the last skill tap the feed is re-ranked. Long enough to
+ * absorb a burst of taps while reading one posting, short enough that the new
+ * order is there by the time the user looks back at the list.
+ */
+const SKILL_RERANK_DELAY_MS = 1200;
 
 // One shared store rather than a fetch in every page: the feed, the internships
 // hub and the saved list all read the same local database, and the header's
@@ -17,10 +24,19 @@ let status = $state<FeedStatus | null>(null);
 let major = $state(DEFAULT_MAJOR);
 let interests = $state<string[]>([]);
 let availableInterests = $state<string[]>([]);
+let skills = $state<string[]>([]);
+let skillCatalog = $state<SkillCategory[]>([]);
+// null until the user has been through the form once. A stored flag rather
+// than "is the skill list empty", because finishing the form having picked
+// nothing and never having opened it must look different — otherwise the
+// setup prompt never goes away.
+let skillsSetupAt = $state<string | null>(null);
+let skillsFormOpen = $state(false);
 let loading = $state(true);
 let refreshing = $state(false);
 let error = $state<string | null>(null);
 let started = false;
+let skillRerankTimer: ReturnType<typeof setTimeout> | null = null;
 
 async function loadAll() {
   const [feedItems, internshipItems, savedItems, st] = await Promise.all([
@@ -45,6 +61,31 @@ function patch(url: string, change: (item: ScrapedItem) => void) {
   }
 }
 
+/**
+ * Recomputes every item's `matched_skills` against the current profile without
+ * a round trip. `required_skills` is already on each item, so the intersection
+ * Rust would compute is one the UI can do itself — which is what lets a chip
+ * tap update the match figure instantly while the re-rank waits.
+ */
+function restampMatchedSkills() {
+  const have = new Set(skills);
+  for (const list of [items, internships, saved]) {
+    for (const item of list) {
+      if (!item.required_skills?.length) continue;
+      item.matched_skills = item.required_skills.filter((s) => have.has(s));
+    }
+  }
+}
+
+/** Re-ranks once the taps stop, so the list does not reshuffle mid-burst. */
+function scheduleRerank() {
+  if (skillRerankTimer) clearTimeout(skillRerankTimer);
+  skillRerankTimer = setTimeout(() => {
+    skillRerankTimer = null;
+    void loadAll();
+  }, SKILL_RERANK_DELAY_MS);
+}
+
 export const feed = {
   get items() {
     return items;
@@ -66,6 +107,22 @@ export const feed = {
   },
   get availableInterests() {
     return availableInterests;
+  },
+  get skills() {
+    return skills;
+  },
+  get skillCatalog() {
+    return skillCatalog;
+  },
+  get skillsSetupAt() {
+    return skillsSetupAt;
+  },
+  /** True until the user has been through the skills form once. */
+  get needsSkillsSetup() {
+    return skillsSetupAt === null;
+  },
+  get skillsFormOpen() {
+    return skillsFormOpen;
   },
   get loading() {
     return loading;
@@ -92,14 +149,20 @@ export const feed = {
         listen<boolean>("feed:refreshing", (e) => (refreshing = e.payload)),
       ]);
 
-      const [savedMajor, chosen, offered] = await Promise.all([
+      const [savedMajor, chosen, offered, mySkills, catalog, setupAt] = await Promise.all([
         api.getSetting("major"),
         api.getInterests(),
         api.listInterests(),
+        api.getSkills(),
+        api.listSkills(),
+        api.getSetting("skills_setup_at"),
       ]);
       major = savedMajor ?? DEFAULT_MAJOR;
       interests = chosen;
       availableInterests = offered;
+      skills = mySkills;
+      skillCatalog = catalog;
+      skillsSetupAt = setupAt;
 
       await loadAll();
     } catch (e) {
@@ -120,6 +183,57 @@ export const feed = {
     interests = next;
     await api.setInterests(next);
     await loadAll();
+  },
+
+  // --- skills ---
+
+  openSkillsForm() {
+    skillsFormOpen = true;
+  },
+
+  closeSkillsForm() {
+    skillsFormOpen = false;
+  },
+
+  /**
+   * Flips one skill. Persists straight away, but re-ranks on a trailing
+   * debounce: `loadAll()` is four invokes and a full re-rank of the whole
+   * cache, which is fine for the odd interest chip and wrong for skill chips
+   * tapped in a burst while reading one posting — where it would also
+   * reshuffle the list out from under the detail pane between taps.
+   */
+  async toggleSkill(name: string) {
+    const next = skills.includes(name)
+      ? skills.filter((s) => s !== name)
+      : [...skills, name];
+    const previous = skills;
+
+    skills = next;
+    restampMatchedSkills();
+
+    try {
+      await api.setSkills(next);
+      scheduleRerank();
+    } catch (e) {
+      skills = previous;
+      restampMatchedSkills();
+      error = String(e);
+    }
+  },
+
+  /** Bulk write from the wizard. Re-ranks immediately — there is no burst. */
+  async setSkills(next: string[]) {
+    skills = next;
+    restampMatchedSkills();
+    await api.setSkills(next);
+    await loadAll();
+  },
+
+  /** Marks the form as having been seen, which retires the setup prompt. */
+  async completeSkillsSetup() {
+    const at = new Date().toISOString();
+    skillsSetupAt = at;
+    await api.setSetting("skills_setup_at", at);
   },
 
   async refresh(force = false) {

@@ -3,6 +3,7 @@
   import { feed } from "$lib/feed.svelte";
   import { Bookmark, BookmarkCheck, Star, X, iconForType } from "$lib/icons";
   import { splitTitle, tagsFor, typeBadgeClass } from "$lib/item";
+  import { skillMatch } from "$lib/skills";
 
   // The row form of a result, for scanning rather than browsing. Two variants
   // share this file because they differ only in what is allowed to survive the
@@ -29,6 +30,9 @@
   const logo = $derived(logoFor(item.url));
   const parts = $derived(splitTitle(item));
   const tags = $derived(tagsFor(item));
+  // Only once the user has a profile: "0/8 skills" on every row is a worse
+  // first impression than no badge at all.
+  const match = $derived(feed.skills.length > 0 ? skillMatch(item) : null);
   const TypeIcon = $derived(iconForType(item.item_type));
   const isTopMatch = $derived((item.relevance_score ?? 0) >= 15);
   const compact = $derived(variant === "compact");
@@ -136,6 +140,11 @@
       </span>
       <span aria-hidden="true">·</span>
       <span>{timeAgo(item.timestamp)}</span>
+      {#if match}
+        <span class="rounded bg-brand-soft px-1.5 py-0.5 text-[10px] font-bold text-brand-soft-fg">
+          {match.have}/{match.total} skills
+        </span>
+      {/if}
       {#if !compact}
         {#each tags as tag (tag)}
           <span class="rounded bg-line-soft px-1.5 py-0.5 text-[10px] text-muted">{tag}</span>

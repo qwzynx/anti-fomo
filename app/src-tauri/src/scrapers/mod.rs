@@ -13,6 +13,7 @@ use crate::models::Item;
 use crate::rank::classify_item;
 
 pub mod daily_dev;
+pub mod details;
 pub mod devpost;
 pub mod github_internships;
 pub mod hacker_news;
@@ -124,4 +125,45 @@ pub fn strip_html(html: &str) -> String {
 
 pub fn collapse_ws(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Caps a string at `max` bytes without splitting a word or a UTF-8 sequence.
+/// Job descriptions routinely run past 20 KB, most of it company boilerplate.
+pub fn truncate_words(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        return s.to_string();
+    }
+    // `floor_char_boundary` is still unstable, so walk back to one by hand.
+    let mut cut = max;
+    while cut > 0 && !s.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    let head = &s[..cut];
+    match head.rfind(char::is_whitespace) {
+        Some(space) => head[..space].trim_end().to_string(),
+        None => head.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn truncation_leaves_short_strings_alone() {
+        assert_eq!(truncate_words("short", 100), "short");
+    }
+
+    #[test]
+    fn truncation_cuts_on_a_word_boundary() {
+        assert_eq!(truncate_words("alpha beta gamma", 12), "alpha beta");
+    }
+
+    #[test]
+    fn truncation_never_splits_a_utf8_sequence() {
+        // Each "é" is two bytes, so a naive slice at 5 would panic.
+        let s = "éééééééé";
+        let out = truncate_words(s, 5);
+        assert!(s.starts_with(&out) || out.is_empty());
+    }
 }

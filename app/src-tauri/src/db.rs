@@ -5,11 +5,11 @@
 use anyhow::Result;
 use chrono::{DateTime, TimeZone, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
-use crate::models::{Item, ItemType};
+use crate::models::{DetailStatus, Item, ItemType, JobDetail};
 
-const SCHEMA_VERSION: i32 = 3;
+const SCHEMA_VERSION: i32 = 4;
 
 pub fn open(path: &std::path::Path) -> Result<Connection> {
     if let Some(parent) = path.parent() {
@@ -30,8 +30,10 @@ fn migrate(conn: &Connection) -> Result<()> {
     }
 
     // `items` is a rebuildable cache, so schema changes just drop and refetch
-    // rather than carrying migration logic. `settings` and `item_state` hold
-    // the only data worth keeping and are never dropped.
+    // rather than carrying migration logic. `settings`, `item_state` and
+    // `job_details` hold the only data worth keeping and are never dropped —
+    // `job_details` in particular represents real network work that would be
+    // expensive to redo.
     conn.execute_batch(
         r#"
         DROP TABLE IF EXISTS items;
@@ -48,6 +50,11 @@ fn migrate(conn: &Connection) -> Result<()> {
             relevance_score REAL,
             location        TEXT,
             location_tags   TEXT NOT NULL DEFAULT '[]',
+            -- The simplify.jobs posting id, when the source knows one. Scraped
+            -- source data rather than something derived on read, and stored
+            -- because the enrichment pass runs off the database, not off the
+            -- Vec the scrape happened to return.
+            simplify_id     TEXT,
             -- URL is the listing's real identity. The old backend declared
             -- uniqueness on (title, source_platform), but it never actually
             -- wrote to the database, so the flaw never surfaced: Pitt CSC
@@ -78,6 +85,25 @@ fn migrate(conn: &Connection) -> Result<()> {
         );
 
         CREATE INDEX IF NOT EXISTS idx_state_saved ON item_state (saved_at);
+
+        -- One row per posting whose description we have tried to fetch. Kept
+        -- out of `items` on purpose: `save_items` overwrites `content_text` on
+        -- every refresh, so a description stored there would be destroyed by
+        -- the next scrape whose enrichment happened to fail.
+        --
+        -- This is also the ledger that makes enrichment incremental. A row
+        -- here means "already attempted" — including a failure, so a dead link
+        -- costs one request rather than one per refresh forever.
+        CREATE TABLE IF NOT EXISTS job_details (
+            url              TEXT PRIMARY KEY,
+            description      TEXT,
+            requirements     TEXT,
+            responsibilities TEXT,
+            perks            TEXT,
+            tagged_skills    TEXT NOT NULL DEFAULT '[]',
+            status           TEXT NOT NULL,
+            fetched_at       TEXT NOT NULL
+        );
         "#,
     )?;
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
@@ -93,8 +119,9 @@ pub fn save_items(conn: &mut Connection, items: &[Item]) -> Result<usize> {
             r#"
             INSERT INTO items
                 (title, source_platform, item_type, url, content_text,
-                 timestamp, discipline, relevance_score, location, location_tags)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+                 timestamp, discipline, relevance_score, location, location_tags,
+                 simplify_id)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
             ON CONFLICT (url) DO UPDATE SET
                 title           = excluded.title,
                 source_platform = excluded.source_platform,
@@ -104,7 +131,10 @@ pub fn save_items(conn: &mut Connection, items: &[Item]) -> Result<usize> {
                 discipline      = excluded.discipline,
                 relevance_score = excluded.relevance_score,
                 location        = excluded.location,
-                location_tags   = excluded.location_tags
+                location_tags   = excluded.location_tags,
+                -- Only ever gained, never cleared: one source knowing the id
+                -- and another not should not lose it on the second write.
+                simplify_id     = COALESCE(excluded.simplify_id, items.simplify_id)
             "#,
         )?;
 
@@ -120,6 +150,7 @@ pub fn save_items(conn: &mut Connection, items: &[Item]) -> Result<usize> {
                 item.relevance_score,
                 item.location,
                 serde_json::to_string(&item.location_tags)?,
+                item.simplify_id,
             ])?;
         }
     }
@@ -130,7 +161,8 @@ pub fn save_items(conn: &mut Connection, items: &[Item]) -> Result<usize> {
 pub fn load_items(conn: &Connection) -> Result<Vec<Item>> {
     let mut stmt = conn.prepare(
         "SELECT title, source_platform, item_type, url, content_text,
-                timestamp, discipline, relevance_score, location, location_tags
+                timestamp, discipline, relevance_score, location, location_tags,
+                simplify_id
          FROM items ORDER BY timestamp DESC",
     )?;
 
@@ -150,9 +182,19 @@ pub fn load_items(conn: &Connection) -> Result<Vec<Item>> {
             relevance_score: row.get(7)?,
             location: row.get(8)?,
             location_tags: serde_json::from_str(&tags).unwrap_or_default(),
-            // Derived on read: `annotate` fills these from `item_state` and
-            // `rank::personalize` fills `matched_interests`.
+            simplify_id: row.get(10)?,
+            // Derived on read: `annotate` fills the saved/seen flags from
+            // `item_state`, `attach_details` fills the fetched posting from
+            // `job_details`, and `rank::personalize` fills the interest and
+            // skill lists.
             matched_interests: Vec::new(),
+            required_skills: Vec::new(),
+            matched_skills: Vec::new(),
+            description: None,
+            requirements: None,
+            responsibilities: None,
+            perks: None,
+            tagged_skills: Vec::new(),
             saved: false,
             seen: false,
         })
@@ -213,6 +255,123 @@ pub fn annotate(items: &mut [Item], states: &ItemStates) {
         item.saved = states.saved.contains(&item.url);
         item.seen = states.seen.contains(&item.url);
     }
+}
+
+// --- fetched job descriptions ---
+
+/// Reads every stored description, keyed by URL, for [`attach_details`].
+pub fn load_details(conn: &Connection) -> Result<HashMap<String, JobDetail>> {
+    let mut stmt = conn.prepare(
+        "SELECT url, description, requirements, responsibilities, perks,
+                tagged_skills, status
+         FROM job_details",
+    )?;
+
+    let rows = stmt.query_map([], |row| {
+        let tagged: String = row.get(5)?;
+        let status: String = row.get(6)?;
+        Ok((
+            row.get::<_, String>(0)?,
+            JobDetail {
+                description: row.get(1)?,
+                requirements: row.get(2)?,
+                responsibilities: row.get(3)?,
+                perks: row.get(4)?,
+                tagged_skills: serde_json::from_str(&tagged).unwrap_or_default(),
+                status: DetailStatus::from_label(&status),
+            },
+        ))
+    })?;
+
+    Ok(rows.flatten().collect())
+}
+
+/// Stamps fetched descriptions onto the items that have one. The counterpart
+/// to [`annotate`], and like it a no-op for items we know nothing about.
+pub fn attach_details(items: &mut [Item], details: &HashMap<String, JobDetail>) {
+    for item in items {
+        let Some(detail) = details.get(&item.url) else {
+            continue;
+        };
+        item.description = detail.description.clone();
+        item.requirements = detail.requirements.clone();
+        item.responsibilities = detail.responsibilities.clone();
+        item.perks = detail.perks.clone();
+        item.tagged_skills = detail.tagged_skills.clone();
+    }
+}
+
+/// Records what one fetch found — including that it found nothing, which is
+/// what stops a dead link being retried on every refresh.
+pub fn save_details(conn: &mut Connection, rows: &[(String, JobDetail)]) -> Result<usize> {
+    let now = Utc::now().to_rfc3339();
+    let tx = conn.transaction()?;
+    {
+        let mut stmt = tx.prepare(
+            r#"
+            INSERT INTO job_details
+                (url, description, requirements, responsibilities, perks,
+                 tagged_skills, status, fetched_at)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            ON CONFLICT (url) DO UPDATE SET
+                description      = excluded.description,
+                requirements     = excluded.requirements,
+                responsibilities = excluded.responsibilities,
+                perks            = excluded.perks,
+                tagged_skills    = excluded.tagged_skills,
+                status           = excluded.status,
+                fetched_at       = excluded.fetched_at
+            "#,
+        )?;
+        for (url, detail) in rows {
+            stmt.execute(params![
+                url,
+                detail.description,
+                detail.requirements,
+                detail.responsibilities,
+                detail.perks,
+                serde_json::to_string(&detail.tagged_skills)?,
+                detail.status.as_str(),
+                now,
+            ])?;
+        }
+    }
+    tx.commit()?;
+    Ok(rows.len())
+}
+
+/// The enrichment work queue: opportunities we have never tried to fetch.
+///
+/// Returns the URL and the simplify.jobs id when the source knew one, since
+/// that decides which handler can serve the posting. Newest first, so a
+/// backlog drains in the order the user is most likely to be reading.
+pub fn urls_needing_details(
+    conn: &Connection,
+    limit: usize,
+) -> Result<Vec<(String, Option<String>)>> {
+    let mut stmt = conn.prepare(
+        "SELECT url, simplify_id FROM items
+         WHERE item_type IN ('Job', 'Internship')
+           AND url NOT IN (SELECT url FROM job_details)
+         ORDER BY timestamp DESC
+         LIMIT ?1",
+    )?;
+    let rows = stmt.query_map(params![limit as i64], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+    })?;
+    Ok(rows.flatten().collect())
+}
+
+/// Drops descriptions for postings that have aged out of the cache. Mirrors
+/// [`prune_orphan_states`], including sparing anything the user has starred —
+/// the saved list renders those from a snapshot and still wants their body.
+pub fn prune_orphan_details(conn: &Connection) -> Result<usize> {
+    Ok(conn.execute(
+        "DELETE FROM job_details
+         WHERE url NOT IN (SELECT url FROM items)
+           AND url NOT IN (SELECT url FROM item_state WHERE saved_at IS NOT NULL)",
+        [],
+    )?)
 }
 
 /// Upserts one column of `item_state` to a timestamp or NULL, creating the row
