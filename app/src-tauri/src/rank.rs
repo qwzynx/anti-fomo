@@ -251,8 +251,16 @@ pub fn match_interests(item: &Item, wanted: &[String]) -> Vec<String> {
         return Vec::new();
     }
     // Pad with spaces so keywords written with leading/trailing spaces (" ai ")
-    // can match at the very start or end of the text.
-    let text = format!(" {} {} ", item.title, item.content_text).to_lowercase();
+    // can match at the very start or end of the text. Lowercased in place and
+    // in ASCII: every interest keyword is ASCII, so this is exactly as precise
+    // as the Unicode fold and does not allocate a second copy of the body.
+    let mut text = String::with_capacity(item.title.len() + item.content_text.len() + 3);
+    text.push(' ');
+    text.push_str(&item.title);
+    text.push(' ');
+    text.push_str(&item.content_text);
+    text.push(' ');
+    text.make_ascii_lowercase();
 
     INTERESTS
         .iter()
@@ -349,7 +357,7 @@ impl Default for Weights {
 /// Everything the scorer needs to know about the reader. Grouped because the
 /// term count has outgrown a positional argument list, and because every
 /// caller reads the whole set out of `settings` together anyway.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Profile {
     pub major: String,
     pub interests: Vec<String>,

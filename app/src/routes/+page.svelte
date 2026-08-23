@@ -32,7 +32,7 @@
   const roles = $derived(feed.internships);
 
   /** The hero: the best-ranked role you have not opened yet. */
-  const hero = $derived(roles.find((i) => !i.seen) ?? roles[0] ?? null);
+  const hero = $derived(roles.find((i) => !feed.isSeen(i.url)) ?? roles[0] ?? null);
 
   const restOfRoles = $derived(roles.filter((i) => i.url !== hero?.url).slice(0, PREVIEW));
 
@@ -48,7 +48,9 @@
   /** What actually changed, which is the one thing a page called Today owes you. */
   const fresh = $derived.by(() => {
     const cutoff = Date.now() - 24 * 3600 * 1000;
-    return feed.items.filter((i) => !i.seen && new Date(i.timestamp).getTime() >= cutoff).length;
+    return feed.items.filter(
+      (i) => !feed.isSeen(i.url) && new Date(i.timestamp).getTime() >= cutoff,
+    ).length;
   });
 
   const subtitle = $derived(

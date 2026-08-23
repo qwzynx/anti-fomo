@@ -28,8 +28,10 @@
   const cta = $derived(ctaLabel(item));
 
   const required = $derived(item.required_skills ?? []);
-  const have = $derived(item.matched_skills ?? []);
-  const missing = $derived(required.filter((s) => !have.includes(s)));
+  const split = $derived(feed.splitSkills(item));
+  const have = $derived(split.have);
+  const missing = $derived(split.missing);
+  const saved = $derived(feed.isSaved(item.url));
   /** One segment per skill the posting asks for, so the bar is the count. */
   const segments = $derived(Math.min(required.length, 12));
   const filled = $derived(
@@ -131,17 +133,17 @@
              hover-only, which is to say absent on the phone build. -->
         <button
           onclick={() => feed.toggleSaved(item)}
-          aria-pressed={item.saved}
-          aria-label={item.saved ? "Remove from saved" : "Save this role"}
+          aria-pressed={saved}
+          aria-label={saved ? "Remove from saved" : "Save this role"}
           class="flex h-[46px] w-[46px] shrink-0 items-center justify-center gap-2 rounded-xl border border-line bg-surface text-muted transition-colors hover:border-subtle sm:h-[42px] sm:w-auto sm:px-4 sm:text-sm sm:font-semibold
-                 {item.saved ? 'text-brand' : ''}"
+                 {saved ? 'text-brand' : ''}"
         >
-          {#if item.saved}
+          {#if saved}
             <BookmarkCheck size={16} strokeWidth={2.5} />
           {:else}
             <Bookmark size={16} />
           {/if}
-          <span class="hidden sm:inline">{item.saved ? "Saved" : "Save"}</span>
+          <span class="hidden sm:inline">{saved ? "Saved" : "Save"}</span>
         </button>
 
         <button

@@ -1,5 +1,26 @@
 import { invoke } from "@tauri-apps/api/core";
 
+/**
+ * One item, as the Rust `Item` struct defines it.
+ *
+ * Two shapes travel over `invoke`, and they are the same interface because
+ * every field the lighter one omits is already optional here:
+ *
+ * - **List rows** (`get_feed`, `get_internships`) are Rust's `ListItem`: what a
+ *   row renders and nothing else. No `description`/`requirements`/
+ *   `responsibilities`/`perks`, no `tagged_skills`, no `score_breakdown`, and
+ *   no `matched_skills` — the UI holds the live intersection, see
+ *   `feed.match()`. Carrying the full item made `get_internships` a 45.6 MB
+ *   payload for 17,739 rows; this one is 8.8 MB.
+ * - **Whole items** (`get_saved`, `get_item_detail`) carry everything. The
+ *   detail pane is the only place the fetched posting is on screen, so it is
+ *   the only place that asks for it.
+ *
+ * A row's `saved`/`seen` are a snapshot of what Rust knew when it built the
+ * payload. Nothing reads them directly — `feed.isSaved`/`feed.isSeen` are the
+ * live answer, because the lists are `$state.raw` and a mutated field on a raw
+ * item is invisible to the UI.
+ */
 export interface ScrapedItem {
   title: string;
   source_platform: string;
@@ -93,6 +114,14 @@ export const getInternships = (major?: string) =>
   invoke<ScrapedItem[]>("get_internships", { major: major ?? null });
 
 export const getSaved = () => invoke<ScrapedItem[]>("get_saved");
+
+/**
+ * One posting in full — the fetched description and the score breakdown the
+ * list payload leaves out. `null` once the cache has pruned it and it was
+ * never saved.
+ */
+export const getItemDetail = (url: string) =>
+  invoke<ScrapedItem | null>("get_item_detail", { url });
 
 export const feedStatus = () => invoke<FeedStatus>("feed_status");
 

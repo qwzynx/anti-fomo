@@ -19,8 +19,99 @@ pub fn open(path: &std::path::Path) -> Result<Connection> {
     // WAL keeps a background refresh from blocking reads by the UI.
     conn.pragma_update(None, "journal_mode", "WAL")?;
     conn.pragma_update(None, "foreign_keys", "ON")?;
+    // NORMAL is the documented companion to WAL: durability is still crash-safe,
+    // only a power cut can lose the last commit, and this is a rebuildable
+    // cache of scraped listings. FULL costs an fsync per statement, which a
+    // refresh writing 18,000 upserts pays 18,000 times.
+    conn.pragma_update(None, "synchronous", "NORMAL")?;
+    // ~32 MB of page cache and no temp files on disk. The whole database is
+    // 43 MB, so this is the difference between a read walking the file and a
+    // read walking memory. `mmap_size` is advisory — SQLite silently ignores
+    // it where mmap is unavailable, which is why it is not an error here.
+    conn.pragma_update(None, "cache_size", -32_000)?;
+    conn.pragma_update(None, "temp_store", "MEMORY")?;
+    let _ = conn.pragma_update(None, "mmap_size", 268_435_456i64);
     migrate(&conn)?;
     Ok(conn)
+}
+
+/// Rows in the item cache, without materialising them.
+///
+/// `feed_status` used to answer this by loading all 18,240 items and calling
+/// `.len()`, which is 38 ms and several megabytes of allocation to produce one
+/// integer — on a command the UI calls after every save and every dismissal.
+pub fn count_items(conn: &Connection) -> Result<usize> {
+    Ok(conn.query_row("SELECT COUNT(*) FROM items", [], |r| r.get::<_, i64>(0))? as usize)
+}
+
+/// How many cached items each source is currently contributing.
+pub fn source_counts(conn: &Connection) -> Result<HashMap<String, usize>> {
+    let mut stmt =
+        conn.prepare("SELECT source_platform, COUNT(*) FROM items GROUP BY source_platform")?;
+    let rows = stmt.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as usize))
+    })?;
+    Ok(rows.flatten().collect())
+}
+
+/// Every distinct source in the cache, alphabetically.
+pub fn distinct_sources(conn: &Connection) -> Result<Vec<String>> {
+    let mut stmt =
+        conn.prepare("SELECT DISTINCT source_platform FROM items ORDER BY source_platform")?;
+    let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+    Ok(rows.flatten().collect())
+}
+
+/// How many items the user has starred and how many they have dismissed.
+pub fn state_counts(conn: &Connection) -> Result<(usize, usize)> {
+    Ok(conn.query_row(
+        "SELECT COUNT(saved_at), COUNT(dismissed_at) FROM item_state",
+        [],
+        |r| Ok((r.get::<_, i64>(0)? as usize, r.get::<_, i64>(1)? as usize)),
+    )?)
+}
+
+/// One posting's fetched description, for the detail pane.
+///
+/// The list commands deliberately do not carry this: `load_details` is 28 MB
+/// of text across the cache, and a list renders none of it. The pane asks for
+/// the one posting it is showing instead.
+pub fn load_detail(conn: &Connection, url: &str) -> Result<Option<JobDetail>> {
+    let mut stmt = conn.prepare(
+        "SELECT description, requirements, responsibilities, perks,
+                tagged_skills, status, closes_at, salary_min, salary_max,
+                salary_currency, salary_period
+         FROM job_details WHERE url = ?1",
+    )?;
+    Ok(stmt
+        .query_row(params![url], |row| {
+            let tagged: String = row.get(4)?;
+            let status: String = row.get(5)?;
+            Ok(JobDetail {
+                description: row.get(0)?,
+                requirements: row.get(1)?,
+                responsibilities: row.get(2)?,
+                perks: row.get(3)?,
+                tagged_skills: serde_json::from_str(&tagged).unwrap_or_default(),
+                closes_at: row
+                    .get::<_, Option<String>>(6)?
+                    .and_then(|s| parse_rfc3339(&s)),
+                salary_min: row.get(7)?,
+                salary_max: row.get(8)?,
+                salary_currency: row.get(9)?,
+                salary_period: row.get(10)?,
+                status: DetailStatus::from_label(&status),
+            })
+        })
+        .optional()?)
+}
+
+/// One cached item by URL, for the detail pane. `None` once the cache has
+/// pruned it — the saved list keeps its own snapshot for exactly that case.
+pub fn load_item(conn: &Connection, url: &str) -> Result<Option<Item>> {
+    Ok(load_items_where(conn, "WHERE url = ?1", params![url])?
+        .into_iter()
+        .next())
 }
 
 fn migrate(conn: &Connection) -> Result<()> {
@@ -250,15 +341,25 @@ pub fn save_items(conn: &mut Connection, items: &[Item]) -> Result<usize> {
 }
 
 pub fn load_items(conn: &Connection) -> Result<Vec<Item>> {
-    let mut stmt = conn.prepare(
+    load_items_where(conn, "ORDER BY timestamp DESC", [])
+}
+
+/// The shared row mapping, so a single-item read and a whole-cache read cannot
+/// disagree about what an `items` row means.
+fn load_items_where<P: rusqlite::Params>(
+    conn: &Connection,
+    tail: &str,
+    params: P,
+) -> Result<Vec<Item>> {
+    let mut stmt = conn.prepare(&format!(
         "SELECT title, source_platform, item_type, url, content_text,
                 timestamp, discipline, relevance_score, location, location_tags,
                 simplify_id, company, closes_at, salary_min, salary_max,
                 salary_currency, salary_period, seniority
-         FROM items ORDER BY timestamp DESC",
-    )?;
+         FROM items {tail}"
+    ))?;
 
-    let rows = stmt.query_map([], |row| {
+    let rows = stmt.query_map(params, |row| {
         let ts: String = row.get(5)?;
         let tags: String = row.get(9)?;
         Ok(Item {
@@ -699,6 +800,69 @@ mod tests {
 
         save_items(&mut conn, &rows).unwrap();
         assert_eq!(load_items(&conn).unwrap().len(), 3);
+    }
+
+    #[test]
+    fn one_item_and_its_detail_read_back_like_the_whole_cache() {
+        // What the detail pane does. The list payload carries no description,
+        // so this pair is the only path by which one ever reaches the screen —
+        // and `load_detail` has to agree with `load_details`, which is what
+        // ranking reads.
+        let mut conn = mem();
+        let item = Item::new("Intern", "S", ItemType::Internship, "https://x.test/1");
+        let other = Item::new("Other", "S", ItemType::Internship, "https://x.test/2");
+        save_items(&mut conn, &[item.clone(), other]).unwrap();
+
+        let mut detail = JobDetail::with_status(DetailStatus::Ok);
+        detail.description = Some("We build data pipelines.".into());
+        detail.requirements = Some("Rust\nPostgres".into());
+        detail.closes_at = parse_rfc3339("2026-09-01T00:00:00Z");
+        save_details(&mut conn, &[(item.url.clone(), detail)]).unwrap();
+
+        let mut one = vec![load_item(&conn, &item.url).unwrap().expect("cached")];
+        assert_eq!(one[0].title, "Intern");
+
+        let single = load_detail(&conn, &item.url).unwrap().expect("detail");
+        let all = load_details(&conn).unwrap();
+        assert_eq!(single.description, all[&item.url].description);
+        assert_eq!(single.requirements, all[&item.url].requirements);
+        assert_eq!(single.closes_at, all[&item.url].closes_at);
+
+        attach_details(&mut one, &std::iter::once((item.url.clone(), single)).collect());
+        assert_eq!(one[0].requirements.as_deref(), Some("Rust\nPostgres"));
+        assert!(one[0].closes_at.is_some());
+
+        // A posting with no fetched row, and one the cache never had.
+        assert!(load_detail(&conn, "https://x.test/2").unwrap().is_none());
+        assert!(load_item(&conn, "https://x.test/gone").unwrap().is_none());
+    }
+
+    #[test]
+    fn counts_agree_with_the_rows_they_replace() {
+        // `feed_status` counts in SQL now instead of materialising 18,240
+        // items to call `.len()` on them. The two must not drift.
+        let mut conn = mem();
+        let rows: Vec<Item> = ["Simplify", "Simplify", "Luma"]
+            .iter()
+            .enumerate()
+            .map(|(i, source)| {
+                Item::new("x", *source, ItemType::Article, format!("https://x.test/{i}"))
+            })
+            .collect();
+        save_items(&mut conn, &rows).unwrap();
+        set_saved(&conn, "https://x.test/0", true, Some(&rows[0])).unwrap();
+        set_dismissed(&conn, "https://x.test/1", true).unwrap();
+        mark_seen(&conn, "https://x.test/2").unwrap();
+
+        let items = load_items(&conn).unwrap();
+        let states = load_states(&conn).unwrap();
+        assert_eq!(count_items(&conn).unwrap(), items.len());
+        assert_eq!(state_counts(&conn).unwrap(), (states.saved.len(), states.dismissed.len()));
+
+        let counts = source_counts(&conn).unwrap();
+        assert_eq!(counts["Simplify"], 2);
+        assert_eq!(counts["Luma"], 1);
+        assert_eq!(distinct_sources(&conn).unwrap(), ["Luma", "Simplify"]);
     }
 
     #[test]

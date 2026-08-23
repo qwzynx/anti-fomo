@@ -16,6 +16,7 @@
 //! those need a tier too.
 
 use std::collections::HashMap;
+use std::sync::OnceLock;
 
 /// Tier 1 is the strongest resume signal, 4 the weakest one still worth
 /// naming. An employer absent from the table scores nothing rather than
@@ -309,6 +310,41 @@ fn normalize(name: &str) -> String {
     words.join(" ")
 }
 
+/// The two tables above, inverted once into normalized-key lookups.
+///
+/// Both were scanned linearly, re-normalizing every row on every call —
+/// `normalize` allocates three times, so one `tier()` cost roughly 1,300
+/// allocations and `personalize` called it once per posting. Against the real
+/// cache (17,739 postings carrying a company) that is ~23 million allocations
+/// and it dominated the whole ranking pass. The tables are `const`, so the
+/// answer is the same every time and is worth building exactly once.
+struct Lookups {
+    /// Normalized name → canonical display name, from [`ALIASES`] and [`TIERS`].
+    display: HashMap<String, &'static str>,
+    /// Normalized display name → tier.
+    tiers: HashMap<String, u8>,
+}
+
+fn lookups() -> &'static Lookups {
+    static LOOKUPS: OnceLock<Lookups> = OnceLock::new();
+    LOOKUPS.get_or_init(|| {
+        let mut display = HashMap::new();
+        // TIERS first, then ALIASES, so an alias wins the key it shares with a
+        // table row — the same precedence the linear scan had.
+        for (name, _) in TIERS {
+            display.insert(normalize(name), *name);
+        }
+        for (alias, target) in ALIASES {
+            display.insert(normalize(alias), *target);
+        }
+        let tiers = TIERS
+            .iter()
+            .map(|(name, tier)| (normalize(name), *tier))
+            .collect();
+        Lookups { display, tiers }
+    })
+}
+
 /// Canonical display name for an employer, or the input trimmed when we have
 /// never heard of them. Used so the employer filter and the A-Z sort do not
 /// show "Shopify" and "Shopify Inc." as two companies.
@@ -317,13 +353,10 @@ pub fn canonical(name: &str) -> String {
     if key.is_empty() {
         return name.trim().to_string();
     }
-    if let Some((_, target)) = ALIASES.iter().find(|(alias, _)| normalize(alias) == key) {
-        return (*target).to_string();
+    match lookups().display.get(&key) {
+        Some(display) => (*display).to_string(),
+        None => name.trim().to_string(),
     }
-    if let Some((display, _)) = TIERS.iter().find(|(display, _)| normalize(display) == key) {
-        return (*display).to_string();
-    }
-    name.trim().to_string()
 }
 
 /// The tier for an employer, with the user's overrides taking precedence over
@@ -333,15 +366,22 @@ pub fn canonical(name: &str) -> String {
 /// Overrides are keyed by canonical display name, which is what Settings shows
 /// and what [`canonical`] returns.
 pub fn tier(name: &str, overrides: &HashMap<String, u8>) -> Option<u8> {
-    let display = canonical(name);
-    if let Some(t) = overrides.get(&display) {
+    let key = normalize(name);
+    if key.is_empty() {
+        return overrides.get(name.trim()).copied();
+    }
+    let lookups = lookups();
+    let display = lookups.display.get(&key).copied();
+    // The override is keyed by display name, which for an unknown employer is
+    // the trimmed input rather than anything in the table.
+    if let Some(t) = overrides.get(display.unwrap_or_else(|| name.trim())) {
         return Some(*t);
     }
-    let key = normalize(&display);
-    TIERS
-        .iter()
-        .find(|(d, _)| normalize(d) == key)
-        .map(|(_, t)| *t)
+    // An alias resolves to a display name that has its own normalized key.
+    match display {
+        Some(display) => lookups.tiers.get(&normalize(display)).copied(),
+        None => None,
+    }
 }
 
 /// What one tier is worth, as a 0..=1 multiplier for the prestige term.

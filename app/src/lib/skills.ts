@@ -1,4 +1,4 @@
-import type { ScrapedItem, SkillCategory } from "./api";
+import type { SkillCategory } from "./api";
 
 // Presentation only. The skill names and their categories are Rust-owned and
 // arrive through `list_skills`, because a skill the extractor has no keywords
@@ -87,12 +87,10 @@ export function groupByCategory(
  * anything. Mirrors `MIN_SKILLS_TO_SCORE` in `rank.rs`: below it, Rust awards
  * no coverage bonus, so showing a score would promise a precision the ranking
  * does not have.
+ *
+ * The figure itself is `feed.match()`. It used to be a `skillMatch(item)` here
+ * reading `item.matched_skills`, which meant every list had to be walked and
+ * re-stamped on every skill tap; the store keeps the profile as a set and
+ * intersects on read instead.
  */
 export const MIN_SKILLS_TO_SHOW = 2;
-
-/** The `n of m` skill match for a posting, or null when it has too few. */
-export function skillMatch(item: ScrapedItem): { have: number; total: number } | null {
-  const total = item.required_skills?.length ?? 0;
-  if (total < MIN_SKILLS_TO_SHOW) return null;
-  return { have: item.matched_skills?.length ?? 0, total };
-}

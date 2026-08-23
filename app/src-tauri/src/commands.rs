@@ -1,4 +1,5 @@
 use std::sync::atomic::Ordering;
+use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use futures::stream::{self, StreamExt};
@@ -6,7 +7,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::db;
-use crate::models::{self, Item};
+use crate::models::{self, Item, ItemType};
 use crate::rank::{self, personalize, DEFAULT_MAJOR};
 use crate::scrapers::{self, details};
 use crate::skills::{self, SkillCategory};
@@ -76,6 +77,110 @@ pub struct FeedStatus {
 pub struct SourceHealth {
     pub name: String,
     pub count: usize,
+}
+
+/// One row as a list renders it, borrowed straight out of the ranked cache.
+///
+/// The list commands used to return the whole [`Item`], fetched description
+/// included. Measured against the real cache that made `get_internships` a
+/// **45.6 MB** JSON payload for 17,739 rows — of which the four description
+/// fields are 28 MB and `score_breakdown` most of the rest, and a list renders
+/// neither. The detail pane asks for one posting through
+/// [`get_item_detail`], which is the only place any of that is on screen.
+///
+/// Borrowed rather than owned so building the payload is a serialization pass
+/// and not also a deep clone of the cache. Empty and absent fields are skipped
+/// entirely: a null `salary_period` still costs its key name 17,739 times.
+#[derive(Serialize)]
+pub struct ListItem<'a> {
+    title: &'a str,
+    source_platform: &'a str,
+    item_type: ItemType,
+    url: &'a str,
+    content_text: &'a str,
+    timestamp: &'a DateTime<Utc>,
+    discipline: Option<&'a str>,
+    relevance_score: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    location: Option<&'a str>,
+    #[serde(skip_serializing_if = "<[String]>::is_empty")]
+    location_tags: &'a [String],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    company: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    closes_at: Option<&'a DateTime<Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    salary_min: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    salary_max: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    salary_currency: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    salary_period: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    seniority: Option<&'a str>,
+    #[serde(skip_serializing_if = "<[String]>::is_empty")]
+    matched_interests: &'a [String],
+    /// Kept in full rather than reduced to a count: the UI re-intersects these
+    /// against the profile the instant a skill chip is tapped, which is what
+    /// lets the match figure move before the re-rank lands. `matched_skills`
+    /// is *not* sent for the same reason — it is that intersection, and the UI
+    /// is the one holding the live answer.
+    #[serde(skip_serializing_if = "<[String]>::is_empty")]
+    required_skills: &'a [String],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    company_tier: Option<u8>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    saved: bool,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    seen: bool,
+}
+
+impl<'a> From<&'a Item> for ListItem<'a> {
+    fn from(item: &'a Item) -> Self {
+        ListItem {
+            title: &item.title,
+            source_platform: &item.source_platform,
+            item_type: item.item_type,
+            url: &item.url,
+            content_text: &item.content_text,
+            timestamp: &item.timestamp,
+            discipline: item.discipline.as_deref(),
+            relevance_score: item.relevance_score,
+            location: item.location.as_deref(),
+            location_tags: &item.location_tags,
+            company: item.company.as_deref(),
+            closes_at: item.closes_at.as_ref(),
+            salary_min: item.salary_min,
+            salary_max: item.salary_max,
+            salary_currency: item.salary_currency.as_deref(),
+            salary_period: item.salary_period.as_deref(),
+            seniority: item.seniority.as_deref(),
+            matched_interests: &item.matched_interests,
+            required_skills: &item.required_skills,
+            company_tier: item.company_tier,
+            saved: item.saved,
+            seen: item.seen,
+        }
+    }
+}
+
+pub fn as_list<'a>(items: impl IntoIterator<Item = &'a Item>) -> Vec<ListItem<'a>> {
+    items.into_iter().map(ListItem::from).collect()
+}
+
+/// The whole visible cache, scored and ordered, held until something changes
+/// it.
+///
+/// Ranking is the expensive half of a read — 1.2 s over 18,240 items on a
+/// warm laptop, more on a phone — and `loadAll()` in the UI used to pay for it
+/// three times over: once for the feed, once for the hub, once more for the
+/// enrichment queue, on every event the refresh emitted. It is the same answer
+/// all three times, so it is computed once per (data, profile) pair.
+pub(crate) struct Ranked {
+    generation: u64,
+    profile: rank::Profile,
+    items: Arc<Vec<Item>>,
 }
 
 /// Reads the persisted major, falling back to the default the old backend used
@@ -173,43 +278,100 @@ fn visible_items(state: &AppState) -> CmdResult<Vec<Item>> {
     Ok(items)
 }
 
+/// Marks every ranked answer stale. Called by anything that changes what a
+/// read would return — a scrape, an enrichment pass, a setting, a save.
+///
+/// A counter rather than clearing the cache: invalidation happens on the write
+/// path, which must never wait on a ranking pass that is already running.
+pub(crate) fn invalidate(state: &AppState) {
+    state.generation.fetch_add(1, Ordering::SeqCst);
+}
+
+/// The visible cache, scored and ordered, recomputed only when the data or the
+/// profile has moved under it.
+fn ranked_items(state: &AppState, major: Option<String>) -> CmdResult<Arc<Vec<Item>>> {
+    // Read before taking the cache lock, so a write that lands mid-rank leaves
+    // a generation the *next* read will not accept rather than one it will.
+    let generation = state.generation.load(Ordering::SeqCst);
+    let profile = current_profile(state, major);
+
+    // Held across the ranking pass on purpose: `loadAll()` fires four commands
+    // at once and they now run on separate threads, so without this the feed
+    // and the hub would each start their own identical 1.2 s pass.
+    let mut slot = state.ranked.lock().unwrap();
+    if let Some(cached) = slot.as_ref() {
+        if cached.generation == generation && cached.profile == profile {
+            return Ok(Arc::clone(&cached.items));
+        }
+    }
+
+    let mut items = personalize(visible_items(state)?, &profile);
+    // The fetched posting has done its job — it is what skill extraction read
+    // — and holding 28 MB of description text for the lifetime of the process
+    // to render none of it is not worth the resident memory. `get_item_detail`
+    // reads the one row it needs back out of `job_details`.
+    for item in &mut items {
+        item.description = None;
+        item.requirements = None;
+        item.responsibilities = None;
+        item.perks = None;
+        item.tagged_skills = Vec::new();
+        item.score_breakdown = Vec::new();
+    }
+
+    let items = Arc::new(items);
+    *slot = Some(Ranked {
+        generation,
+        profile,
+        items: Arc::clone(&items),
+    });
+    Ok(items)
+}
+
+/// A payload already in its final form.
+///
+/// [`ListItem`] borrows from the ranked cache, so it cannot be handed back as
+/// a value — the `Arc` is dropped at the end of the command. Serializing it
+/// here and passing the JSON through verbatim is what keeps the response a
+/// single serialization pass rather than a deep clone of the cache followed by
+/// one.
+type Payload = Box<serde_json::value::RawValue>;
+
 /// Ranked feed, capped like the old `/api/feed`.
-#[tauri::command]
-pub fn get_feed(state: State<'_, AppState>, major: Option<String>) -> CmdResult<Vec<Item>> {
-    let profile = current_profile(&state, major);
-    let mut ranked = personalize(visible_items(&state)?, &profile);
-    ranked.truncate(FEED_LIMIT);
-    Ok(ranked)
+#[tauri::command(async)]
+pub fn get_feed(state: State<'_, AppState>, major: Option<String>) -> CmdResult<Payload> {
+    let ranked = ranked_items(&state, major)?;
+    serde_json::value::to_raw_value(&as_list(ranked.iter().take(FEED_LIMIT))).map_err(err)
 }
 
 /// Jobs and internships only, uncapped — the old `/api/internships`.
-#[tauri::command]
-pub fn get_internships(state: State<'_, AppState>, major: Option<String>) -> CmdResult<Vec<Item>> {
-    let profile = current_profile(&state, major);
-    let opportunities = visible_items(&state)?
-        .into_iter()
-        .filter(|i| i.item_type.is_opportunity())
-        .collect();
-    Ok(personalize(opportunities, &profile))
+///
+/// Filtered out of the same ranked list the feed reads rather than ranked
+/// again: the hub re-sorts client-side on every one of its six sort options,
+/// including "Best match", so a second diversification pass over the same
+/// scores was work whose result was thrown away.
+#[tauri::command(async)]
+pub fn get_internships(state: State<'_, AppState>, major: Option<String>) -> CmdResult<Payload> {
+    let ranked = ranked_items(&state, major)?;
+    serde_json::value::to_raw_value(&as_list(
+        ranked.iter().filter(|i| i.item_type.is_opportunity()),
+    ))
+    .map_err(err)
 }
 
 /// Everything the user starred, newest first. Served from the `item_state`
 /// snapshots, so it works even for listings the cache has since pruned.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_saved(state: State<'_, AppState>) -> CmdResult<Vec<Item>> {
-    let user_skills = current_skills(&state);
     let mut items = {
         let conn = state.db.lock().unwrap();
-        let mut items = db::load_saved(&conn).map_err(err)?;
-        // The snapshot predates any enrichment, so the live table wins.
-        let details = db::load_details(&conn).map_err(err)?;
-        db::attach_details(&mut items, &details);
-        items
+        db::load_saved(&conn).map_err(err)?
     };
 
     // The snapshot froze `matched_skills` at the moment of starring, so it
     // goes stale the first time the profile changes. `required_skills` is in
     // the snapshot too, which makes this a re-intersect rather than a re-scan.
+    let user_skills = current_skills(state.inner());
     for item in &mut items {
         item.matched_skills = item
             .required_skills
@@ -217,26 +379,76 @@ pub fn get_saved(state: State<'_, AppState>) -> CmdResult<Vec<Item>> {
             .filter(|s| user_skills.iter().any(|u| u == *s))
             .cloned()
             .collect();
+        // The snapshot can carry a stale description; the pane refetches.
+        item.description = None;
+        item.requirements = None;
+        item.responsibilities = None;
+        item.perks = None;
+        item.score_breakdown = Vec::new();
     }
     Ok(items)
 }
 
-#[tauri::command]
-pub fn feed_status(state: State<'_, AppState>) -> CmdResult<FeedStatus> {
-    // The lock is scoped: `last_refresh`/`is_stale` below take it themselves,
-    // and the mutex is not reentrant.
-    let (items, states) = {
+/// One posting in full, for the detail pane and nothing else.
+///
+/// The list payload deliberately stops at what a row renders. This is the
+/// other half: the fetched description, the sections it splits into, and the
+/// score breakdown behind the row's position. One row of `job_details` rather
+/// than the 28 MB the whole table holds.
+#[tauri::command(async)]
+pub fn get_item_detail(state: State<'_, AppState>, url: String) -> CmdResult<Option<Item>> {
+    // The ranked cache already holds everything but the posting's own text and
+    // the breakdown, both of which are stripped when it is built.
+    let ranked = ranked_items(&state, None)?;
+    let cached = ranked.iter().find(|i| i.url == url).cloned();
+
+    let mut items = {
         let conn = state.db.lock().unwrap();
+        // Not in the feed means dismissed or pruned — the saved list still
+        // shows those, and it renders them from the snapshot.
+        let item = match cached {
+            Some(item) => item,
+            None => match db::load_saved(&conn)
+                .map_err(err)?
+                .into_iter()
+                .find(|i| i.url == url)
+            {
+                Some(item) => item,
+                None => return Ok(None),
+            },
+        };
+        let mut items = vec![item];
+        if let Some(detail) = db::load_detail(&conn, &url).map_err(err)? {
+            let details = std::iter::once((url, detail)).collect();
+            db::attach_details(&mut items, &details);
+        }
+        items
+    };
+
+    // Re-scored for its own sake: the ranked cache drops `score_breakdown`
+    // rather than hold 18,240 of them to render at most one, and the pane is
+    // the only place the terms behind a position are ever shown.
+    let profile = current_profile(state.inner(), None);
+    items = personalize(items, &profile);
+    Ok(items.pop())
+}
+
+#[tauri::command(async)]
+pub fn feed_status(state: State<'_, AppState>) -> CmdResult<FeedStatus> {
+    // Counted in SQL rather than by materialising the cache: this command runs
+    // after every save and every dismissal, and loading 18,240 rows to call
+    // `.len()` on them cost 38 ms and several megabytes each time.
+    let (item_count, counts, saved_count, dismissed_count) = {
+        let conn = state.db.lock().unwrap();
+        let (saved, dismissed) = db::state_counts(&conn).map_err(err)?;
         (
-            db::load_items(&conn).map_err(err)?,
-            db::load_states(&conn).map_err(err)?,
+            db::count_items(&conn).map_err(err)?,
+            db::source_counts(&conn).map_err(err)?,
+            saved,
+            dismissed,
         )
     };
 
-    let mut counts: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
-    for item in &items {
-        *counts.entry(item.source_platform.as_str()).or_insert(0) += 1;
-    }
     // Driven by the scraper registry, not by what happens to be in the cache,
     // so a source that has stopped returning anything shows up as 0 rather
     // than vanishing from the list. Deduped by name because some sources are
@@ -254,11 +466,11 @@ pub fn feed_status(state: State<'_, AppState>) -> CmdResult<FeedStatus> {
 
     Ok(FeedStatus {
         last_refresh: last_refresh(&state).map(|d| d.to_rfc3339()),
-        item_count: items.len(),
+        item_count,
         refreshing: state.refreshing.load(Ordering::SeqCst),
         stale: is_stale(&state),
-        saved_count: states.saved.len(),
-        dismissed_count: states.dismissed.len(),
+        saved_count,
+        dismissed_count,
         sources,
     })
 }
@@ -284,12 +496,26 @@ pub async fn refresh(app: AppHandle, force: bool) -> CmdResult<Option<usize>> {
     let _ = app.emit("feed:refreshing", true);
 
     let items = scrapers::fetch_all().await;
-    let result = persist(&app, items);
+    // Writing 18,000 upserts is not something to do on the async runtime's
+    // thread — it would stall every other task on it for the duration.
+    let result = {
+        let app = app.clone();
+        tauri::async_runtime::spawn_blocking(move || persist(&app, items))
+            .await
+            .map_err(err)?
+    };
+
+    // Announced as soon as the scrape lands rather than after enrichment.
+    // Enrichment is up to 600 HTTP requests and takes seconds; the feed is
+    // already usable the moment `persist` returns, and holding the event back
+    // meant a refresh looked like it had done nothing until the very end.
+    if let Ok(count) = &result {
+        let _ = app.emit("feed:updated", *count);
+    }
 
     // Only worth doing once there is a cache to enrich, and deliberately
     // inside the `refreshing` flag so a second refresh cannot start on top of
-    // it. The feed is already usable at this point — the scrape is persisted —
-    // so this phase emits its own update when it lands.
+    // it. This phase emits its own update when it lands.
     if result.is_ok() {
         match enrich_details(&app).await {
             Ok(0) => {}
@@ -304,14 +530,7 @@ pub async fn refresh(app: AppHandle, force: bool) -> CmdResult<Option<usize>> {
 
     state.refreshing.store(false, Ordering::SeqCst);
     let _ = app.emit("feed:refreshing", false);
-
-    match result {
-        Ok(count) => {
-            let _ = app.emit("feed:updated", count);
-            Ok(Some(count))
-        }
-        Err(e) => Err(e),
-    }
+    result.map(Some)
 }
 
 /// Fetches descriptions for postings we have never tried, up to
@@ -330,21 +549,29 @@ async fn enrich_details(app: &AppHandle) -> CmdResult<usize> {
     // ranked four hundredth can wait for the next refresh. `diversify` also
     // spreads the queue across employers, so no single Workday tenant's
     // backlog monopolises a refresh.
-    let attempted = {
-        let conn = state.db.lock().unwrap();
-        db::urls_with_details(&conn).map_err(err)?
+    //
+    // Off the async runtime and through the shared ranked cache: this is the
+    // same ranking pass `get_feed` needs a moment later, and running it a
+    // third time on the thread driving the HTTP futures stalled every one of
+    // them for its duration.
+    let candidates: Vec<(String, Option<String>)> = {
+        let app = app.clone();
+        tauri::async_runtime::spawn_blocking(move || -> CmdResult<_> {
+            let state = app.state::<AppState>();
+            let attempted = {
+                let conn = state.db.lock().unwrap();
+                db::urls_with_details(&conn).map_err(err)?
+            };
+            Ok(ranked_items(&state, None)?
+                .iter()
+                .filter(|i| i.item_type.is_opportunity() && !attempted.contains(&i.url))
+                .take(DETAIL_CANDIDATES)
+                .map(|i| (i.url.clone(), i.simplify_id.clone()))
+                .collect())
+        })
+        .await
+        .map_err(err)??
     };
-    let profile = current_profile(&state, None);
-    let opportunities: Vec<Item> = visible_items(&state)?
-        .into_iter()
-        .filter(|i| i.item_type.is_opportunity())
-        .collect();
-    let candidates: Vec<(String, Option<String>)> = personalize(opportunities, &profile)
-        .into_iter()
-        .filter(|i| !attempted.contains(&i.url))
-        .take(DETAIL_CANDIDATES)
-        .map(|i| (i.url, i.simplify_id))
-        .collect();
 
     if candidates.is_empty() {
         return Ok(0);
@@ -398,6 +625,7 @@ async fn enrich_details(app: &AppHandle) -> CmdResult<usize> {
     // The skill memo is keyed on URL and would otherwise keep serving the
     // answer it computed before these descriptions existed.
     skills::clear_memo();
+    invalidate(&state);
     Ok(written)
 }
 
@@ -452,56 +680,84 @@ fn persist(app: &AppHandle, items: Vec<Item>) -> CmdResult<usize> {
     db::prune_orphan_states(&conn).map_err(err)?;
     db::prune_orphan_details(&conn).map_err(err)?;
     db::set_setting(&conn, KEY_LAST_REFRESH, &Utc::now().to_rfc3339()).map_err(err)?;
+    drop(conn);
+    invalidate(&state);
     Ok(count)
 }
 
 // --- user actions on items ---
+//
+// Every one of these invalidates the ranked cache. They are cheap writes and
+// the rebuild is lazy, so the cost lands on the next read that actually wants
+// a ranked list — which for a save or a read mark is usually never, since the
+// UI patches those into the list it is already holding.
 
 /// Stars or unstars an item. The caller hands back the item it is looking at so
 /// the snapshot can be written without a second lookup — the UI always has it.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn set_saved(
     state: State<'_, AppState>,
     url: String,
     saved: bool,
     item: Option<Item>,
 ) -> CmdResult<()> {
-    let conn = state.db.lock().unwrap();
-    db::set_saved(&conn, &url, saved, item.as_ref()).map_err(err)
+    {
+        let conn = state.db.lock().unwrap();
+        db::set_saved(&conn, &url, saved, item.as_ref()).map_err(err)?;
+    }
+    invalidate(&state);
+    Ok(())
 }
 
 /// Hides an item from the feed and the hub for good.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn set_dismissed(state: State<'_, AppState>, url: String, dismissed: bool) -> CmdResult<()> {
-    let conn = state.db.lock().unwrap();
-    db::set_dismissed(&conn, &url, dismissed).map_err(err)
+    {
+        let conn = state.db.lock().unwrap();
+        db::set_dismissed(&conn, &url, dismissed).map_err(err)?;
+    }
+    invalidate(&state);
+    Ok(())
 }
 
 /// Records that the user opened an item, which sinks it in later rankings.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn mark_seen(state: State<'_, AppState>, url: String) -> CmdResult<()> {
-    let conn = state.db.lock().unwrap();
-    db::mark_seen(&conn, &url).map_err(err)
+    {
+        let conn = state.db.lock().unwrap();
+        db::mark_seen(&conn, &url).map_err(err)?;
+    }
+    invalidate(&state);
+    Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn clear_dismissed(state: State<'_, AppState>) -> CmdResult<()> {
-    let conn = state.db.lock().unwrap();
-    db::clear_dismissed(&conn).map_err(err).map(|_| ())
+    {
+        let conn = state.db.lock().unwrap();
+        db::clear_dismissed(&conn).map_err(err)?;
+    }
+    invalidate(&state);
+    Ok(())
 }
 
 /// Empties the local store — cached items, fetched descriptions, saves,
 /// dismissals and read marks — and keeps the profile in `settings`, so the
 /// field, interests and skills the user set are still there afterwards.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn clear_data(state: State<'_, AppState>) -> CmdResult<()> {
     // A scrape in flight would write its results in behind the delete and
     // leave the store half-full of the items the user just cleared.
     if state.refreshing.load(Ordering::SeqCst) {
         return Err("A refresh is running. Try again once it finishes.".into());
     }
-    let conn = state.db.lock().unwrap();
-    db::clear_data(&conn).map_err(err)
+    {
+        let conn = state.db.lock().unwrap();
+        db::clear_data(&conn).map_err(err)?;
+    }
+    skills::clear_memo();
+    invalidate(&state);
+    Ok(())
 }
 
 // --- interests ---
@@ -512,16 +768,20 @@ pub fn list_interests() -> Vec<String> {
     rank::list_interests()
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_interests(state: State<'_, AppState>) -> CmdResult<Vec<String>> {
     Ok(current_interests(&state))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn set_interests(state: State<'_, AppState>, interests: Vec<String>) -> CmdResult<()> {
     let json = serde_json::to_string(&interests).map_err(err)?;
-    let conn = state.db.lock().unwrap();
-    db::set_setting(&conn, KEY_INTERESTS, &json).map_err(err)
+    {
+        let conn = state.db.lock().unwrap();
+        db::set_setting(&conn, KEY_INTERESTS, &json).map_err(err)?;
+    }
+    invalidate(&state);
+    Ok(())
 }
 
 // --- skills ---
@@ -533,42 +793,44 @@ pub fn list_skills() -> Vec<SkillCategory> {
     skills::list_skills()
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_skills(state: State<'_, AppState>) -> CmdResult<Vec<String>> {
     Ok(current_skills(&state))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn set_skills(state: State<'_, AppState>, skills: Vec<String>) -> CmdResult<()> {
     let json = serde_json::to_string(&skills).map_err(err)?;
-    let conn = state.db.lock().unwrap();
-    db::set_setting(&conn, KEY_SKILLS, &json).map_err(err)
+    {
+        let conn = state.db.lock().unwrap();
+        db::set_setting(&conn, KEY_SKILLS, &json).map_err(err)?;
+    }
+    invalidate(&state);
+    Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_setting(state: State<'_, AppState>, key: String) -> CmdResult<Option<String>> {
     let conn = state.db.lock().unwrap();
     db::get_setting(&conn, &key).map_err(err)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn set_setting(state: State<'_, AppState>, key: String, value: String) -> CmdResult<()> {
-    let conn = state.db.lock().unwrap();
-    db::set_setting(&conn, &key, &value).map_err(err)
+    {
+        let conn = state.db.lock().unwrap();
+        db::set_setting(&conn, &key, &value).map_err(err)?;
+    }
+    // `major`, `weights`, `home_region` and the company tiers all arrive
+    // through here, and every one of them is part of the ranking profile.
+    invalidate(&state);
+    Ok(())
 }
 
 /// Every distinct source currently represented in the local store, for the
 /// source filter chips.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn list_sources(state: State<'_, AppState>) -> CmdResult<Vec<String>> {
     let conn = state.db.lock().unwrap();
-    let items = db::load_items(&conn).map_err(err)?;
-    let mut sources: Vec<String> = items
-        .into_iter()
-        .map(|i| i.source_platform)
-        .collect::<std::collections::BTreeSet<_>>()
-        .into_iter()
-        .collect();
-    sources.sort();
-    Ok(sources)
+    db::distinct_sources(&conn).map_err(err)
 }

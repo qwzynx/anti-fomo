@@ -116,6 +116,23 @@ export function formatPay(item: ScrapedItem): string | null {
   return `${body}${unit}${suffix}`;
 }
 
+// --- dates ------------------------------------------------------------------
+
+/**
+ * One formatter, built once.
+ *
+ * `Date.prototype.toLocaleString(undefined, { month: "short" })` constructs a
+ * fresh `Intl.DateTimeFormat` on every call — tens of microseconds each, paid
+ * once per row, on a list that can page hundreds of rows into view.
+ */
+const MONTH = new Intl.DateTimeFormat(undefined, { month: "short" });
+
+/** The two lines of an event's date tile. */
+export function monthDay(iso: string): { month: string; day: string } {
+  const when = new Date(iso);
+  return { month: MONTH.format(when), day: String(when.getDate()).padStart(2, "0") };
+}
+
 // --- deadlines --------------------------------------------------------------
 
 /** Whole days until a posting's own deadline. `null` when it published none. */

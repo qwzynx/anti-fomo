@@ -24,7 +24,6 @@
     type HubSort,
     type Modality,
   } from "$lib/filters";
-  import { skillMatch } from "$lib/skills";
 
   // The job-board layout: a scrolling result list beside a detail pane that
   // stays put, which is what every board this app aggregates from converges on.
@@ -72,24 +71,47 @@
   const items = $derived(feed.internships);
   const allSources = $derived([...new Set(items.map((i) => i.source_platform))].sort());
 
+  /**
+   * The filter pass, ordered cheapest test first and with nothing computed
+   * that the current chips do not ask for.
+   *
+   * This ran over every one of 17,739 roles on every chip tap and every
+   * refresh, and it opened by building a lowercased
+   * `title + content_text + location` string for each of them — 17,739 string
+   * concatenations and casefolds — whether or not a specialty chip was on to
+   * read it. Nothing else touched the haystack. Sets replace the `Array`
+   * membership tests for the same reason: `sources.includes` inside a loop
+   * over the whole cache is a scan inside a scan.
+   */
   const filtered = $derived.by(() => {
     const cutoff = freshnessCutoff(freshness);
+    const sourceSet = sources.length > 0 ? new Set(sources) : null;
+    const locationSet = locations.length > 0 ? new Set(locations) : null;
+    const wantedSpecialties = specialties.length > 0 ? specialties : null;
 
     const result = items.filter((item) => {
-      const haystack =
-        `${item.title} ${item.content_text ?? ""} ${item.location ?? ""}`.toLowerCase();
-      const locTags = item.location_tags ?? [];
-
       if (discipline !== "All" && item.discipline !== discipline) return false;
-      if (sources.length > 0 && !sources.includes(item.source_platform)) return false;
-      if (specialties.length > 0 && !specialties.some((s) => matchesSpecialty(haystack, s)))
-        return false;
-      if (modality !== "All" && !locTags.includes(modality)) return false;
-      if (locations.length > 0 && !locations.some((l) => locTags.includes(l))) return false;
+      if (sourceSet && !sourceSet.has(item.source_platform)) return false;
+
+      if (modality !== "All" || locationSet) {
+        const locTags = item.location_tags;
+        if (!locTags) return false;
+        if (modality !== "All" && !locTags.includes(modality)) return false;
+        if (locationSet && !locTags.some((t) => locationSet.has(t))) return false;
+      }
+
       if (cutoff !== -Infinity && new Date(item.timestamp).getTime() < cutoff) return false;
+
       if (goodMatchOnly) {
-        const m = skillMatch(item);
+        const m = feed.match(item);
         if (!m || m.have / m.total < GOOD_MATCH) return false;
+      }
+
+      // Last, because it is the only test that has to build a string.
+      if (wantedSpecialties) {
+        const haystack =
+          `${item.title} ${item.content_text ?? ""} ${item.location ?? ""}`.toLowerCase();
+        if (!wantedSpecialties.some((s) => matchesSpecialty(haystack, s))) return false;
       }
       return true;
     });
@@ -107,6 +129,9 @@
 
   const visible = $derived(filtered.slice(0, shown));
 
+  /** Membership without a scan, for the "is my selection still here" check. */
+  const filteredUrls = $derived(new Set(filtered.map((i) => i.url)));
+
   /**
    * At desktop widths the pane opens on the top-ranked role rather than on an
    * invitation to click something — every board this app aggregates from does
@@ -115,7 +140,7 @@
    */
   $effect(() => {
     if (!wide) return;
-    if (!selected || !filtered.some((i) => i.url === selected?.url)) {
+    if (!selected || !filteredUrls.has(selected.url)) {
       selected = filtered[0] ?? null;
     }
   });

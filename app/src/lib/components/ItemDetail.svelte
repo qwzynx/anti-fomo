@@ -46,13 +46,42 @@
   /** Set when the opener refuses or is unavailable, so the click is not silent. */
   let openFailed = $state(false);
 
+  /**
+   * The posting in full.
+   *
+   * `item` is a list row, and a list row deliberately carries no description —
+   * shipping all four fetched fields with every row is what made the hub a
+   * 45.6 MB payload. This is the only place any of it is rendered, so this is
+   * where it is asked for.
+   */
+  let fetched = $state<ScrapedItem | null | undefined>(undefined);
+
+  $effect(() => {
+    const url = item.url;
+    fetched = feed.peekDetail(url);
+    if (fetched !== undefined) return;
+
+    let live = true;
+    void feed.detail(url).then((d) => {
+      if (live) fetched = d;
+    });
+    return () => {
+      live = false;
+    };
+  });
+
+  /** The list row until the fetch lands, so the header paints immediately. */
+  const full = $derived(fetched && fetched.url === item.url ? fetched : item);
+  const pending = $derived(fetched === undefined);
+
   const logo = $derived(logoFor(item.url));
   const parts = $derived(splitTitle(item));
   const tags = $derived(tagsFor(item));
   const cta = $derived(ctaLabel(item));
   const TypeIcon = $derived(iconForType(item.item_type));
+  const saved = $derived(feed.isSaved(item.url));
   /** Whether the enrichment pass reached this posting. */
-  const enriched = $derived(hasScrapedPosting(item) || Boolean(item.perks));
+  const enriched = $derived(hasScrapedPosting(full) || Boolean(full.perks));
   const locations = $derived(
     item.location
       ? item.location
@@ -139,12 +168,12 @@
     <div class="flex shrink-0 items-center gap-1">
       <button
         onclick={() => feed.toggleSaved(item)}
-        aria-pressed={item.saved}
-        aria-label={item.saved ? "Remove from saved" : "Save this item"}
+        aria-pressed={saved}
+        aria-label={saved ? "Remove from saved" : "Save this item"}
         class="flex h-8 w-8 items-center justify-center rounded-full transition-colors hover:bg-line-soft
-               {item.saved ? 'text-brand' : 'text-subtle hover:text-foreground'}"
+               {saved ? 'text-brand' : 'text-subtle hover:text-foreground'}"
       >
-        {#if item.saved}
+        {#if saved}
           <BookmarkCheck size={18} strokeWidth={2.5} />
         {:else}
           <Bookmark size={18} />
@@ -241,12 +270,14 @@
       </div>
     {/if}
 
-    <JobSections {item} />
+    <JobSections item={full} />
 
-    <!-- The scraped one-liner is redundant once the real posting is here. -->
-    {#if !enriched}
+    <!-- The scraped one-liner is redundant once the real posting is here.
+         Held back while the fetch is in flight: the note below says the page
+         could not be read, and saying that before we have looked is a lie. -->
+    {#if !enriched && !pending}
       <p class="text-[15px] leading-relaxed whitespace-pre-line text-muted">
-        {item.content_text ||
+        {full.content_text ||
           "No further details were scraped for this item — open the source for the full picture."}
       </p>
       {#if item.item_type === "Internship" || item.item_type === "Job"}

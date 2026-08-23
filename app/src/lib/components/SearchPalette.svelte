@@ -16,17 +16,34 @@
   let input = $state<HTMLInputElement | null>(null);
   let cursor = $state(0);
 
-  // Both lists, because a role that has aged out of the ranked feed is still a
-  // role you might be looking for by name.
+  /**
+   * The corpus, casefolded once.
+   *
+   * Both lists, because a role that has aged out of the ranked feed is still a
+   * role you might be looking for by name — which is 18,000 items, and the
+   * search used to lowercase every one of their titles *and bodies* on every
+   * keystroke. Against the real cache that is ~800 KB of text refolded per
+   * character typed, and it is the same answer every time. Built lazily by
+   * `$derived`, so a session that never opens search never pays for it.
+   */
   const corpus = $derived.by(() => {
-    const byUrl = new Map<string, ScrapedItem>();
+    const byUrl = new Map<string, { item: ScrapedItem; title: string; body: string }>();
     for (const item of [...feed.items, ...feed.internships, ...feed.saved]) {
-      if (!byUrl.has(item.url)) byUrl.set(item.url, item);
+      if (byUrl.has(item.url)) continue;
+      byUrl.set(item.url, {
+        item,
+        title: item.title.toLowerCase(),
+        body: `${item.content_text ?? ""} ${item.location ?? ""}`.toLowerCase(),
+      });
     }
     return [...byUrl.values()];
   });
 
   const results = $derived.by(() => {
+    // Only while the palette is up. `results` is read by the cursor effect
+    // below, which runs whether or not anything is on screen, and this is a
+    // scan of the whole corpus.
+    if (!search.open) return [];
     const needle = search.query.trim().toLowerCase();
     if (needle.length < 2) return [];
 
@@ -34,13 +51,12 @@
     // posting, not the article that mentions Stripe in passing.
     const title: ScrapedItem[] = [];
     const body: ScrapedItem[] = [];
-    for (const item of corpus) {
-      if (item.title.toLowerCase().includes(needle)) title.push(item);
-      else if (
-        (item.content_text ?? "").toLowerCase().includes(needle) ||
-        (item.location ?? "").toLowerCase().includes(needle)
-      )
-        body.push(item);
+    for (const entry of corpus) {
+      if (entry.title.includes(needle)) title.push(entry.item);
+      else if (body.length < LIMIT && entry.body.includes(needle)) body.push(entry.item);
+      // Both buckets full: nothing further down the corpus can change the
+      // answer, and the old loop kept scanning all 18,000 rows anyway because
+      // it only ever broke on the title bucket.
       if (title.length >= LIMIT) break;
     }
     return [...title, ...body].slice(0, LIMIT);

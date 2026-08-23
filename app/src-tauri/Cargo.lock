@@ -62,6 +62,7 @@ dependencies = [
 name = "anti-fomo"
 version = "0.1.0"
 dependencies = [
+ "aho-corasick",
  "anyhow",
  "async-trait",
  "chrono",

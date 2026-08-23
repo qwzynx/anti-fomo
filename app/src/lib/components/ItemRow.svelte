@@ -2,8 +2,7 @@
   import { logoFor, timeAgo, type ScrapedItem } from "$lib/api";
   import { feed } from "$lib/feed.svelte";
   import { Bookmark, BookmarkCheck, X, iconForType } from "$lib/icons";
-  import { closesLabel, closesSoon, splitTitle, typeBadgeClass } from "$lib/item";
-  import { skillMatch } from "$lib/skills";
+  import { closesLabel, closesSoon, monthDay, splitTitle, typeBadgeClass } from "$lib/item";
 
   // One result, everywhere a result is listed. The redesign has no card grid
   // and no density switch, so this is the only shape a result takes — which is
@@ -41,16 +40,20 @@
   const isRole = $derived(item.item_type === "Internship" || item.item_type === "Job");
   const logo = $derived(logoFor(item.url));
   const TypeIcon = $derived(iconForType(item.item_type));
-  const match = $derived(feed.skills.length > 0 ? skillMatch(item) : null);
+  const match = $derived(feed.skills.length > 0 ? feed.match(item) : null);
+  const saved = $derived(feed.isSaved(item.url));
+  const seen = $derived(feed.isSeen(item.url));
   const dense = $derived(variant === "dense");
 
   const shape = $derived(
     lead !== "auto" ? lead : isRole ? "logo" : item.item_type === "Event" ? "date" : "type",
   );
 
-  const when = $derived(new Date(item.timestamp));
-  const month = $derived(when.toLocaleString(undefined, { month: "short" }));
-  const day = $derived(String(when.getDate()).padStart(2, "0"));
+  // Only for the date tile, and through one shared formatter. `Intl` builds a
+  // fresh formatter per `toLocaleString` call with options, which is one of the
+  // slowest things a row can do — and every row was paying it whether or not it
+  // rendered a date.
+  const date = $derived(shape === "date" ? monthDay(item.timestamp) : null);
 
   /** The fixed column: where it is, or failing that where it came from. */
   const metaText = $derived(
@@ -82,11 +85,10 @@
   );
   const denseTail = $derived(deadline ?? timeAgo(item.timestamp));
 
-  // A new item means a fresh logo attempt.
-  $effect(() => {
-    void item.url;
-    logoFailed = false;
-  });
+  // A new item means a fresh logo attempt — and every list keys its `{#each}`
+  // on `item.url`, so a new item *is* a new component and `logoFailed` starts
+  // false on its own. The `$effect` that used to reset it here bought nothing
+  // and cost one effect per row, of which there can be hundreds on screen.
 </script>
 
 <!--
@@ -101,7 +103,7 @@
     ? 'border-l-[3px] py-2.5 pr-3 pl-2'
     : 'rounded-xl px-1.5 py-2 sm:py-2.5'}
          {selected ? 'border-l-brand bg-hero' : 'border-l-transparent hover:bg-line-soft'}
-         {item.seen && !selected ? 'opacity-70 hover:opacity-100' : ''}"
+         {seen && !selected ? 'opacity-70 hover:opacity-100' : ''}"
 >
   {#if shape === "logo"}
     {#if logo && !logoFailed}
@@ -110,6 +112,8 @@
         alt=""
         width="34"
         height="34"
+        loading="lazy"
+        decoding="async"
         onerror={() => (logoFailed = true)}
         class="h-[34px] w-[34px] shrink-0 rounded-[10px] bg-line-soft object-contain p-1"
       />
@@ -120,10 +124,10 @@
         {(parts.secondary ?? parts.primary).charAt(0).toUpperCase()}
       </div>
     {/if}
-  {:else if shape === "date"}
+  {:else if shape === "date" && date}
     <div class="w-[38px] shrink-0 rounded-[9px] bg-event-soft py-1 text-center">
-      <div class="text-[9px] font-bold tracking-wider text-event uppercase">{month}</div>
-      <div class="font-display text-[15px] leading-tight font-bold text-event">{day}</div>
+      <div class="text-[9px] font-bold tracking-wider text-event uppercase">{date.month}</div>
+      <div class="font-display text-[15px] leading-tight font-bold text-event">{date.day}</div>
     </div>
   {:else if shape === "type"}
     <div
@@ -205,12 +209,12 @@
   <div class="relative z-10 flex shrink-0 items-center gap-0.5">
     <button
       onclick={() => feed.toggleSaved(item)}
-      aria-pressed={item.saved}
-      aria-label={item.saved ? "Remove from saved" : "Save this item"}
-      title={item.saved ? "Remove from saved" : "Save"}
-      class="tap h-9 w-9 sm:h-8 sm:w-8 {item.saved ? 'text-brand hover:text-brand' : ''}"
+      aria-pressed={saved}
+      aria-label={saved ? "Remove from saved" : "Save this item"}
+      title={saved ? "Remove from saved" : "Save"}
+      class="tap h-9 w-9 sm:h-8 sm:w-8 {saved ? 'text-brand hover:text-brand' : ''}"
     >
-      {#if item.saved}
+      {#if saved}
         <BookmarkCheck size={16} strokeWidth={2.5} />
       {:else}
         <Bookmark size={16} />

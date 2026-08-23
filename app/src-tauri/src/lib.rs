@@ -1,5 +1,5 @@
 pub mod companies;
-mod commands;
+pub mod commands;
 pub mod db;
 pub mod location;
 pub mod models;
@@ -8,7 +8,7 @@ pub mod rank;
 pub mod scrapers;
 pub mod skills;
 
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::Mutex;
 
 use tauri::Manager;
@@ -17,6 +17,19 @@ pub struct AppState {
     /// Guarded by a plain mutex; the lock is never held across an await.
     pub db: Mutex<rusqlite::Connection>,
     pub refreshing: AtomicBool,
+    /// Bumped by every write that could change what a ranked read returns.
+    /// The ranked cache stores the generation it was built at and rebuilds
+    /// when it no longer matches.
+    pub(crate) generation: AtomicU64,
+    /// The whole visible cache, scored and ordered. Rebuilt lazily, and only
+    /// when the data or the reader's profile has actually moved — ranking
+    /// 18,000 items is over a second of work that `loadAll()` used to pay for
+    /// three times per refresh.
+    ///
+    /// Lock order is always `ranked` before `db`: the rebuild reads the
+    /// database while holding this, and nothing takes them the other way
+    /// round.
+    pub(crate) ranked: Mutex<Option<commands::Ranked>>,
 }
 
 /// WebKitGTK's DMABUF renderer crashes the webview on several Wayland driver
@@ -59,6 +72,8 @@ pub fn run() {
             app.manage(AppState {
                 db: Mutex::new(conn),
                 refreshing: AtomicBool::new(false),
+                generation: AtomicU64::new(0),
+                ranked: Mutex::new(None),
             });
 
             // Refresh in the background so the window opens immediately on the
@@ -76,6 +91,7 @@ pub fn run() {
             commands::get_feed,
             commands::get_internships,
             commands::get_saved,
+            commands::get_item_detail,
             commands::feed_status,
             commands::refresh,
             commands::set_saved,

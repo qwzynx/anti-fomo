@@ -236,10 +236,21 @@ and what enrichment does to skill extraction, against the real cached database.
 
 ## Commands
 
+Every command that touches the database is `#[tauri::command(async)]`. A plain
+`#[tauri::command]` on a synchronous function runs **on the main thread**, which
+is the webview's thread — a read that walks the cache freezes the window for as
+long as it takes.
+
+The two list commands return `ListItem`, not `Item`: what a row renders, and
+nothing else. No fetched description, no score breakdown, no `matched_skills`.
+`get_item_detail` is where the rest of a posting comes from, and it is called
+for the one posting the pane is showing.
+
 | `invoke()` | Returns |
 | --- | --- |
-| `get_feed(major?)` | top 60 ranked items |
-| `get_internships(major?)` | every job/internship, ranked |
+| `get_feed(major?)` | top 400 ranked list rows |
+| `get_internships(major?)` | every job/internship as a list row, ranked |
+| `get_item_detail(url)` | one posting in full — description, sections, score breakdown |
 | `get_saved()` | starred items, newest star first |
 | `feed_status()` | last refresh, counts, staleness, per-source health |
 | `refresh(force)` | items written, or `null` if the cache was fresh |
@@ -259,7 +270,15 @@ and what enrichment does to skill extraction, against the real cached database.
 npm run check                        # svelte-check
 cargo test --lib                     # unit tests (location, ranking, db)
 cargo run --bin scraper_check        # live per-source item counts
+cargo run --release --bin perf_check -- /path/to/copy.db
 ```
+
+`perf_check` times every stage of a feed read against the real database — the
+load, the ranking pass cold and warm, and the size of what crosses the IPC
+boundary. Run it against a **copy**: it opens the file directly rather than
+through `db::open`, which would migrate and drop `items`. Reach for it before
+changing anything on the read path, and again afterwards; the numbers in the
+comments around `rank`, `skills` and `commands` all came from it.
 
 `scraper_check` is the tool to reach for when a source goes quiet — it prints
 each scraper's item count and the first title, and exits non-zero if any source

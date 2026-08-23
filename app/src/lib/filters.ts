@@ -86,40 +86,51 @@ export const HUB_SORT_BLURBS: Record<HubSort, string> = {
  * pay and company here.
  */
 export function sortItems(items: ScrapedItem[], sort: HubSort): ScrapedItem[] {
+  /**
+   * Sorts on a key computed once per item rather than once per comparison.
+   *
+   * The comparator ran `new Date(…).getTime()`, `payAnnualEquivalent` or a
+   * title split *inside* the compare — so on 17,739 roles each of those ran
+   * roughly 2 n log n ≈ 500,000 times to order 17,739 things. A missing key
+   * still sorts last regardless of direction: `closes_at`'s own contract is
+   * that unknown is not the same as "furthest away", and the same logic
+   * applies to pay and company here.
+   */
   function byKey<T>(key: (item: ScrapedItem) => T | null, cmp: (a: T, b: T) => number) {
-    return (a: ScrapedItem, b: ScrapedItem) => {
-      const ka = key(a);
-      const kb = key(b);
-      if (ka === null && kb === null) return 0;
-      if (ka === null) return 1;
-      if (kb === null) return -1;
-      return cmp(ka, kb);
-    };
+    const decorated = items.map((item) => ({ item, key: key(item) }));
+    decorated.sort((a, b) => {
+      if (a.key === null) return b.key === null ? 0 : 1;
+      if (b.key === null) return -1;
+      return cmp(a.key, b.key);
+    });
+    return decorated.map((d) => d.item);
   }
 
-  const closesAt = (item: ScrapedItem) => (item.closes_at ? new Date(item.closes_at).getTime() : null);
+  const closesAt = (item: ScrapedItem) =>
+    item.closes_at ? new Date(item.closes_at).getTime() : null;
   // A deadline already in the past is not "closing soon" — it is closed, and
   // ranking it first would put a dead posting above every one still open.
   // "Closing latest" has no such trap: an expired deadline is honestly the
   // least-far-out one, so it already falls out near the bottom on its own.
+  const now = Date.now();
   const closesAtUpcoming = (item: ScrapedItem) => {
     const t = closesAt(item);
-    return t !== null && t >= Date.now() ? t : null;
+    return t !== null && t >= now ? t : null;
   };
 
   switch (sort) {
     case "Newest posted":
-      return [...items].sort((a, b) => b.timestamp.localeCompare(a.timestamp));
+      return byKey((i) => i.timestamp, (a, b) => (a < b ? 1 : a > b ? -1 : 0));
     case "Closing soonest":
-      return [...items].sort(byKey(closesAtUpcoming, (a, b) => a - b));
+      return byKey(closesAtUpcoming, (a, b) => a - b);
     case "Closing latest":
-      return [...items].sort(byKey(closesAt, (a, b) => b - a));
+      return byKey(closesAt, (a, b) => b - a);
     case "Highest pay":
-      return [...items].sort(byKey(payAnnualEquivalent, (a, b) => b - a));
+      return byKey(payAnnualEquivalent, (a, b) => b - a);
     case "Company A–Z":
-      return [...items].sort(byKey(companyOf, (a, b) => a.localeCompare(b)));
+      return byKey(companyOf, (a, b) => a.localeCompare(b));
     default:
-      return [...items].sort((a, b) => (b.relevance_score ?? 0) - (a.relevance_score ?? 0));
+      return byKey((i) => i.relevance_score ?? 0, (a, b) => b - a);
   }
 }
 

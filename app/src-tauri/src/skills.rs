@@ -378,8 +378,16 @@ pub fn extract(item: &Item) -> Vec<String> {
     found
 }
 
-/// Roughly twice a full cache, so ordinary use never trips the reset.
-const MEMO_CAPACITY: usize = 8000;
+/// Comfortably larger than any cache the retention window can hold, so
+/// ordinary use never trips the reset.
+///
+/// This was 8,000 — "roughly twice a full cache" when a full cache was ~1,500
+/// postings. The employer boards took the cache past 18,000, at which point
+/// the memo filled, cleared, and filled again *within a single ranking pass*
+/// and never served a hit: `personalize` measured 2,264 ms cold and 2,250 ms
+/// warm over the real database. A memo that never hits is worse than no memo,
+/// so the number has to stay ahead of `RETENTION_DAYS` worth of postings.
+const MEMO_CAPACITY: usize = 100_000;
 
 fn memo() -> &'static Mutex<HashMap<String, Vec<String>>> {
     static MEMO: OnceLock<Mutex<HashMap<String, Vec<String>>>> = OnceLock::new();
@@ -423,6 +431,68 @@ fn keywords_for<'a>(name: &str, keywords: &'a [&'a str], long: bool) -> &'a [&'a
     }
 }
 
+/// Every catalog keyword in one automaton, so a posting is read once.
+///
+/// The scan used to be `keyword.iter().any(|kw| text.contains(kw))` per skill:
+/// about 600 independent passes over a haystack that averages 1.6 KB across
+/// the real cache, for each of 17,739 opportunities. Aho-Corasick answers the
+/// same question — which of these patterns occur — in a single pass, and it is
+/// already in the dependency tree underneath `regex`.
+///
+/// Two automatons because [`AMBIGUOUS`] changes the pattern set: a short line
+/// of scraped metadata keeps the loose keywords, a real description does not.
+/// `find_overlapping_iter` rather than `find_iter`, because non-overlapping
+/// leftmost matching would consume "react" and never see the "react native"
+/// that contains it.
+struct Matcher {
+    automaton: aho_corasick::AhoCorasick,
+    /// Pattern index → index into the flattened catalog.
+    owner: Vec<usize>,
+}
+
+impl Matcher {
+    fn build(long: bool) -> Self {
+        let mut patterns: Vec<&str> = Vec::new();
+        let mut owner: Vec<usize> = Vec::new();
+        for (skill, (name, keywords)) in catalog().iter().enumerate() {
+            for keyword in keywords_for(name, keywords, long) {
+                patterns.push(keyword);
+                owner.push(skill);
+            }
+        }
+        Matcher {
+            automaton: aho_corasick::AhoCorasick::new(&patterns)
+                .expect("the catalog's keywords build an automaton"),
+            owner,
+        }
+    }
+
+    /// Which catalog entries this text names, as a flag per skill.
+    fn hits(&self, text: &str) -> Vec<bool> {
+        let mut found = vec![false; catalog().len()];
+        for m in self.automaton.find_overlapping_iter(text) {
+            found[self.owner[m.pattern().as_usize()]] = true;
+        }
+        found
+    }
+}
+
+/// The catalog flattened once, so a skill has a stable index.
+fn catalog() -> &'static [Skill] {
+    static FLAT: OnceLock<Vec<Skill>> = OnceLock::new();
+    FLAT.get_or_init(|| SKILLS.iter().flat_map(|(_, skills)| skills.iter().copied()).collect())
+}
+
+fn matcher(long: bool) -> &'static Matcher {
+    static SHORT: OnceLock<Matcher> = OnceLock::new();
+    static LONG: OnceLock<Matcher> = OnceLock::new();
+    if long {
+        LONG.get_or_init(|| Matcher::build(true))
+    } else {
+        SHORT.get_or_init(|| Matcher::build(false))
+    }
+}
+
 /// Above this many characters, the haystack is a real description rather than
 /// a line of scraped metadata, and [`AMBIGUOUS`] skills tighten up.
 const LONG_TEXT: usize = 400;
@@ -454,50 +524,58 @@ fn extract_uncached(item: &Item) -> Vec<String> {
     // `content_text` is the fallback for the sources the enrichment pass could
     // not reach — one scraped line, usually the office location, which is what
     // [`LONG_TEXT`] distinguishes from a real description below.
-    let mut body = String::new();
-    for text in [&item.requirements, &item.responsibilities, &item.description]
-        .into_iter()
-        .flatten()
-    {
-        body.push(' ');
-        body.push_str(text);
-    }
-    if body.trim().is_empty() {
-        body.push_str(&item.content_text);
-    }
+    //
+    // Built into one buffer and lowercased in place. The description of a real
+    // posting averages 3.5 KB, and the `format!(…).to_lowercase()` this
+    // replaces walked that text three more times than it had to — allocating a
+    // fresh copy each time — over every one of 17,739 opportunities.
+    let fields = [&item.requirements, &item.responsibilities, &item.description];
+    let body_len: usize = fields
+        .iter()
+        .flat_map(|f| f.iter())
+        .map(|t| t.len() + 1)
+        .sum();
 
     // Padded so keywords written with leading/trailing spaces (" go ") can
     // match at the very start or end of the text.
-    let text = format!(" {} {} ", item.title, body).to_lowercase();
+    let mut text = String::with_capacity(item.title.len() + body_len + item.content_text.len() + 3);
+    text.push(' ');
+    text.push_str(&item.title);
+    let title_end = text.len();
+    for field in fields.into_iter().flatten() {
+        text.push(' ');
+        text.push_str(field);
+    }
+    if text[title_end..].trim().is_empty() {
+        text.push(' ');
+        text.push_str(&item.content_text);
+    }
+    text.push(' ');
+    // Every catalog keyword is ASCII, so ASCII casefolding is exactly as
+    // precise here as the Unicode one and does not have to reallocate.
+    text.make_ascii_lowercase();
     let long = text.len() > LONG_TEXT;
 
-    let mut wanted: std::collections::HashSet<&str> = SKILLS
-        .iter()
-        .flat_map(|(_, skills)| skills.iter())
-        .filter(|(name, keywords)| {
-            keywords_for(name, keywords, long)
-                .iter()
-                .any(|kw| text.contains(kw))
-        })
-        .map(|(name, _)| *name)
-        .collect();
+    let mut found = matcher(long).hits(&text);
 
     // Skills the source tagged the posting with, where they name something the
     // catalog knows. Trusted outright — a tag is somebody's judgement about
     // the posting, not a substring that happened to appear in it.
     for tag in &item.tagged_skills {
         if let Some(name) = canonical(tag) {
-            wanted.insert(name);
+            if let Some(at) = catalog().iter().position(|(n, _)| *n == name) {
+                found[at] = true;
+            }
         }
     }
 
-    // Re-walk the catalog rather than draining the set, so the result is in
-    // catalog order and therefore stable between calls.
-    SKILLS
+    // The flags are already in catalog order, so the result is too — and
+    // therefore stable between calls.
+    catalog()
         .iter()
-        .flat_map(|(_, skills)| skills.iter())
-        .filter(|(name, _)| wanted.contains(name))
-        .map(|(name, _)| name.to_string())
+        .zip(&found)
+        .filter(|(_, hit)| **hit)
+        .map(|((name, _), _)| name.to_string())
         .collect()
 }
 
@@ -517,6 +595,64 @@ mod tests {
         static NEXT: AtomicUsize = AtomicUsize::new(0);
         let url = format!("https://example.com/{}", NEXT.fetch_add(1, Ordering::Relaxed));
         Item::new(title, "Test", ItemType::Internship, url).with_content(body)
+    }
+
+    /// What the automaton replaced: one `contains` pass per keyword.
+    fn naive_hits(text: &str, long: bool) -> Vec<bool> {
+        catalog()
+            .iter()
+            .map(|(name, keywords)| {
+                keywords_for(name, keywords, long)
+                    .iter()
+                    .any(|kw| text.contains(kw))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_automaton_agrees_with_the_scan_it_replaced() {
+        // Extraction is a single Aho-Corasick pass now rather than ~600
+        // independent substring searches. That is only worth doing if it is
+        // the same answer, so this asserts it against the old implementation —
+        // including on the cases where overlapping matters ("react" inside
+        // "react native") and where the long-text tightening applies.
+        let filler = "You will collaborate across teams and ship production services. ".repeat(12);
+        let cases = [
+            " backend engineering intern build rest apis in python with django and postgresql, \
+              deploy on aws with docker and kubernetes, write unit tests with pytest. ",
+            " react native and react and next.js and node.js and nodejs throughout. ",
+            " we invite candidates who build trust, respect employment laws, design scalable \
+              guardrails, and reason about scenarios end to end. ",
+            " stack: go, python, c/c++, rstudio, sql, postgresql, mysql. ",
+            " poetry reading night — bring a friend and a favourite verse. ",
+        ];
+
+        for case in cases {
+            for long in [false, true] {
+                assert_eq!(
+                    matcher(long).hits(case),
+                    naive_hits(case, long),
+                    "long={long} disagreed on {case:?}"
+                );
+            }
+            let padded = format!(" {filler} {case} ");
+            assert_eq!(matcher(true).hits(&padded), naive_hits(&padded, true));
+        }
+    }
+
+    #[test]
+    fn every_keyword_still_finds_its_own_skill() {
+        // A pattern that lost its owner in the flattening would silently stop
+        // matching, and no fixture above would notice.
+        for (skill, (name, keywords)) in catalog().iter().enumerate() {
+            for keyword in keywords_for(name, keywords, false) {
+                let text = format!("  {keyword}  ");
+                assert!(
+                    matcher(false).hits(&text)[skill],
+                    "{name} did not match its own keyword {keyword:?}"
+                );
+            }
+        }
     }
 
     #[test]

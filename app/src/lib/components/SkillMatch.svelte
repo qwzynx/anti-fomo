@@ -21,7 +21,9 @@
   const SEGMENTS = 10;
 
   const required = $derived(item.required_skills ?? []);
-  const have = $derived(item.matched_skills?.length ?? 0);
+  // Counted against the live profile rather than the `matched_skills` the
+  // payload froze, so tapping a chip below moves the meter on the tap.
+  const have = $derived(required.reduce((n, s) => n + (feed.hasSkill(s) ? 1 : 0), 0));
   const groups = $derived(groupByCategory(required, feed.skillCatalog));
   const filled = $derived(
     required.length === 0 ? 0 : Math.round((have / required.length) * SEGMENTS),
@@ -56,7 +58,7 @@
           <SkillChip
             {skill}
             size="sm"
-            has={item.matched_skills?.includes(skill) ?? false}
+            has={feed.hasSkill(skill)}
             onToggle={(s) => void feed.toggleSkill(s)}
           />
         {/each}
