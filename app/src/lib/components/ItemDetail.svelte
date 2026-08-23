@@ -3,7 +3,14 @@
   import { logoFor, type ScrapedItem } from "$lib/api";
   import { feed } from "$lib/feed.svelte";
   import { ArrowUpRight, Bookmark, BookmarkCheck, MapPin, Sparkles, X, iconForType } from "$lib/icons";
-  import { ctaLabel, sourceBlurb, splitTitle, tagsFor, typeBadgeClass } from "$lib/item";
+  import {
+    ctaLabel,
+    hasScrapedPosting,
+    sourceBlurb,
+    splitTitle,
+    tagsFor,
+    typeBadgeClass,
+  } from "$lib/item";
   import JobSections from "./JobSections.svelte";
   import SkillMatch from "./SkillMatch.svelte";
 
@@ -23,6 +30,8 @@
   } = $props();
 
   let logoFailed = $state(false);
+  /** Set when the opener refuses or is unavailable, so the click is not silent. */
+  let openFailed = $state(false);
 
   const logo = $derived(logoFor(item.url));
   const parts = $derived(splitTitle(item));
@@ -30,9 +39,7 @@
   const cta = $derived(ctaLabel(item));
   const TypeIcon = $derived(iconForType(item.item_type));
   /** Whether the enrichment pass reached this posting. */
-  const enriched = $derived(
-    Boolean(item.requirements || item.responsibilities || item.perks || item.description),
-  );
+  const enriched = $derived(hasScrapedPosting(item) || Boolean(item.perks));
   const locations = $derived(
     item.location
       ? item.location
@@ -46,10 +53,11 @@
     ...new Set([item.discipline, ...tags, item.source_platform].filter(Boolean)),
   ]);
 
-  // A new item means a fresh logo attempt.
+  // A new item means a fresh logo attempt, and a clean slate for the link.
   $effect(() => {
     void item.url;
     logoFailed = false;
+    openFailed = false;
   });
 
   // Opening an item counts as reading it, which sinks it in later rankings.
@@ -57,12 +65,21 @@
     void feed.markSeen(item);
   });
 
-  /** Links must leave the webview, not navigate the app out of itself. */
+  /**
+   * Links must leave the webview, not navigate the app out of itself.
+   *
+   * A refusal here is worth showing. The opener plugin checks the URL against
+   * a scope before it will open anything, so a capability missing
+   * `opener:allow-default-urls` turns every apply button into a no-op that
+   * only says so in the console — which is exactly how it went unnoticed.
+   */
   async function open(url: string) {
     try {
       await openUrl(url);
+      openFailed = false;
     } catch (e) {
       console.error("could not open link", e);
+      openFailed = true;
     }
   }
 </script>
@@ -177,6 +194,15 @@
         {item.content_text ||
           "No further details were scraped for this item — open the source for the full picture."}
       </p>
+      {#if item.item_type === "Internship" || item.item_type === "Job"}
+        <!-- Says why the skills panel is missing. Nothing is inferred from the
+             job title any more, so a posting we could not read shows no skills
+             at all, and an unexplained gap reads as a bug. -->
+        <p class="mt-3 text-xs text-subtle">
+          This posting's own page could not be read, so there are no requirements or skills to
+          match against. Open it on the source to see the full description.
+        </p>
+      {/if}
     {/if}
 
     {#if chips.length > 0}
@@ -191,6 +217,11 @@
   </div>
 
   <div class="shrink-0 border-t border-line-soft p-4">
+    {#if openFailed}
+      <p class="mb-2 text-center text-xs font-medium text-muted" role="alert">
+        Could not hand this link to your browser. Open it directly: {item.url}
+      </p>
+    {/if}
     <button
       onclick={() => open(item.url)}
       class="flex w-full items-center justify-center gap-1.5 rounded-xl bg-brand py-3 text-center font-semibold text-brand-fg transition-all hover:bg-brand-hover hover:shadow-lg hover:shadow-brand/25"

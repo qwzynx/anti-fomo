@@ -21,9 +21,9 @@ export interface ScrapedItem {
   matched_skills?: string[];
   /**
    * The posting as the employer wrote it, once the enrichment pass has fetched
-   * it. Absent where it could not, which is what makes the UI fall back to
-   * role-inferred skills — see `fromPosting` in `lib/item`. All four fields
-   * hold newline-separated lines.
+   * it. Absent where it could not, which is what makes the detail pane explain
+   * itself instead of showing a skills panel — see `hasScrapedPosting` in
+   * `lib/item`. All four fields hold newline-separated lines.
    */
   description?: string | null;
   requirements?: string | null;

@@ -156,8 +156,8 @@ pub struct Item {
     pub matched_skills: Vec<String>,
 
     // The fetched posting, joined from `job_details` on read. Absent for the
-    // postings the chain in `scrapers::details` could not serve, which is what
-    // makes `skills::extract` fall back to role inference and the UI say so.
+    // postings the chain in `scrapers::details` could not serve — those report
+    // no skills at all rather than a guess, and the UI says which it is.
     #[serde(default)]
     pub description: Option<String>,
     #[serde(default)]

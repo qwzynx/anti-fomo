@@ -9,7 +9,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::models::{DetailStatus, Item, ItemType, JobDetail};
 
-const SCHEMA_VERSION: i32 = 5;
+const SCHEMA_VERSION: i32 = 6;
 
 pub fn open(path: &std::path::Path) -> Result<Connection> {
     if let Some(parent) = path.parent() {
@@ -113,6 +113,19 @@ fn migrate(conn: &Connection) -> Result<()> {
         -- postings a new handler exists to serve, and keeping them would lock
         -- the improvement out of every cache that already exists.
         DELETE FROM job_details WHERE status <> 'ok';
+
+        -- And the ok rows that a fixed parser would now read differently. A
+        -- description stored as one line of more than 400 characters was never
+        -- split: simplify.jobs mirrors the employer's HTML and this used to
+        -- flatten the whole posting into a single 5 KB run of text, which the
+        -- UI could only render as a wall and `scrapers::sections` never got to
+        -- see the headings of. There is no fixing those in place — the markup
+        -- is gone — so they go back on the queue.
+        DELETE FROM job_details
+         WHERE status = 'ok'
+           AND description IS NOT NULL
+           AND instr(description, char(10)) = 0
+           AND length(description) > 400;
         "#,
     )?;
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;

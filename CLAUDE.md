@@ -26,15 +26,20 @@ Everything ships from `/app`:
       there, not a new `Scraper`. `sections.rs` recovers the Requirements /
       Responsibilities / Perks split from an HTML description and is the only
       module that knows those heading words; `jsonld.rs` reads the schema.org
-      block. Verify with `cargo run --bin detail_check`.
+      block. **Every handler feeds its description through `sections::split`** —
+      one that strips it to plain text instead throws away both the structure
+      the UI renders and the headings that tell requirements from boilerplate.
+      Verify with `cargo run --bin detail_check`.
   - `location.rs`, `rank.rs`, `skills.rs` — pure functions (location tagging,
     discipline classification, interest-tag matching, recency decay, relevance
     scoring, round-robin per-source diversification, skill extraction).
-    Unit-tested. **A posting's skills come from its own fetched text.**
-    `skills::ROLES` guesses from the job title and runs *only* where the
-    enrichment pass came back empty; `skills::from_posting` is the switch, and
-    `fromPosting` in `lib/item.ts` must keep answering it the same way, since
-    that is what words the UI's heading.
+    Unit-tested. **A posting's skills come from its own fetched text and
+    nothing else** — its requirements, its duties, its description and the
+    tags the source attached, read together. Nothing is inferred from the job
+    title, so a posting whose page could not be read reports no skills at all;
+    `skills::from_posting` says which case it is, and `hasScrapedPosting` in
+    `lib/item.ts` must keep answering the same question, since that is what
+    decides whether the UI shows a panel or explains its absence.
   - `db.rs` — SQLite via `rusqlite` (bundled). Items are a rebuildable cache keyed
     by URL. `settings` and `item_state` are the durable tables and must survive a
     schema bump, so they are created with `IF NOT EXISTS` and never dropped.

@@ -145,7 +145,7 @@ own marks live in a separate durable `item_state` table keyed by URL:
 - **seen** dims an already-opened card and applies the −3 ranking penalty.
 
 `item_state` is created with `IF NOT EXISTS` and is never dropped by a schema
-bump (currently `user_version` 5). Orphan rows are pruned after each refresh.
+bump (currently `user_version` 6). Orphan rows are pruned after each refresh.
 
 ## Job descriptions
 
@@ -181,16 +181,20 @@ pre-split requirements are what the prose was missing.
 
 Descriptions arrive as one HTML blob from most of these, so
 `scrapers::sections` recovers the Requirements / Responsibilities / Perks split
-from the employer's own headings — `<h3>`, a fully bold paragraph and a line
-ending in a colon all count, because whoever pasted the description into the
-ATS used whichever they felt like. It is the only module that knows those
-heading words.
+from the employer's own headings — `<h3>`, a fully bold paragraph, a line
+ending in a colon and a short bare line sitting directly on top of a list all
+count, because whoever pasted the description into the ATS used whichever they
+felt like. It is the only module that knows those heading words. Every handler
+goes through it, simplify.jobs included: stripping a description to plain text
+instead loses the structure the UI renders *and* the headings that separate
+requirements from the company culture blurb.
 
-Measured over a 1,449-posting cache: **99% routable**, and a live sample of 200
-serves **94%** of what it routes — 83% with requirements, 75% with
-responsibilities, 59% with perks, at 54 ms per posting. Over the same sample,
-skills read off a posting rather than guessed from its title go from a mean of
-2.8 to 4.0, and the share with nothing to show falls from 42% to 29%.
+Measured over a 1,918-item cache with 1,438 opportunities: **99% routable**,
+and a live sample of 200 serves **95%** of what it routes — 82% with
+requirements, 74% with responsibilities, 58% with perks, at 56 ms per posting.
+Over the same sample, skills read off the posting go from a mean of 0.0 — the
+scraped line names almost nothing — to **4.9**, and the share with nothing to
+show falls from 96% to 24%.
 
 Results live in a durable `job_details` table, **not** on the `items` row:
 `save_items` overwrites `content_text` on every refresh, so a description
@@ -204,12 +208,18 @@ text" fallback. Garbage text feeds garbage into skill matching, and a posting
 with no skills listed is a better answer than one credited with the words in a
 site's navigation menu.
 
-The roughly one posting in eleven that still comes back with nothing — an
-expired listing, a page behind a login — falls back to the role inference in
-`skills::ROLES`, and the UI says "typically wanted for this role" rather than
-"asks for". Where the description *was* fetched, `ROLES` does not run at all:
-the skills shown are only what the employer wrote, because a list that is half
-read and half guessed gives the reader no way to tell which half to trust.
+The postings that still come back with nothing — an expired listing, a page
+behind a login — show **no skills at all**, and the detail pane says why. There
+used to be a `skills::ROLES` table that guessed a toolset from the job title
+for exactly those; it is gone. A guess and a reading look identical once they
+are chips in the same panel, so a match score built on one is not something the
+reader can act on: "this posting asks for React" has to mean the posting said
+React.
+
+What is read is the requirements, the duties and the description together —
+not the requirements alone, because a posting that names its stack once in the
+opening paragraph and never repeats it in a bullet is ordinary. `perks` is
+excluded: a benefits list says what the job pays, not what it asks for.
 
 `cargo run --bin detail_check` reports routing and live coverage per handler,
 and what enrichment does to skill extraction, against the real cached database.

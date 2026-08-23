@@ -41,7 +41,7 @@ use serde::Deserialize;
 use std::sync::LazyLock;
 
 use super::sections::{self, Section, Sections};
-use super::{collapse_ws, jsonld, strip_html, truncate_words};
+use super::{collapse_ws, jsonld, truncate_words};
 use crate::models::{DetailStatus, JobDetail};
 
 /// Cap on any one stored field. Descriptions routinely run past 20 KB, most of
@@ -680,10 +680,15 @@ struct PageProps {
 }
 #[derive(Deserialize)]
 struct JobPosting {
+    /// The employer's own posting, as HTML. Simplify mirrors it verbatim, so
+    /// this — not the curated lists below — is the fullest text available.
     #[serde(default)]
     description: Option<String>,
     #[serde(default)]
     requirements: Vec<String>,
+    /// Simplify's word for the nice-to-haves, which read as requirements.
+    #[serde(default)]
+    desirable: Vec<String>,
     #[serde(default)]
     responsibilities: Vec<String>,
     #[serde(default)]
@@ -743,20 +748,34 @@ fn parse_simplify(payload: &str) -> JobDetail {
         .map(|c| c.benefits)
         .unwrap_or_default();
 
+    // `description` is the employer's posting as HTML — headings, paragraphs
+    // and bullets intact — so it goes through the same split as every other
+    // handler's. Stripping it to one line instead, as this used to, threw away
+    // both the structure the UI renders and the section headings that tell
+    // requirements from company boilerplate.
+    let mut sections = posting
+        .description
+        .as_deref()
+        .map(sections::split)
+        .unwrap_or_default();
+
+    // Simplify's own `requirements`/`responsibilities` are a rewrite of the
+    // same posting: shorter, and paraphrased away from the employer's wording.
+    // So they stand in for a section the split could not find rather than
+    // merging into one, which would print each bullet twice in two voices.
+    if sections.requirements.is_empty() {
+        sections.requirements = posting.requirements;
+        sections.requirements.extend(posting.desirable);
+    }
+    if sections.responsibilities.is_empty() {
+        sections.responsibilities = posting.responsibilities;
+    }
+    if sections.perks.is_empty() {
+        sections.perks = benefits;
+    }
+
     detail_of(
-        Sections {
-            // Already prose; the HTML wrapper is all it needs stripping of.
-            overview: posting
-                .description
-                .as_deref()
-                .map(strip_html)
-                .filter(|s| !s.trim().is_empty())
-                .into_iter()
-                .collect(),
-            requirements: posting.requirements,
-            responsibilities: posting.responsibilities,
-            perks: benefits,
-        },
+        sections,
         posting
             .skills
             .into_iter()
@@ -925,9 +944,12 @@ mod tests {
 
     #[test]
     fn parses_the_simplify_payload() {
+        // No headings in the description, so Simplify's own curated lists are
+        // what fill the sections, and the prose stays whole as the overview.
         let payload = r#"{"props":{"pageProps":{"jobPosting":{
             "description":"<p>About us</p><div>We build things</div>",
-            "requirements":["You are proficient in Python, R, or MATLAB.","Comfortable with statistics."],
+            "requirements":["You are proficient in Python, R, or MATLAB."],
+            "desirable":["Comfortable with statistics."],
             "responsibilities":["Build scalable models."],
             "skills":[{"name":"Python","id":"1"},{"name":"Data Visualization","id":"2"}],
             "job":{"company":{"benefits":["Health Insurance","401(k) Company Match"]}}
@@ -935,7 +957,9 @@ mod tests {
         let d = parse_simplify(payload);
 
         assert_eq!(d.status, DetailStatus::Ok);
-        assert_eq!(d.description.as_deref(), Some("About us We build things"));
+        // Two blocks, two lines — not one run of text, which is what the UI
+        // used to have to render as an unbroken wall.
+        assert_eq!(d.description.as_deref(), Some("About us\nWe build things"));
         assert_eq!(
             d.requirements.as_deref(),
             Some("You are proficient in Python, R, or MATLAB.\nComfortable with statistics.")
@@ -943,6 +967,28 @@ mod tests {
         assert_eq!(d.responsibilities.as_deref(), Some("Build scalable models."));
         assert_eq!(d.perks.as_deref(), Some("Health Insurance\n401(k) Company Match"));
         assert_eq!(d.tagged_skills, vec!["Python", "Data Visualization"]);
+    }
+
+    #[test]
+    fn the_employers_own_headings_beat_simplifys_rewrite() {
+        // Simplify mirrors the posting's HTML in `description` and *also*
+        // paraphrases it into `requirements`. Where the mirror carries the
+        // employer's own headings, those win: same facts, the employer's
+        // words, and no bullet printed twice in two voices.
+        let payload = r#"{"props":{"pageProps":{"jobPosting":{
+            "description":"<p>Join us.</p><h3>Requirements</h3><ul><li>Three years of Rust</li></ul><h3>Benefits</h3><ul><li>Free lunch</li></ul>",
+            "requirements":["Some experience with a systems language."],
+            "responsibilities":["Build scalable models."],
+            "skills":[],
+            "job":{"company":{"benefits":["Health Insurance"]}}
+        }}}}"#;
+        let d = parse_simplify(payload);
+
+        assert_eq!(d.description.as_deref(), Some("Join us."));
+        assert_eq!(d.requirements.as_deref(), Some("Three years of Rust"));
+        assert_eq!(d.perks.as_deref(), Some("Free lunch"));
+        // Nothing in the description spoke to duties, so the rewrite stands in.
+        assert_eq!(d.responsibilities.as_deref(), Some("Build scalable models."));
     }
 
     #[test]

@@ -23,11 +23,11 @@ use super::collapse_ws;
 /// end in a colon is a sentence introducing a list.
 const MAX_HEADING: usize = 90;
 
-/// Lines kept per section. Long enough for the most itemised posting seen
-/// (Job Bank's "Experience and specialization" runs to about 40), short
-/// enough that a page whose whole body parsed as one section cannot flood the
-/// pane.
-const MAX_LINES: usize = 60;
+/// Lines kept per section. Generous, because the UI shows the whole posting
+/// and a clipped one reads as a bug: the cap is here only so a page whose
+/// entire body parsed as one section cannot flood the pane, and the byte cap
+/// in [`super::details`] is the limit that actually binds.
+const MAX_LINES: usize = 120;
 
 /// A description split the way the UI renders it. Every field is a list of
 /// lines because that is what the employer wrote — collapsing them into one
@@ -218,15 +218,38 @@ pub fn split_into(html: &str, default: Section) -> Sections {
 struct Block {
     text: String,
     heading: bool,
+    /// Came out of an `<li>`. Kept because what surrounds a list is evidence
+    /// about the line before it — see [`opens_a_list`].
+    bullet: bool,
 }
 
 /// Walks the fragment into blocks, breaking wherever the markup breaks a line.
 fn flatten(html: &str) -> Vec<Block> {
+    if !html.contains('<') {
+        return flatten_text(html);
+    }
     let doc = Html::parse_fragment(html);
     let mut walker = Walker::default();
     walker.visit(doc.root_element(), false);
     walker.flush(false, false);
     walker.blocks
+}
+
+/// A field that arrived with no markup at all still has structure: whoever
+/// wrote it separated its lines with newlines, and the HTML walk would hand
+/// the whole thing to `collapse_ws` as one block and turn those into spaces.
+/// So the lines are the blocks. A colon still opens a section, which is the
+/// only heading mark plain text has — there is no bold to look at.
+fn flatten_text(text: &str) -> Vec<Block> {
+    text.lines()
+        .map(collapse_ws)
+        .filter(|line| !line.is_empty())
+        .map(|text| Block {
+            heading: text.len() <= MAX_HEADING && text.ends_with(':'),
+            text,
+            bullet: false,
+        })
+        .collect()
 }
 
 #[derive(Default)]
@@ -305,6 +328,7 @@ impl Walker {
         self.blocks.push(Block {
             text,
             heading: tagged || styled,
+            bullet,
         });
     }
 }
@@ -344,12 +368,38 @@ fn is_bold(name: &str) -> bool {
     matches!(name, "b" | "strong")
 }
 
+/// A short standalone line sitting directly on top of a list, which is what a
+/// section heading looks like when the employer never marked it up as one —
+/// no `<h3>`, no bold, no colon, just `<p>Our Culture</p>` before the `<ul>`.
+///
+/// Common enough to matter: without it every bullet under such a line joins
+/// whatever section came before, and a page's culture blurb ends up filed as
+/// requirements — where it is not merely untidy, since that is the text skill
+/// extraction reads.
+///
+/// A full sentence is excluded, because the other thing that sits above a list
+/// is a sentence introducing it, and one of those is content rather than a
+/// label. Losing the occasional intro line is the cost, and it is small: an
+/// unrecognised heading's text is kept in the overview, not dropped.
+fn opens_a_list(block: &Block, next: Option<&Block>) -> bool {
+    !block.bullet
+        && block.text.len() <= MAX_HEADING
+        && !block.text.ends_with(['.', '!', '?'])
+        && next.is_some_and(|n| n.bullet)
+}
+
 fn assemble(blocks: Vec<Block>, default: Section) -> Sections {
     let mut out = Sections::default();
     let mut current = default;
 
-    for block in blocks {
-        if block.heading {
+    // Decided up front, because `opens_a_list` has to see the block *after*
+    // this one and the loop below consumes them as it goes.
+    let opens: Vec<bool> = (0..blocks.len())
+        .map(|i| blocks[i].heading || opens_a_list(&blocks[i], blocks.get(i + 1)))
+        .collect();
+
+    for (block, opens) in blocks.into_iter().zip(opens) {
+        if opens {
             // Under a known default, an unrecognised heading cannot demote the
             // block to prose — the caller already told us what it is.
             current = match section_of(&block.text) {
@@ -412,6 +462,17 @@ mod tests {
     }
 
     #[test]
+    fn plain_text_splits_on_its_newlines() {
+        // Some fields arrive with no markup at all — schema.org joins its
+        // list-valued strings with newlines. The HTML walk would see one block
+        // and `collapse_ws` would turn every line break into a space.
+        let s = split("Requirements:\nA degree\nThree years of Rust\n\nWe offer:\nFree lunch");
+        assert_eq!(s.requirements, ["A degree", "Three years of Rust"]);
+        assert_eq!(s.perks, ["Free lunch"]);
+        assert!(s.overview.is_empty());
+    }
+
+    #[test]
     fn a_trailing_colon_opens_a_section() {
         let s = split("<div>Requirements:</div><div>A degree</div>");
         assert_eq!(s.requirements, ["A degree"]);
@@ -422,6 +483,34 @@ mod tests {
         let long = format!("{}:", "we are looking for someone who ".repeat(4));
         let s = split(&format!("<p>{long}</p>"));
         assert_eq!(s.overview.len(), 1);
+    }
+
+    #[test]
+    fn a_bare_line_on_top_of_a_list_is_a_heading() {
+        // Real markup from an iCIMS posting: the culture blurb's label is a
+        // plain `<p>` with no bold and no colon, so without the list lookahead
+        // its seven bullets joined the requirements above it.
+        let s = split(
+            "<p><b>Requirements</b></p><ul><li>Three years of Rust</li></ul>\
+             <p>How We Work: Our Culture</p><ul><li>We do the right thing</li></ul>",
+        );
+        assert_eq!(s.requirements, ["Three years of Rust"]);
+        assert_eq!(s.overview, ["How We Work: Our Culture", "We do the right thing"]);
+    }
+
+    #[test]
+    fn a_sentence_introducing_a_list_is_not_a_heading() {
+        // The other thing that sits above a list. It is content, and it must
+        // not end the section it belongs to.
+        let s = split(
+            "<h3>Requirements</h3><p>You will need all of the following.</p>\
+             <ul><li>Three years of Rust</li></ul>",
+        );
+        assert_eq!(
+            s.requirements,
+            ["You will need all of the following.", "Three years of Rust"]
+        );
+        assert!(s.overview.is_empty());
     }
 
     #[test]

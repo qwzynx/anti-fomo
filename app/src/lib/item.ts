@@ -108,14 +108,15 @@ export function sourceBlurb(item: ScrapedItem): string {
 
 /**
  * Whether the enrichment pass reached this posting, so the UI is showing what
- * the employer wrote rather than what its job title implies.
+ * the employer wrote rather than nothing at all.
  *
- * Mirrors `skills::from_posting` in Rust field for field, and has to: that is
- * the same test the backend uses to decide whether to fall back to
- * `skills::ROLES`, so a heading derived from a different rule would eventually
- * claim a posting "asks for" a skill nobody read off it.
+ * Mirrors `skills::from_posting` in Rust field for field. Every skill the app
+ * shows is read off the posting's own text now — nothing is inferred from the
+ * job title — so this is what separates "this posting asks for nothing we
+ * recognise" from "we could not read this posting". An empty panel means
+ * opposite things in those two cases.
  */
-export function fromPosting(item: ScrapedItem): boolean {
+export function hasScrapedPosting(item: ScrapedItem): boolean {
   return Boolean(
     item.requirements?.trim() ||
       item.responsibilities?.trim() ||

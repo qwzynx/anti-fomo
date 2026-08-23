@@ -271,90 +271,6 @@ pub const SKILLS: &[Category] = &[
     ),
 ];
 
-/// Skills a role is understood to want, keyed by phrases in the job title.
-///
-/// **Last resort only.** [`extract`] uses this for a posting whose description
-/// the enrichment pass could not fetch, and for no other. What a posting asks
-/// for is written on the posting; a guess from the job title is a stand-in for
-/// not having read it, and the moment we have read it the guess is noise —
-/// worse than noise, since it would put "React" on a frontend posting that
-/// never mentions React and the user would have no way to tell which is which.
-///
-/// It still earns its place. [`crate::scrapers::details`] routes 99% of a real
-/// cache and serves about 91% of what it routes, so roughly one posting in
-/// eleven has no description to read: an expired listing, a page behind a
-/// login, an employer whose site says nothing a machine can find. For those,
-/// a role's usual toolset beats a blank panel, and the UI labels it as the
-/// guess it is.
-///
-/// Order is longest-phrase-first within a family so "data engineer" is not
-/// swallowed by "data". Every profile that matches contributes, so a
-/// "Full-Stack Software Engineer" collects all three sets.
-pub const ROLES: &[(&[&str], &[&str])] = &[
-    // Generic engineering, deliberately small: it matches ~45% of the corpus,
-    // and a large set here would make every posting look identical.
-    (
-        &["software engineer", "software developer", "software dev "],
-        &["Data Structures & Algorithms", "Git", "Code Review", "Debugging", "Unit Testing"],
-    ),
-    (
-        &["frontend", "front-end", "front end", "ui engineer", "web develop"],
-        &["JavaScript", "TypeScript", "React", "HTML / CSS", "Web Accessibility"],
-    ),
-    (
-        &["backend", "back-end", "back end", "server-side"],
-        &["REST APIs", "SQL", "PostgreSQL", "Microservices", "Docker"],
-    ),
-    (
-        &["full-stack", "full stack", "fullstack"],
-        &["JavaScript", "TypeScript", "React", "REST APIs", "SQL"],
-    ),
-    (
-        &["machine learning", "deep learning", " ml ", " ai ", "artificial intelligence"],
-        &["Python", "PyTorch", "Deep Learning", "scikit-learn", "Pandas"],
-    ),
-    (
-        &["data scien", "data analy", "analytics"],
-        &["Python", "SQL", "Pandas", "Data Structures & Algorithms"],
-    ),
-    (
-        &["data engineer"],
-        &["Python", "SQL", "ETL / Pipelines", "Apache Spark", "Airflow"],
-    ),
-    (
-        &["devops", "site reliability", " sre ", "platform engineer", "cloud engineer", "infrastructure engineer"],
-        &["Docker", "Kubernetes", "AWS", "CI/CD", "Terraform", "Linux"],
-    ),
-    (
-        &["security engineer", "cyber", "infosec", "application security"],
-        &["Application Security", "Cryptography", "Threat Modeling", "Linux"],
-    ),
-    (
-        &["mobile", "ios engineer", "ios develop", "android engineer", "android develop"],
-        &["Swift", "Kotlin", "iOS", "Android"],
-    ),
-    (
-        &["embedded", "firmware"],
-        &["C", "C++", "Embedded / Firmware", "Operating Systems"],
-    ),
-    (
-        &["hardware engineer", "asic", "silicon", "chip design"],
-        &["FPGA / Verilog", "C", "Assembly"],
-    ),
-    (
-        &["systems engineer", "kernel", "compiler"],
-        &["C", "C++", "Operating Systems", "Concurrency"],
-    ),
-    (
-        &["qa engineer", " qa ", "test engineer", "quality assurance"],
-        &["Unit Testing", "Integration Testing", "Debugging", "TDD"],
-    ),
-    (
-        &["game develop", "game engineer", "gameplay"],
-        &["C++", "Data Structures & Algorithms", "WebGL"],
-    ),
-];
-
 /// One catalog category, as the picker consumes it.
 #[derive(Serialize, Clone, Debug)]
 pub struct SkillCategory {
@@ -419,15 +335,16 @@ pub fn category_of(skill: &str) -> Option<&'static str> {
 
 /// Which catalog skills this posting wants, in catalog order.
 ///
-/// Where the enrichment pass fetched the posting — [`from_posting`] — this is
-/// what the employer wrote and nothing else: catalog keywords found in the
-/// requirements, the duties and the description, plus any skill the source
-/// tagged the posting with. Where it did not, and only there, the role named
-/// in the title stands in via [`ROLES`].
+/// Read off the posting and nothing else: catalog keywords found in the
+/// requirements, the duties and the description the enrichment pass fetched,
+/// plus any skill the source tagged the posting with. A posting whose page we
+/// could not read reports nothing, and the UI says so.
 ///
-/// The two never mix. A posting credited half with its own requirements and
-/// half with what its title suggests reads as one list, and the reader has no
-/// way to tell which half to trust.
+/// There used to be a `ROLES` table here that guessed a toolset from the job
+/// title where the fetch came back empty. It is gone on purpose. A guess and a
+/// reading look identical once they are chips in the same panel, so a match
+/// score built on one is not something the reader can act on — "this posting
+/// asks for React" has to mean the posting said React.
 ///
 /// Only meaningful for opportunities — an article mentioning Kubernetes is not
 /// asking you to know it — so callers gate on
@@ -510,12 +427,13 @@ fn keywords_for<'a>(name: &str, keywords: &'a [&'a str], long: bool) -> &'a [&'a
 /// a line of scraped metadata, and [`AMBIGUOUS`] skills tighten up.
 const LONG_TEXT: usize = 400;
 
-/// Whether this posting's own text is in hand, and so whether [`extract`] is
-/// reporting what the employer asked for or guessing from the job title.
+/// Whether the enrichment pass reached this posting, so the UI can tell "asks
+/// for nothing we recognise" apart from "we never got to read it". Those look
+/// identical in an empty panel and mean opposite things to someone deciding
+/// whether to apply.
 ///
-/// The UI asks the same question of the same fields to word its heading, so
-/// the two must agree: a panel headed "Skills this posting asks for" listing
-/// skills inferred from the title would be a straightforward lie.
+/// `hasScrapedPosting` in `lib/item.ts` asks the same question of the same
+/// fields, and has to keep doing so — it is what picks the wording.
 pub fn from_posting(item: &Item) -> bool {
     [&item.requirements, &item.responsibilities, &item.description]
         .into_iter()
@@ -525,19 +443,24 @@ pub fn from_posting(item: &Item) -> bool {
 }
 
 fn extract_uncached(item: &Item) -> Vec<String> {
-    // Prefer what the posting actually asks for. The full description is
-    // mostly company boilerplate, which is where false positives live, so it
-    // is only the fallback — and `content_text` the fallback below that, for
-    // the sources we cannot fetch.
+    // Everything the employer wrote, read together. The requirements are the
+    // densest part and the description the loosest, but a posting that names
+    // its stack in the opening paragraph and never repeats it in a bullet is
+    // ordinary, and reading only the bullets left those skills off the panel.
+    //
+    // `perks` is deliberately not here: a benefits list is what the job pays,
+    // not what it asks for, and it is where "compensation" language lives.
+    //
+    // `content_text` is the fallback for the sources the enrichment pass could
+    // not reach — one scraped line, usually the office location, which is what
+    // [`LONG_TEXT`] distinguishes from a real description below.
     let mut body = String::new();
-    for text in [&item.requirements, &item.responsibilities].into_iter().flatten() {
+    for text in [&item.requirements, &item.responsibilities, &item.description]
+        .into_iter()
+        .flatten()
+    {
         body.push(' ');
         body.push_str(text);
-    }
-    if body.trim().is_empty() {
-        if let Some(text) = &item.description {
-            body.push_str(text);
-        }
     }
     if body.trim().is_empty() {
         body.push_str(&item.content_text);
@@ -546,7 +469,6 @@ fn extract_uncached(item: &Item) -> Vec<String> {
     // Padded so keywords written with leading/trailing spaces (" go ") can
     // match at the very start or end of the text.
     let text = format!(" {} {} ", item.title, body).to_lowercase();
-    let title = format!(" {} ", item.title).to_lowercase();
     let long = text.len() > LONG_TEXT;
 
     let mut wanted: std::collections::HashSet<&str> = SKILLS
@@ -566,15 +488,6 @@ fn extract_uncached(item: &Item) -> Vec<String> {
     for tag in &item.tagged_skills {
         if let Some(name) = canonical(tag) {
             wanted.insert(name);
-        }
-    }
-
-    // Only where the posting itself said nothing. See [`ROLES`].
-    if !from_posting(item) {
-        for (phrases, skills) in ROLES {
-            if phrases.iter().any(|p| title.contains(p)) {
-                wanted.extend(skills.iter().copied());
-            }
         }
     }
 
@@ -704,60 +617,27 @@ mod tests {
     }
 
     #[test]
-    fn every_role_names_real_catalog_skills() {
-        // A typo here would silently give a role a skill the picker can never
-        // offer, so the user could never match it.
-        for (phrases, skills) in ROLES {
-            for skill in *skills {
-                assert!(
-                    category_of(skill).is_some(),
-                    "role {phrases:?} names unknown skill {skill}"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn a_role_in_the_title_stands_in_for_the_missing_description() {
-        // The real shape of our data: a title, and a body that is just the
-        // office location.
-        let found = extract(&posting("Frontend Engineer Intern", "Location: Toronto, ON"));
-        for expected in ["JavaScript", "TypeScript", "React", "HTML / CSS"] {
-            assert!(found.iter().any(|s| s == expected), "missing {expected} in {found:?}");
-        }
-    }
-
-    #[test]
-    fn a_titleless_posting_claims_nothing() {
-        // 41% of the corpus looks like this. Inventing skills for it would
-        // put a meaningless match score on every one of them.
+    fn a_title_alone_claims_nothing() {
+        // No description was fetched, so there is nothing to report. The job
+        // title is not evidence: a "Frontend Engineer Intern" that never says
+        // React must not be credited with it, because the reader cannot tell
+        // a credited guess from a credited reading.
+        assert!(extract(&posting("Frontend Engineer Intern", "Location: Toronto, ON")).is_empty());
         assert!(extract(&posting("Internship at Skyscanner", "Location: London")).is_empty());
     }
 
     #[test]
-    fn roles_compound_without_duplicating() {
-        let found = extract(&posting("Full Stack Software Engineer", "Location: Remote"));
-        // Both the generic and the full-stack profile contributed.
-        assert!(found.iter().any(|s| s == "Git"));
-        assert!(found.iter().any(|s| s == "React"));
-
-        let mut deduped = found.clone();
-        deduped.sort();
-        deduped.dedup();
-        assert_eq!(deduped.len(), found.len(), "duplicate skills in {found:?}");
-    }
-
-    #[test]
-    fn the_scraped_line_is_read_as_well_as_the_role() {
-        // Nothing was fetched for this posting, so both passes run: whatever
-        // the one line of scraped text named, plus what the title implies.
+    fn the_scraped_line_is_still_read() {
+        // The unenriched sources give us one line. Whatever it names is a
+        // reading like any other, so it counts.
         let found = extract(&posting(
             "Backend Engineer Intern",
             "You'll work in Rust on our Kafka pipeline.",
         ));
         assert!(found.iter().any(|s| s == "Rust"), "{found:?}");
         assert!(found.iter().any(|s| s == "Kafka"), "{found:?}");
-        assert!(found.iter().any(|s| s == "REST APIs"), "{found:?}");
+        // ...and nothing the line did not name.
+        assert!(!found.iter().any(|s| s == "REST APIs"), "{found:?}");
     }
 
     /// A posting shaped like a real enriched one: a role title and a long
@@ -771,23 +651,21 @@ mod tests {
 
     #[test]
     fn a_fetched_posting_is_credited_with_nothing_it_did_not_say() {
-        // The whole point of fetching descriptions. This title would otherwise
-        // collect React, TypeScript and Web Accessibility from `ROLES`, none
-        // of which the employer mentioned.
         let found = extract(&enriched(
             "Frontend Engineer Intern",
             "You write Svelte and you have shipped something with Tailwind.",
         ));
         assert!(found.iter().any(|s| s == "Svelte"), "{found:?}");
-        for guessed in ["React", "Web Accessibility"] {
-            assert!(!found.iter().any(|s| s == guessed), "guessed {guessed} in {found:?}");
+        for unsaid in ["React", "Web Accessibility"] {
+            assert!(!found.iter().any(|s| s == unsaid), "invented {unsaid} in {found:?}");
         }
     }
 
     #[test]
-    fn any_fetched_field_is_enough_to_stop_guessing() {
-        // A posting whose page gave us prose but no bullet lists still counts
-        // as read — `from_posting` and the UI's heading must agree on that.
+    fn any_fetched_field_marks_the_posting_as_read() {
+        // A page that gave us prose but no bullet lists still counts as read.
+        // `from_posting` and the UI's wording must agree on that, or a posting
+        // we did read would carry the "could not read this" note.
         for build in [
             |item: &mut Item| item.description = Some("We build data pipelines.".into()),
             |item: &mut Item| item.responsibilities = Some("Own a service end to end.".into()),
@@ -796,20 +674,32 @@ mod tests {
             let mut item = posting("Frontend Engineer Intern", "Location: Toronto, ON");
             build(&mut item);
             assert!(from_posting(&item));
-            let found = extract(&item);
-            assert!(!found.iter().any(|s| s == "React"), "guessed React in {found:?}");
         }
     }
 
     #[test]
-    fn requirements_are_preferred_over_the_scraped_line() {
-        let found = extract(&enriched(
+    fn requirements_are_read_alongside_the_description() {
+        // Both fields are evidence. A posting that names its stack once, in
+        // the opening paragraph, and never repeats it in a bullet is ordinary
+        // — reading only the bullets used to drop those skills.
+        let mut item = enriched(
             "Intern at Foo",
             "Experience with Kubernetes and Terraform. Familiarity with Kafka.",
-        ));
-        for expected in ["Kubernetes", "Terraform", "Kafka"] {
+        );
+        item.description = Some("Our platform runs on Rust and Postgres.".into());
+
+        let found = extract(&item);
+        for expected in ["Kubernetes", "Terraform", "Kafka", "Rust", "PostgreSQL"] {
             assert!(found.iter().any(|s| s == expected), "missing {expected} in {found:?}");
         }
+    }
+
+    #[test]
+    fn perks_are_not_read_as_requirements() {
+        // A benefits list says what the job pays, not what it asks for.
+        let mut item = posting("Intern at Foo", "Location: Toronto, ON");
+        item.perks = Some("Free Kubernetes training and a Python conference budget.".into());
+        assert!(extract(&item).is_empty(), "{:?}", extract(&item));
     }
 
     #[test]

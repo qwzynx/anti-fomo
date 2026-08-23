@@ -2,7 +2,6 @@
   import type { ScrapedItem } from "$lib/api";
   import { feed } from "$lib/feed.svelte";
   import { skillCategoryIcon } from "$lib/icons";
-  import { fromPosting } from "$lib/item";
   import { groupByCategory } from "$lib/skills";
   import SkillChip from "./SkillChip.svelte";
 
@@ -11,11 +10,11 @@
   // built while reading jobs stays truer than one filled in once and
   // forgotten.
   //
-  // The heading follows the evidence, and the two cases never mix. Where the
-  // enrichment pass reached the posting, every skill here was read out of the
-  // employer's own requirements. Where it did not — roughly one posting in
-  // eleven — they came from `skills::ROLES` guessing at the job title, and the
-  // panel says so rather than claiming the posting asked for them.
+  // Every skill here was read out of the employer's own words: the
+  // requirements, the duties and the description the enrichment pass fetched,
+  // plus anything the source itself tagged the posting with. Nothing is
+  // inferred from the job title, so the heading is unconditional — there is no
+  // second case for it to have to hedge about.
   let { item }: { item: ScrapedItem } = $props();
 
   /** Segments in the meter. Fixed, so the bar reads the same on every job. */
@@ -28,14 +27,11 @@
     required.length === 0 ? 0 : Math.round((have / required.length) * SEGMENTS),
   );
   const summary = $derived(`${have} of ${required.length} skills`);
-  const scraped = $derived(fromPosting(item));
 </script>
 
 <div class="mb-4 rounded-xl bg-line-soft p-4">
   <div class="mb-3 flex flex-wrap items-center gap-x-3 gap-y-1.5">
-    <p class="text-xs font-bold tracking-wide text-subtle uppercase">
-      {scraped ? "Skills this posting asks for" : "Typically wanted for this role"}
-    </p>
+    <p class="text-xs font-bold tracking-wide text-subtle uppercase">Skills this posting asks for</p>
     <!-- The label carries the figure, so this is one image to a screen reader
          rather than ten meaningless segments. -->
     <div class="flex items-center gap-0.5" role="img" aria-label={summary}>
@@ -70,9 +66,7 @@
 
   <div class="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-line pt-2.5">
     <p class="text-[11px] text-subtle">
-      Tap a skill to say whether you have it.{scraped
-        ? ""
-        : " Guessed from the job title — this posting's page could not be read."}
+      Read from this posting's own text. Tap a skill to say whether you have it.
     </p>
     <button
       onclick={() => feed.openSkillsForm()}
