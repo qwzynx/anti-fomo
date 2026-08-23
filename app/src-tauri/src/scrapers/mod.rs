@@ -20,7 +20,6 @@ pub mod hacker_news;
 pub mod hn_top_links;
 pub mod job_bank;
 pub mod jsonld;
-pub mod levels_fyi;
 pub mod luma;
 pub mod rss;
 pub mod sections;
@@ -61,7 +60,6 @@ pub fn all_scrapers() -> Vec<Box<dyn Scraper>> {
         Box::new(github_internships::PITT_CSC),
         Box::new(github_internships::SIMPLIFY),
         Box::new(github_internships::NEW_GRAD),
-        Box::new(levels_fyi::LevelsFyi),
         Box::new(job_bank::JOB_BANK),
         // Events
         Box::new(luma::Luma),

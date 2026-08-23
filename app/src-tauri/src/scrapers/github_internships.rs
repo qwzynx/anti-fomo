@@ -34,9 +34,9 @@ use crate::models::{Item, ItemType};
 /// Measured on a live fetch: 1,946 / 1,364 / 3,162 active rows, of which
 /// 1,458 / 0 / 2,343 fall inside the 60-day retention window that
 /// `prune_older_than` enforces anyway. 600 keeps a full window's worth of the
-/// two live repos without letting one source contribute several thousand rows
-/// — the same reason Levels.fyi is capped at 300, since round-robin
-/// diversification protects the first page but not the size of the cache.
+/// two live repos without letting one source contribute several thousand rows:
+/// round-robin diversification protects the first page but not the size of
+/// the cache.
 const MAX_LISTINGS: usize = 600;
 
 /// Rows the repos attribute to Simplify itself carry a posting id that

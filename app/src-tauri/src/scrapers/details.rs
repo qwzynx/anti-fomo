@@ -226,8 +226,8 @@ fn page_worth_reading(url: &str) -> bool {
     if NO_METADATA.iter().any(|h| host.ends_with(h)) {
         return false;
     }
-    // A search URL is a list of postings, not one of them. Levels.fyi links to
-    // a few of these, and they would otherwise each cost a page fetch.
+    // A search URL is a list of postings, not one of them. A handful of rows
+    // link to one, and they would otherwise each cost a page fetch.
     !path.split(['/', '?', '&']).any(|s| s == "search")
         && !url.contains("keyword=")
         && !url.contains("base_query=")

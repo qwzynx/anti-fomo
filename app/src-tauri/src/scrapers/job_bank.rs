@@ -1,7 +1,7 @@
 //! Job Bank is the Government of Canada's official posting board. Every other
-//! job source in this app is US-centric — the two GitHub repos and Levels.fyi
-//! are overwhelmingly American — so this is what makes the hub useful to a
-//! student who actually wants to work in Canada.
+//! job source in this app is US-centric — the GitHub repos are overwhelmingly
+//! American — so this is what makes the hub useful to a student who actually
+//! wants to work in Canada.
 //!
 //! There is no public API, but the search results page is plain server-rendered
 //! HTML with stable class names, so no browser is needed.

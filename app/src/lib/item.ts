@@ -79,8 +79,6 @@ export function sourceBlurb(item: ScrapedItem): string {
       return "Community-maintained internship list from the Pitt CSC GitHub repo.";
     case "Simplify":
       return "Aggregated by Simplify — one-click applications for many of these roles.";
-    case "Levels.fyi":
-      return "Levels.fyi internship tracker, including reported compensation.";
     case "Lassonde News":
       return "Official news from York University's Lassonde School of Engineering.";
     case "Luma":

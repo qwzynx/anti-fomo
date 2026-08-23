@@ -531,7 +531,7 @@ mod tests {
         let mut conn = mem();
         let mut it = Item::new(
             "Intern",
-            "Levels.fyi",
+            "Simplify",
             ItemType::Internship,
             "https://x.test/1",
         );
@@ -551,13 +551,13 @@ mod tests {
         let mut conn = mem();
         let first = Item::new(
             "Intern",
-            "Levels.fyi",
+            "Simplify",
             ItemType::Internship,
             "https://x.test/1",
         );
         let second = Item::new(
             "Intern",
-            "Levels.fyi",
+            "Simplify",
             ItemType::Internship,
             "https://x.test/1",
         )

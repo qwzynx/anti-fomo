@@ -113,7 +113,6 @@ page (Job Bank, Devpost) are walked until they run dry.
 | Pitt CSC Repo | HTML tables in the repo README |
 | Simplify | HTML tables in the repo README |
 | New Grad Positions | HTML tables in the repo README (full-time, not interns) |
-| Levels.fyi | public `internshipData.json` |
 | Job Bank Canada | HTML search results from the federal job board |
 
 **Events**

@@ -295,10 +295,10 @@ async fn enrich_details(app: &AppHandle) -> CmdResult<usize> {
     }
 
     // Routing is a pure function of the URL, so deciding that we cannot serve
-    // a posting costs nothing. Recording those separately matters: Levels.fyi
-    // stamps every row `Utc::now()`, so its unroutable postings sort to the
-    // front of the queue and would otherwise consume the whole budget for
-    // several refreshes without a single request being made.
+    // a posting costs nothing. Recording those separately matters: a source
+    // that stamps its rows `Utc::now()` sorts its unroutable postings to the
+    // front of the queue, where they would otherwise consume the whole budget
+    // for several refreshes without a single request being made.
     let mut unsupported = Vec::new();
     let mut queue = Vec::new();
     for (url, simplify_id) in candidates {
