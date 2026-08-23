@@ -43,7 +43,20 @@ Everything ships from `/app`:
   - `db.rs` — SQLite via `rusqlite` (bundled). Items are a rebuildable cache keyed
     by URL. `settings` and `item_state` are the durable tables and must survive a
     schema bump, so they are created with `IF NOT EXISTS` and never dropped.
-  - `commands.rs` — the `invoke()` surface the UI calls.
+  - `commands.rs` — the `invoke()` surface the UI calls. **Every command that
+    touches the database is `#[tauri::command(async)]`.** A plain
+    `#[tauri::command]` on a synchronous function runs on the *main thread*,
+    which is the webview's thread, so a read that walks the cache freezes the
+    window for as long as it takes. Reads are served from a ranked cache in
+    `AppState` — the whole visible store, scored and ordered, rebuilt only when
+    a generation counter or the reader's profile moves — because ranking 18,000
+    items is not something to do three times per refresh. Anything that writes
+    calls `invalidate()`. The list commands return `ListItem`, a borrowed
+    projection of what a row renders; the fetched description, the score
+    breakdown and `matched_skills` are not in it, and `get_item_detail(url)` is
+    where the pane gets the rest. `cargo run --release --bin perf_check` times
+    the whole read path against the real database — measure before and after
+    touching any of this.
   - `lib.rs` holds `run()` with `#[cfg_attr(mobile, tauri::mobile_entry_point)]`;
     `main.rs` is only a shim. **Mobile will not build if real code moves into
     `main.rs`.**
@@ -51,7 +64,13 @@ Everything ships from `/app`:
   `/settings`, reached from a sidebar at `md:` and up and a bottom tab bar below
   it; the two navigations are never on screen together. `lib/feed.svelte.ts` is
   the single shared store; pages derive from it rather than fetching
-  independently.
+  independently. **The three item lists are `$state.raw`**: the hub holds the
+  whole opportunity cache, and plain `$state` deep-proxies every row and every
+  nested array on assignment, which is seconds of frozen window per load. A raw
+  list is a snapshot — replaced whole, never edited in place — so what *is*
+  per-item and live (saved, seen, skill coverage) lives in reactive sets keyed
+  by URL instead, read through `feed.isSaved` / `feed.isSeen` / `feed.match`.
+  Never write to a field on an item and expect the UI to notice.
   - The feed and the saved list render through `ItemList`, which honours the
     card/list/compact `density` store and reveals results a page at a time.
   - `/internships` is a job-board split pane at `lg:` — result list beside a
@@ -85,9 +104,15 @@ See `app/README.md` for the source list, the command table, and Android setup.
   empty or short one rather than firing a fixed number of requests. A failing
   page after the first ends the walk with what it has; a failing *first* page is
   a real error.
-- **Never render a full result list.** The cache holds well over a thousand
-  items. Lists page through `ItemList`/`InfiniteScroll`; a bare `{#each}` over a
-  filtered feed is a visible stall on a phone.
+- **Never render a full result list.** The cache holds eighteen thousand items.
+  Lists page through `InfiniteScroll`; a bare `{#each}` over a filtered feed is
+  a visible stall on a phone.
+- **Nothing per-item may be expensive.** A filter, a sort comparator or a search
+  runs over the whole cache, so anything inside one is paid eighteen thousand
+  times: build no strings you were not asked for (the hub's specialty haystack
+  is built only when a specialty chip is on), key a sort on a value computed
+  once per item rather than once per comparison, use a `Set` for membership, and
+  construct `Intl` formatters at module scope.
 - **Cross-platform care**: `reqwest` uses rustls + webpki-roots (not native-tls),
   and SQLite is bundled, both so the Android NDK targets cross-compile cleanly.
 - **Tailwind 4 is CSS-first** — the semantic design tokens (`bg`, `surface`,
