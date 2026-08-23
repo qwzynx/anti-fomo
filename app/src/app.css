@@ -35,21 +35,27 @@
   --font-inter: "Inter";
   --font-outfit: "Outfit";
 
-  --background: #fafafa;
-  --foreground: #18181b;
+  --background: #f7f8fb;
+  --foreground: #15171d;
 
   --surface: #ffffff;
   --elevated: #ffffff;
-  --line: #e4e4e7;
-  --line-soft: #f4f4f5;
-  --muted: #52525b;
-  --subtle: #a1a1aa;
+  --line: #e4e6ef;
+  --line-soft: #f1f2f7;
+  --muted: #5c6272;
+  --subtle: #9aa0b0;
 
   --brand: #4f46e5;
   --brand-hover: #4338ca;
   --brand-fg: #ffffff;
-  --brand-soft: #eef2ff;
+  --brand-soft: #eef0fe;
   --brand-soft-fg: #4338ca;
+
+  /* The hero band on Today: one tinted full-width strip, not a card floating
+     on grey. Deliberately closer to the page than to the brand, so the band
+     reads as emphasis rather than as an alert. */
+  --hero: #f4f5fe;
+  --hero-line: #e6e8f8;
 
   --job: #047857;
   --job-soft: #d1fae5;
@@ -89,6 +95,9 @@
   --brand-soft: #1e1b4b;
   --brand-soft-fg: #c7d2fe;
 
+  --hero: #16161f;
+  --hero-line: #2a2a3d;
+
   --job: #6ee7b7;
   --job-soft: #064e3b;
   --event: #e9d5ff;
@@ -119,6 +128,9 @@
   --color-brand-fg: var(--brand-fg);
   --color-brand-soft: var(--brand-soft);
   --color-brand-soft-fg: var(--brand-soft-fg);
+
+  --color-hero: var(--hero);
+  --color-hero-line: var(--hero-line);
 
   --color-job: var(--job);
   --color-job-soft: var(--job-soft);
@@ -162,6 +174,18 @@ h3 {
 }
 .safe-bottom {
   padding-bottom: env(safe-area-inset-bottom);
+}
+
+/* The status bar is cleared by whichever element is actually at the top of the
+   window: the top bar at md: and up, the page header below it. A margin rather
+   than padding so it composes with a page's own pt-* rather than fighting it. */
+.safe-top-mobile {
+  margin-top: env(safe-area-inset-top);
+}
+@media (width >= 48rem) {
+  .safe-top-mobile {
+    margin-top: 0;
+  }
 }
 
 /* Hide horizontal scrollbars on chip rows while keeping them scrollable */
@@ -235,13 +259,13 @@ h3 {
    Defined once as utilities so a card looks the same everywhere and the pages
    read as markup instead of a wall of classes. */
 @utility card {
-  border-radius: var(--radius-2xl);
+  border-radius: 20px;
   border: 1px solid var(--line);
   background: var(--surface);
 }
 
 @utility control {
-  border-radius: var(--radius-xl);
+  border-radius: 12px;
   border: 1px solid var(--line);
   background: var(--surface);
   padding: --spacing(2) --spacing(3);
@@ -272,4 +296,27 @@ h3 {
   font-weight: 600;
   white-space: nowrap;
   transition: colors 150ms;
+}
+
+/* --- Redesign primitives ---------------------------------------------------
+   Direction C leans on full-width bands separated by hairlines rather than on
+   boxes floating on grey, so the shared pieces are a row divider and a couple
+   of quiet affordances rather than more card variants. */
+
+/* Icon buttons that carry a real action on a phone. 44px is the smallest
+   target Android's own guidance will defend, and every save / dismiss control
+   in a list is one of these — they used to be hover-revealed, which meant
+   they did not exist on touch at all. */
+@utility tap {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 12px;
+  color: var(--subtle);
+  transition: background-color 150ms, color 150ms;
+
+  &:hover {
+    background: var(--line-soft);
+    color: var(--foreground);
+  }
 }

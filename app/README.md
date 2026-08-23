@@ -15,18 +15,17 @@ app/
 │   ├── app.css                the Tailwind 4 @theme token palette
 │   ├── lib/
 │   │   ├── api.ts             invoke() wrappers around the Rust commands
-│   │   ├── density.svelte.ts  card / list / compact result density
 │   │   ├── feed.svelte.ts     shared store (feed, saved, interests, status)
-│   │   ├── filters.ts         filter facets shared by both feed pages
+│   │   ├── filters.ts         the facets behind the Roles chip bar
 │   │   ├── icons.ts           the lucide icon vocabulary, re-exported
-│   │   ├── item.ts            title/tag/CTA derivation for cards and the modal
-│   │   ├── nav.ts             the four destinations, shared by both navs
+│   │   ├── item.ts            title/tag/CTA derivation for rows and the detail
+│   │   ├── nav.ts             three destinations + Settings as a tool
+│   │   ├── search.svelte.ts   the one search surface, opened from the top bar
 │   │   ├── theme.svelte.ts    light/dark/system toggle
-│   │   └── components/        Sidebar, Header, BottomNav, ItemList, ItemCard,
-│   │                          ItemRow, ItemDetail, ItemModal, InfiniteScroll,
-│   │                          DensityToggle, FilterSheet, CardSkeleton,
-│   │                          EmptyState
-│   └── routes/                / (feed), /internships, /saved, /settings
+│   │   └── components/        TopBar, BottomNav, PageHeader, Band, HeroMatch,
+│   │                          ItemRow, ItemDetail, ItemModal, SearchPalette,
+│   │                          InfiniteScroll, RowSkeleton, EmptyState
+│   └── routes/                / (Today), /internships (Roles), /saved, /settings
 └── src-tauri/
     ├── src/
     │   ├── scrapers/          one module per source + the concurrent runner
@@ -50,21 +49,33 @@ background, so a cold start never blocks on the network.
 
 ## Interface
 
-Two shells from one codebase. At `md:` and up a sidebar takes the left edge and
-the content column scrolls beside it; below that the sidebar is replaced by a
-slim top bar and a bottom tab bar, which is the right shape for Android and for
-thumb reach. The two navigations are never on screen together.
+Three destinations — Today, Roles, Saved — and Settings as a tool rather than a
+fourth. At `md:` and up they sit in a 58px top bar as a segmented control, with
+global search in the middle and the sync state and Settings on the right. Below
+`md:` the top bar is not rendered at all: a bottom tab bar owns navigation (with
+Settings as a fourth tab, since a phone has nowhere else to put it) and each
+page carries its own title row. The two navigations are never on screen
+together.
 
-The feed and the saved list share one results component with three densities —
-cards, list and compact — and reveal a page of results at a time as you scroll,
-so a filtered list of several hundred never has to render at once. The choice of
-density is remembered across launches.
+`/` is Today, not a feed. One hero band states the best-ranked role you have not
+seen — with the skill-coverage meter beside it — and below that, three bands of
+three: Roles, Reading, Happening. There are no filters on it. Bands reveal
+twelve more at a time rather than the whole cache.
 
-Jobs and internships get the job-board treatment: at `lg:` the result list sits
-beside a detail column that stays put, so comparing two postings costs a glance
-rather than opening and closing a dialog twice. Narrower than that, the list
-goes full width and the detail opens as a sheet. Both render the same component,
-so the two views cannot drift apart.
+Search is app chrome, reached from the top bar or ⌘K, and opens over whatever
+page you are on. There are no per-page search fields.
+
+Roles is the only filter surface. Everything is a chip: what is on is filled and
+carries a cross, what is off is an outline, and "More" adds facets to the same
+bar rather than hiding the current state in a drawer. At `lg:` the result list
+sits beside a detail column that stays put and opens on the top-ranked role, so
+comparing two postings costs a glance. Narrower than that the list goes full
+width and the detail opens as a sheet — both render `ItemDetail`, so the two
+cannot drift apart.
+
+Every list pages as you scroll, so a filtered list of several hundred never has
+to render at once. Save and dismiss are always visible on a row, never revealed
+on hover: there is no hover on Android.
 
 ## How the data flows
 

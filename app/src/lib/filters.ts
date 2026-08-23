@@ -1,7 +1,9 @@
-import type { ScrapedItem } from "./api";
-
-// Shared by the feed and the internships hub, which each had their own copy in
-// the React version.
+// The app has one filter surface, on Roles. These are its facets.
+//
+// Freshness, sort and discipline used to be duplicated across a select row on
+// the feed, a sheet on phones and a panel on the hub; the redesign collapsed
+// all three into one chip bar, which is why what is left here is a single set
+// rather than a feed set and a hub set.
 
 export const FRESHNESS = [
   { label: "Any time", hours: Infinity },
@@ -12,28 +14,8 @@ export const FRESHNESS = [
 
 export type FreshnessLabel = (typeof FRESHNESS)[number]["label"];
 
-export const SORTS = ["Relevance", "Newest first"] as const;
-export type Sort = (typeof SORTS)[number];
-
+/** The fields the app knows how to rank for. Offered on Settings. */
 export const DISCIPLINES = ["All", "Software Engineering"];
-
-/** Sources whose articles count as tech news for the Trending widget. */
-export const NEWS_SOURCES = [
-  "Hacker News",
-  "Phoronix",
-  "TLDR Tech",
-  "HN Top Links",
-  "Daily.dev",
-];
-
-export const TYPE_OPTIONS = ["All", "Internships", "Events", "Articles"] as const;
-export type TypeOption = (typeof TYPE_OPTIONS)[number];
-
-export const TYPE_MAP: Record<string, ScrapedItem["item_type"][]> = {
-  Internships: ["Internship", "Job"],
-  Events: ["Event"],
-  Articles: ["Article"],
-};
 
 export function freshnessCutoff(label: string): number {
   const hours = FRESHNESS.find((f) => f.label === label)?.hours ?? Infinity;

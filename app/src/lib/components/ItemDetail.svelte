@@ -1,6 +1,6 @@
 <script lang="ts">
   import { openUrl } from "@tauri-apps/plugin-opener";
-  import { logoFor, type ScrapedItem } from "$lib/api";
+  import { logoFor, timeAgo, type ScrapedItem } from "$lib/api";
   import { feed } from "$lib/feed.svelte";
   import { ArrowUpRight, Bookmark, BookmarkCheck, MapPin, Sparkles, X, iconForType } from "$lib/icons";
   import {
@@ -48,6 +48,13 @@
           .filter(Boolean)
       : [],
   );
+  /** Where it is, who carried it, and how old — the line under the title. */
+  const meta = $derived(
+    [locations[0], `via ${item.source_platform}`, timeAgo(item.timestamp)]
+      .filter(Boolean)
+      .join(" · "),
+  );
+
   // Discipline, attribute tags and source, deduped.
   const chips = $derived([
     ...new Set([item.discipline, ...tags, item.source_platform].filter(Boolean)),
@@ -139,9 +146,11 @@
   </div>
 
   <div class="min-h-0 flex-1 overflow-y-auto p-5 sm:p-6">
-    <p class="mb-4 text-xs font-medium tracking-wide text-subtle uppercase">
-      {sourceBlurb(item)} · {new Date(item.timestamp).toLocaleString()}
-    </p>
+    <!-- Where and when, then what the source itself is. The two used to be one
+         all-caps line that ran the width of the pane and shouted a full
+         timestamp at a reader who wanted "3 hours ago". -->
+    <p class="text-sm text-muted">{meta}</p>
+    <p class="mb-4 text-xs text-subtle">{sourceBlurb(item)}</p>
 
     {#if item.matched_interests && item.matched_interests.length > 0}
       <div class="mb-4 flex flex-wrap items-center gap-1.5">
@@ -163,7 +172,7 @@
       <SkillMatch {item} />
     {/if}
 
-    {#if locations.length > 0}
+    {#if locations.length > 1 || (item.location_tags?.length ?? 0) > 0}
       <div class="mb-4 rounded-xl bg-line-soft p-4">
         <p
           class="mb-1 flex items-center gap-1.5 text-xs font-bold tracking-wide text-subtle uppercase"

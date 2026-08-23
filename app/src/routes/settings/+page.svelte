@@ -1,5 +1,6 @@
 <script lang="ts">
   import { timeAgo } from "$lib/api";
+  import PageHeader from "$lib/components/PageHeader.svelte";
   import { feed } from "$lib/feed.svelte";
   import { DISCIPLINES } from "$lib/filters";
   import {
@@ -51,13 +52,16 @@
   const quiet = $derived(sources.filter((s) => s.count === 0).length);
 </script>
 
-<main class="mx-auto w-full max-w-3xl flex-1 px-4 pt-6 pb-8 sm:px-6 sm:pt-8 lg:px-8">
-  <h1 class="mb-1 text-2xl font-bold sm:text-3xl">Settings</h1>
-  <p class="mb-8 text-sm text-muted">
-    Everything is stored locally on this device. No account, no server.
-  </p>
+<!-- Reached from the top bar's tool cluster at md: and up, and from the fourth
+     tab on a phone. It is no longer one of the app's destinations: it is
+     somewhere you go to change something and then leave. -->
+<main class="mx-auto w-full max-w-3xl flex-1 px-4 pb-8 sm:px-6 lg:px-8">
+  <PageHeader
+    title="Settings"
+    subtitle="Everything is stored locally on this device. No account, no server."
+  />
 
-  <section class="card mb-5 p-5">
+  <section class="card mt-4 mb-5 p-5">
     <h3 class="mb-1 text-lg font-bold">Your field</h3>
     <p class="mb-4 text-sm text-muted">Items matching your field are ranked to the top.</p>
     <div class="flex flex-wrap gap-2">

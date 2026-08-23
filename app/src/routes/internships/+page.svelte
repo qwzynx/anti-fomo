@@ -1,13 +1,14 @@
 <script lang="ts">
   import type { ScrapedItem } from "$lib/api";
   import EmptyState from "$lib/components/EmptyState.svelte";
-  import FilterSheet from "$lib/components/FilterSheet.svelte";
   import InfiniteScroll from "$lib/components/InfiniteScroll.svelte";
   import ItemDetail from "$lib/components/ItemDetail.svelte";
   import ItemModal from "$lib/components/ItemModal.svelte";
   import ItemRow from "$lib/components/ItemRow.svelte";
+  import PageHeader from "$lib/components/PageHeader.svelte";
+  import RowSkeleton from "$lib/components/RowSkeleton.svelte";
   import { feed } from "$lib/feed.svelte";
-  import { Briefcase, ListFilter, Search } from "$lib/icons";
+  import { Briefcase, Plus, Search, SlidersHorizontal, X } from "$lib/icons";
   import {
     FRESHNESS,
     HUB_DISCIPLINES,
@@ -22,24 +23,33 @@
     type HubSort,
     type Modality,
   } from "$lib/filters";
-  import { splitTitle } from "$lib/item";
+  import { skillMatch } from "$lib/skills";
 
   // The job-board layout: a scrolling result list beside a detail pane that
   // stays put, which is what every board this app aggregates from converges on.
-  // Comparing two postings there costs a glance rather than opening, reading,
-  // closing and opening again. Below lg there is no room for two columns, so
-  // the list goes full width and the detail opens as a modal instead.
+  // Below lg there is no room for two columns, so the list goes full width and
+  // the detail opens as a modal instead.
+  //
+  // This is also the app's only filter surface now. It used to have three — a
+  // row of selects on the feed, a sheet on phones and an expandable facet panel
+  // here — which meant the same question was asked three different ways and
+  // answered independently. Everything is a chip: what is on is filled and
+  // carries a cross, what is off is an outline, and nothing hides in a drawer
+  // you have to open to find out what you already chose.
+
+  /** The coverage a "good match" chip demands. Matches the ranking's own bar. */
+  const GOOD_MATCH = 0.6;
 
   let selected = $state<ScrapedItem | null>(null);
-  let filtersOpen = $state(false);
+  let moreOpen = $state(false);
 
-  let search = $state("");
   let discipline = $state("All");
   let sources = $state<string[]>([]);
   let specialties = $state<string[]>([]);
   let modality = $state<Modality>("All");
   let locations = $state<string[]>([]);
   let freshness = $state<FreshnessLabel>("Any time");
+  let goodMatchOnly = $state(false);
   let sort = $state<HubSort>("Relevance");
 
   const PAGE = 40;
@@ -62,7 +72,6 @@
   const allSources = $derived([...new Set(items.map((i) => i.source_platform))].sort());
 
   const filtered = $derived.by(() => {
-    const q = search.toLowerCase();
     const cutoff = freshnessCutoff(freshness);
 
     const result = items.filter((item) => {
@@ -70,7 +79,6 @@
         `${item.title} ${item.content_text ?? ""} ${item.location ?? ""}`.toLowerCase();
       const locTags = item.location_tags ?? [];
 
-      if (q && !haystack.includes(q)) return false;
       if (discipline !== "All" && item.discipline !== discipline) return false;
       if (sources.length > 0 && !sources.includes(item.source_platform)) return false;
       if (specialties.length > 0 && !specialties.some((s) => matchesSpecialty(haystack, s)))
@@ -78,6 +86,10 @@
       if (modality !== "All" && !locTags.includes(modality)) return false;
       if (locations.length > 0 && !locations.some((l) => locTags.includes(l))) return false;
       if (cutoff !== -Infinity && new Date(item.timestamp).getTime() < cutoff) return false;
+      if (goodMatchOnly) {
+        const m = skillMatch(item);
+        if (!m || m.have / m.total < GOOD_MATCH) return false;
+      }
       return true;
     });
 
@@ -85,9 +97,7 @@
       case "Newest first":
         return [...result].sort((a, b) => b.timestamp.localeCompare(a.timestamp));
       case "Company name":
-        return [...result].sort((a, b) =>
-          splitTitle(a).primary.localeCompare(splitTitle(b).primary),
-        );
+        return [...result].sort((a, b) => a.title.localeCompare(b.title));
       default:
         return [...result].sort((a, b) => (b.relevance_score ?? 0) - (a.relevance_score ?? 0));
     }
@@ -103,13 +113,93 @@
 
   const visible = $derived(filtered.slice(0, shown));
 
+  /**
+   * At desktop widths the pane opens on the top-ranked role rather than on an
+   * invitation to click something — every board this app aggregates from does
+   * the same, and the alternative spends two thirds of the window telling you
+   * to use the other third. Re-picks when a filter leaves the selection behind.
+   */
+  $effect(() => {
+    if (!wide) return;
+    if (!selected || !filtered.some((i) => i.url === selected?.url)) {
+      selected = filtered[0] ?? null;
+    }
+  });
+
+  type Chip = { label: string; active: boolean; onToggle: () => void };
+
+  /**
+   * The chips on the bar itself: everything currently on, then a short list of
+   * the ones worth reaching for. The rest live behind "More" — but nothing that
+   * is *on* is ever hidden there, which is the whole point of chips over a
+   * drawer.
+   */
+  const quickChips = $derived.by(() => {
+    const chips: Chip[] = [];
+
+    for (const m of MODALITIES) {
+      if (m === "All") continue;
+      if (m === "Remote" || modality === m)
+        chips.push({ label: m, active: modality === m, onToggle: () => (modality = modality === m ? "All" : m) });
+    }
+
+    const week = FRESHNESS[2].label;
+    for (const f of FRESHNESS) {
+      if (f.label === "Any time") continue;
+      if (f.label === week || freshness === f.label)
+        chips.push({
+          label: f.label === week ? "Posted this week" : f.label,
+          active: freshness === f.label,
+          onToggle: () => (freshness = freshness === f.label ? "Any time" : f.label),
+        });
+    }
+
+    for (const l of LOCATIONS) {
+      if (l === "Toronto" || locations.includes(l))
+        chips.push({
+          label: l,
+          active: locations.includes(l),
+          onToggle: () => (locations = toggle(locations, l)),
+        });
+    }
+
+    for (const s of SPECIALTIES) {
+      if (s === "Backend" || specialties.includes(s))
+        chips.push({
+          label: s,
+          active: specialties.includes(s),
+          onToggle: () => (specialties = toggle(specialties, s)),
+        });
+    }
+
+    for (const s of sources) {
+      chips.push({ label: s, active: true, onToggle: () => (sources = toggle(sources, s)) });
+    }
+
+    if (discipline !== "All") {
+      chips.push({ label: discipline, active: true, onToggle: () => (discipline = "All") });
+    }
+
+    if (feed.skills.length > 0) {
+      chips.push({
+        label: "60%+ match",
+        active: goodMatchOnly,
+        onToggle: () => (goodMatchOnly = !goodMatchOnly),
+      });
+    }
+
+    // On before off, so what you have chosen reads left to right.
+    return [...chips.filter((c) => c.active), ...chips.filter((c) => !c.active)];
+  });
+
   const activeFilters = $derived(
     (discipline !== "All" ? 1 : 0) +
       sources.length +
       specialties.length +
       (modality !== "All" ? 1 : 0) +
       locations.length +
-      (freshness !== "Any time" ? 1 : 0),
+      (freshness !== "Any time" ? 1 : 0) +
+      (goodMatchOnly ? 1 : 0),
   );
 
   function clearFilters() {
@@ -119,77 +209,36 @@
     modality = "All";
     locations = [];
     freshness = "Any time";
+    goodMatchOnly = false;
   }
 
-  function chipClass(active: boolean) {
-    return `chip ${
-      active
-        ? "bg-brand text-brand-fg"
-        : "border border-line bg-surface text-muted hover:border-brand"
-    }`;
-  }
+  const subtitle = $derived(
+    feed.loading
+      ? "Scanning sources…"
+      : `${filtered.length.toLocaleString()} of ${items.length.toLocaleString()} open roles${
+          activeFilters > 0 ? ` · ${activeFilters} filter${activeFilters > 1 ? "s" : ""}` : ""
+        }`,
+  );
 </script>
 
-{#snippet chipRow(label: string, options: string[], current: string[], onToggle: (v: string) => void)}
+{#snippet facet(label: string, options: readonly string[], current: string[], onToggle: (v: string) => void)}
   <div class="flex flex-col gap-2">
-    <p class="text-xs font-bold tracking-wide text-subtle uppercase">{label}</p>
+    <p class="text-[11px] font-bold tracking-wider text-subtle uppercase">{label}</p>
     <div class="flex flex-wrap gap-1.5">
       {#each options as option (option)}
-        <button onclick={() => onToggle(option)} class={chipClass(current.includes(option))}>
+        {@const active = current.includes(option)}
+        <button
+          onclick={() => onToggle(option)}
+          aria-pressed={active}
+          class="chip {active
+            ? 'bg-brand text-brand-fg'
+            : 'border border-line bg-surface text-muted hover:border-subtle'}"
+        >
           {option}
         </button>
       {/each}
     </div>
   </div>
-{/snippet}
-
-{#snippet selects()}
-  <select bind:value={discipline} class="control control-focus" aria-label="Discipline">
-    {#each HUB_DISCIPLINES as option (option)}
-      <option value={option}>{option === "All" ? "All disciplines" : option}</option>
-    {/each}
-  </select>
-  <select bind:value={freshness} class="control control-focus" aria-label="Posted within">
-    {#each FRESHNESS as option (option.label)}
-      <option value={option.label}>{option.label}</option>
-    {/each}
-  </select>
-  <select bind:value={sort} class="control control-focus" aria-label="Sort by">
-    {#each HUB_SORTS as option (option)}
-      <option value={option}>{option}</option>
-    {/each}
-  </select>
-{/snippet}
-
-{#snippet facets()}
-  {@render chipRow("Specialty", SPECIALTIES, specialties, (v) => (specialties = toggle(specialties, v)))}
-
-  <div class="flex flex-col gap-2">
-    <p class="text-xs font-bold tracking-wide text-subtle uppercase">Work mode</p>
-    <div class="flex flex-wrap gap-1.5">
-      {#each MODALITIES as option (option)}
-        <button onclick={() => (modality = option)} class={chipClass(modality === option)}>
-          {option}
-        </button>
-      {/each}
-    </div>
-  </div>
-
-  {@render chipRow("Location", LOCATIONS, locations, (v) => (locations = toggle(locations, v)))}
-  {@render chipRow("Source", allSources, sources, (v) => (sources = toggle(sources, v)))}
-{/snippet}
-
-{#snippet resultList()}
-  <div class="divide-y divide-line-soft">
-    {#each visible as item (item.url)}
-      <ItemRow
-        {item}
-        selected={selected?.url === item.url}
-        onOpen={(i) => (selected = i)}
-      />
-    {/each}
-  </div>
-  <InfiniteScroll {shown} total={filtered.length} noun="roles" onMore={() => (shown += PAGE)} />
 {/snippet}
 
 <!--
@@ -200,111 +249,100 @@
   The height has to be stated outright. The shell around this is `min-h-screen`,
   which is a floor and not a size, so a chain of `flex-1`/`min-h-0` has nothing
   definite to shrink against and every child just grows to its content instead.
-  `flex-none` goes with it because `flex-1` would otherwise resolve the height
-  from `flex-basis: 0%` and ignore `h-dvh` entirely.
 -->
 <main
-  class="mx-auto flex w-full max-w-7xl flex-1 flex-col px-4 pb-8 sm:px-6 lg:h-dvh lg:flex-none lg:overflow-hidden lg:px-8 lg:pb-5"
+  class="mx-auto flex w-full max-w-7xl flex-1 flex-col px-4 pb-8 sm:px-6 lg:h-[calc(100dvh-58px)] lg:flex-none lg:overflow-hidden lg:px-8 lg:pb-5"
 >
-  <div class="shrink-0 pt-6 pb-4 sm:pt-8">
-    <h1 class="text-2xl font-bold sm:text-3xl">Jobs &amp; internships</h1>
-    <p class="mt-1 text-sm text-muted">
-      {#if feed.loading}
-        Scanning sources…
-      {:else}
-        {filtered.length.toLocaleString()} of {items.length.toLocaleString()} open roles from {allSources.length}
-        sources{activeFilters > 0
-          ? ` · ${activeFilters} filter${activeFilters > 1 ? "s" : ""} active`
-          : ""}
-      {/if}
-    </p>
+  <div class="shrink-0">
+    <PageHeader title="Roles" {subtitle} />
   </div>
 
-  <!-- Toolbar. Sticky on phones, where it scrolls with a single long list;
-       static on desktop, where the columns below do their own scrolling and a
-       sticky bar would only collide with them. -->
-  <div
-    class="glass sticky top-14 z-30 -mx-4 shrink-0 border-y border-line px-4 py-3 sm:-mx-6 sm:px-6 md:top-0 lg:static lg:mx-0 lg:rounded-2xl lg:border lg:border-line lg:px-4"
-  >
-    <!-- Wraps rather than squeezing: beside the sidebar there is not room for
-         the search box, three selects and the filter button on one line, and a
-         search field crushed to 150px is worse than a second row. -->
-    <div class="flex flex-wrap items-center gap-2">
-      <div class="relative min-w-56 flex-1">
-        <Search
-          size={16}
-          class="pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 text-subtle"
-        />
-        <input
-          type="search"
-          placeholder="Search roles, companies, locations…"
-          aria-label="Search roles"
-          bind:value={search}
-          class="control control-focus w-full py-2.5 pl-9"
-        />
-      </div>
+  <!-- One filter surface. Chips carry state; nothing hides in a sheet. -->
+  <div class="shrink-0 pb-3">
+    <div class="scrollbar-hide -mx-4 overflow-x-auto px-4 sm:mx-0 sm:overflow-visible sm:px-0">
+      <div class="flex items-center gap-2 sm:flex-wrap">
+        {#each quickChips as chip (chip.label)}
+          <button
+            onclick={chip.onToggle}
+            aria-pressed={chip.active}
+            class="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-full px-3 text-[13px] transition-colors
+                   {chip.active
+              ? 'bg-brand font-semibold text-brand-fg'
+              : 'border border-line bg-surface font-medium text-muted hover:border-subtle'}"
+          >
+            {chip.label}
+            {#if chip.active}
+              <X size={12} strokeWidth={2.5} class="shrink-0" />
+            {/if}
+          </button>
+        {/each}
 
-      <div class="hidden items-center gap-2 lg:flex">
-        {@render selects()}
         <button
-          onclick={() => (filtersOpen = !filtersOpen)}
-          aria-expanded={filtersOpen}
-          class="control control-focus flex shrink-0 items-center gap-2 font-semibold"
+          onclick={() => (moreOpen = !moreOpen)}
+          aria-expanded={moreOpen}
+          class="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-full border border-dashed border-line bg-surface px-3 text-[13px] font-medium text-muted transition-colors hover:border-subtle"
         >
-          <ListFilter size={15} />
-          Filters
-          {#if activeFilters > 0}
-            <span class="rounded-full bg-brand px-1.5 text-[11px] font-bold text-brand-fg">
-              {activeFilters}
-            </span>
-          {/if}
+          <Plus size={13} strokeWidth={2} class="shrink-0 transition-transform {moreOpen ? 'rotate-45' : ''}" />
+          More
         </button>
-      </div>
 
-      <div class="lg:hidden">
-        <FilterSheet activeCount={activeFilters} onReset={clearFilters}>
-          <div class="flex flex-col gap-3">
-            {@render selects()}
-          </div>
-          {@render facets()}
-        </FilterSheet>
-      </div>
-    </div>
-
-    {#if filtersOpen}
-      <div class="animate-fade-in mt-4 hidden flex-col gap-4 border-t border-line-soft pt-4 lg:flex">
-        {@render facets()}
         {#if activeFilters > 0}
           <button
             onclick={clearFilters}
-            class="self-start text-xs font-semibold text-brand hover:underline"
+            class="shrink-0 text-[13px] font-semibold text-brand hover:underline"
           >
-            Clear {activeFilters} filter{activeFilters > 1 ? "s" : ""}
+            Clear all
           </button>
         {/if}
+
+        <label class="ml-auto hidden shrink-0 items-center gap-1.5 text-[13px] font-medium text-muted sm:flex">
+          <SlidersHorizontal size={14} class="shrink-0 text-subtle" />
+          <span class="sr-only">Sort by</span>
+          <select
+            bind:value={sort}
+            class="cursor-pointer appearance-none bg-transparent font-medium outline-none"
+          >
+            {#each HUB_SORTS as option (option)}
+              <option value={option}>{option === "Relevance" ? "Best match" : option}</option>
+            {/each}
+          </select>
+        </label>
+      </div>
+    </div>
+
+    {#if moreOpen}
+      <div class="animate-fade-in mt-3 flex flex-col gap-4 rounded-xl border border-line bg-surface p-4">
+        {@render facet("Specialty", SPECIALTIES, specialties, (v) => (specialties = toggle(specialties, v)))}
+        {@render facet("Work mode", MODALITIES.filter((m) => m !== "All"), modality === "All" ? [] : [modality], (v) => (modality = modality === v ? "All" : (v as Modality)))}
+        {@render facet("Location", LOCATIONS, locations, (v) => (locations = toggle(locations, v)))}
+        {@render facet("Posted within", FRESHNESS.map((f) => f.label), [freshness], (v) => (freshness = v as FreshnessLabel))}
+        {@render facet("Discipline", HUB_DISCIPLINES, [discipline], (v) => (discipline = v))}
+        {@render facet("Source", allSources, sources, (v) => (sources = toggle(sources, v)))}
       </div>
     {/if}
   </div>
 
   {#if feed.loading}
-    <div class="card mt-5 divide-y divide-line-soft overflow-hidden">
-      {#each { length: 8 } as _, i (i)}
-        <div class="flex animate-pulse items-start gap-3 px-4 py-3.5" style="animation-delay: {i * 60}ms">
-          <div class="h-9 w-9 shrink-0 rounded-lg bg-line"></div>
-          <div class="flex-1">
-            <div class="mb-2 h-4 w-2/5 rounded bg-line"></div>
-            <div class="h-3 w-1/4 rounded bg-line-soft"></div>
-          </div>
-        </div>
-      {/each}
+    <div class="card overflow-hidden p-2">
+      <RowSkeleton count={8} />
     </div>
   {:else if filtered.length > 0}
     <!-- The two columns split the pane's height and scroll independently. -->
     <div
-      class="mt-5 lg:grid lg:min-h-0 lg:flex-1 lg:grid-cols-[minmax(0,26rem)_minmax(0,1fr)] lg:gap-5 xl:grid-cols-[minmax(0,30rem)_minmax(0,1fr)]"
+      class="lg:grid lg:min-h-0 lg:flex-1 lg:grid-cols-[minmax(0,25.25rem)_minmax(0,1fr)] lg:gap-5"
     >
       <div class="card overflow-hidden lg:h-full lg:overflow-y-auto">
-        {@render resultList()}
+        <div>
+          {#each visible as item (item.url)}
+            <ItemRow
+              {item}
+              variant={wide ? "dense" : "band"}
+              selected={selected?.url === item.url}
+              onOpen={(i) => (selected = i)}
+            />
+          {/each}
+        </div>
+        <InfiniteScroll {shown} total={filtered.length} noun="roles" onMore={() => (shown += PAGE)} />
       </div>
 
       {#if wide}
@@ -329,29 +367,22 @@
       {/if}
     </div>
   {:else if items.length === 0}
-    <div class="mt-5">
-      <EmptyState
-        icon={Briefcase}
-        title="No roles cached yet"
-        body="Refresh to pull the latest openings from all sources."
-        actionLabel="Refresh now"
-        busy={feed.refreshing}
-        onAction={() => feed.refresh(true)}
-      />
-    </div>
+    <EmptyState
+      icon={Briefcase}
+      title="No roles cached yet"
+      body="Refresh to pull the latest openings from all sources."
+      actionLabel="Refresh now"
+      busy={feed.refreshing}
+      onAction={() => feed.refresh(true)}
+    />
   {:else}
-    <div class="mt-5">
-      <EmptyState
-        icon={Search}
-        title="No roles match"
-        body="Try loosening the location, specialty or freshness filters."
-        actionLabel="Clear filters"
-        onAction={() => {
-          search = "";
-          clearFilters();
-        }}
-      />
-    </div>
+    <EmptyState
+      icon={Search}
+      title="No roles match"
+      body="Nothing fits every chip at once. Try dropping the location or the work mode."
+      actionLabel="Clear {activeFilters} filter{activeFilters === 1 ? '' : 's'}"
+      onAction={clearFilters}
+    />
   {/if}
 </main>
 

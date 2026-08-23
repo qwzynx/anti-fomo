@@ -13,14 +13,21 @@ export function typeBadgeClass(type: ScrapedItem["item_type"]): string {
   }
 }
 
-/** Splits "Role at Company" style titles for a stronger visual hierarchy. */
+/**
+ * Splits "Role at Company" style titles for a stronger visual hierarchy.
+ *
+ * The role leads and the company follows. Someone scanning a list of postings
+ * is looking for the job, not the employer — twenty rows that all say the
+ * company first make the reader work through a column of names to find the one
+ * thing that distinguishes them.
+ */
 export function splitTitle(item: ScrapedItem): { primary: string; secondary: string | null } {
   if (item.item_type === "Internship" || item.item_type === "Job") {
     const idx = item.title.lastIndexOf(" at ");
     if (idx > 0) {
       return {
-        primary: item.title.slice(idx + 4),
-        secondary: item.title.slice(0, idx),
+        primary: item.title.slice(0, idx),
+        secondary: item.title.slice(idx + 4),
       };
     }
   }
