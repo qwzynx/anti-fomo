@@ -10,6 +10,7 @@
     RotateCcw,
     Sparkles,
     Sun,
+    Trash2,
     skillCategoryIcon,
   } from "$lib/icons";
   import { groupByCategory } from "$lib/skills";
@@ -27,6 +28,22 @@
       ? feed.interests.filter((i) => i !== name)
       : [...feed.interests, name];
     feed.setInterests(next);
+  }
+
+  // Two taps to wipe the store: the button arms, and a second, separate
+  // button commits. There is no undo behind it, so a stray tap must not be
+  // enough on its own.
+  let confirmingClear = $state(false);
+  let clearing = $state(false);
+
+  async function clearData() {
+    clearing = true;
+    try {
+      await feed.clearData();
+    } finally {
+      clearing = false;
+      confirmingClear = false;
+    }
   }
 
   const skillGroups = $derived(groupByCategory(feed.skills, feed.skillCatalog));
@@ -223,6 +240,46 @@
       </button>
     </section>
   {/if}
+
+  <section class="card mb-5 border-danger/30 p-5">
+    <h3 class="mb-1 text-lg font-bold">Clear stored data</h3>
+    <p class="mb-4 text-sm text-muted">
+      Deletes everything the app has collected on this device — {feed.status?.item_count ?? 0}
+      cached item{(feed.status?.item_count ?? 0) === 1 ? "" : "s"}, every fetched job
+      description, and all
+      {feed.status?.saved_count ?? 0} saved item{(feed.status?.saved_count ?? 0) === 1 ? "" : "s"}
+      along with what you've hidden and read. Your field, interests and skills are kept, and the
+      feed refills on the next refresh. This cannot be undone.
+    </p>
+
+    {#if confirmingClear}
+      <div class="flex flex-wrap items-center gap-2">
+        <button
+          onclick={clearData}
+          disabled={clearing}
+          class="inline-flex items-center gap-1.5 rounded-xl bg-danger px-4 py-2 text-sm font-semibold text-danger-fg transition-colors hover:opacity-90 disabled:opacity-50"
+        >
+          <Trash2 size={15} />
+          {clearing ? "Clearing…" : "Yes, delete everything"}
+        </button>
+        <button
+          onclick={() => (confirmingClear = false)}
+          disabled={clearing}
+          class="rounded-xl border border-line px-4 py-2 text-sm font-semibold text-muted transition-colors hover:border-brand hover:text-brand disabled:opacity-50"
+        >
+          Cancel
+        </button>
+      </div>
+    {:else}
+      <button
+        onclick={() => (confirmingClear = true)}
+        class="inline-flex items-center gap-1.5 rounded-xl border border-danger/40 px-4 py-2 text-sm font-semibold text-danger transition-colors hover:bg-danger hover:text-danger-fg"
+      >
+        <Trash2 size={15} />
+        Clear all data
+      </button>
+    {/if}
+  </section>
 
   <section class="card p-5">
     <h3 class="mb-1 text-lg font-bold">About</h3>

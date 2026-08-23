@@ -59,6 +59,11 @@
   --article-soft: #e0e7ff;
   --star: #b45309;
   --star-soft: #fef3c7;
+
+  /* Destructive actions only — the one place the UI is allowed to alarm. */
+  --danger: #b91c1c;
+  --danger-fg: #ffffff;
+  --danger-soft: #fef2f2;
 }
 
 /* Explicit `dark` class strategy: the OS preference is applied on boot, but a
@@ -92,6 +97,10 @@
   --article-soft: #312e81;
   --star: #fcd34d;
   --star-soft: #451a03;
+
+  --danger: #f87171;
+  --danger-fg: #1c0a0a;
+  --danger-soft: #2a1215;
 }
 
 @theme inline {
@@ -119,6 +128,9 @@
   --color-article-soft: var(--article-soft);
   --color-star: var(--star);
   --color-star-soft: var(--star-soft);
+  --color-danger: var(--danger);
+  --color-danger-fg: var(--danger-fg);
+  --color-danger-soft: var(--danger-soft);
 
   --font-sans: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
   --font-display: var(--font-outfit), var(--font-inter), ui-sans-serif, sans-serif;

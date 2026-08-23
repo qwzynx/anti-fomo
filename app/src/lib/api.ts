@@ -84,6 +84,9 @@ export const markSeen = (url: string) => invoke<void>("mark_seen", { url });
 
 export const clearDismissed = () => invoke<void>("clear_dismissed");
 
+/** Empties the local store. The profile in `settings` is deliberately kept. */
+export const clearData = () => invoke<void>("clear_data");
+
 // --- interests ---
 
 export const listInterests = () => invoke<string[]>("list_interests");

@@ -406,6 +406,20 @@ pub fn clear_dismissed(state: State<'_, AppState>) -> CmdResult<()> {
     db::clear_dismissed(&conn).map_err(err).map(|_| ())
 }
 
+/// Empties the local store — cached items, fetched descriptions, saves,
+/// dismissals and read marks — and keeps the profile in `settings`, so the
+/// field, interests and skills the user set are still there afterwards.
+#[tauri::command]
+pub fn clear_data(state: State<'_, AppState>) -> CmdResult<()> {
+    // A scrape in flight would write its results in behind the delete and
+    // leave the store half-full of the items the user just cleared.
+    if state.refreshing.load(Ordering::SeqCst) {
+        return Err("A refresh is running. Try again once it finishes.".into());
+    }
+    let conn = state.db.lock().unwrap();
+    db::clear_data(&conn).map_err(err)
+}
+
 // --- interests ---
 
 /// The interest tags on offer, so the Settings picker never keeps its own copy.

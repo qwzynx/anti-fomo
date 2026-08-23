@@ -466,6 +466,25 @@ pub fn clear_dismissed(conn: &Connection) -> Result<usize> {
     Ok(conn.execute("UPDATE item_state SET dismissed_at = NULL", [])?)
 }
 
+/// Wipes everything the app collected — the item cache, the fetched postings,
+/// and every save, dismissal and read mark — while leaving `settings` alone, so
+/// the field, interests and skills the user typed in survive. `last_refresh`
+/// is the one setting that goes: it describes the cache, not the user, and
+/// leaving it behind would make the now-empty store look fresh and stop the
+/// next non-forced refresh from running.
+pub fn clear_data(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "DELETE FROM item_state;
+         DELETE FROM job_details;
+         DELETE FROM items;
+         DELETE FROM settings WHERE key = 'last_refresh';",
+    )?;
+    // Deleting rows only frees pages inside the file. The point of the button
+    // is that the data is gone, so hand the space back to the disk too.
+    conn.execute_batch("VACUUM")?;
+    Ok(())
+}
+
 /// Drops state rows that no longer matter: seen or dismissed, never saved, and
 /// no longer backed by a cached item. Without this the table grows forever as
 /// listings churn.
@@ -748,6 +767,36 @@ mod tests {
         // they go back on the queue; the one that worked is kept.
         let kept: Vec<_> = load_details(&conn).unwrap().into_keys().collect();
         assert_eq!(kept, ["https://x.test/served"]);
+    }
+
+    #[test]
+    fn clear_data_wipes_the_store_but_not_the_profile() {
+        let mut conn = mem();
+        let item = Item::new("Intern", "S", ItemType::Internship, "https://x.test/1");
+        save_items(&mut conn, std::slice::from_ref(&item)).unwrap();
+        set_saved(&conn, &item.url, true, Some(&item)).unwrap();
+        set_dismissed(&conn, "https://x.test/2", true).unwrap();
+        save_details(
+            &mut conn,
+            &[(item.url.clone(), JobDetail::with_status(DetailStatus::Ok))],
+        )
+        .unwrap();
+        set_setting(&conn, "skills", r#"["Rust"]"#).unwrap();
+        set_setting(&conn, "last_refresh", "2026-01-01T00:00:00Z").unwrap();
+
+        clear_data(&conn).unwrap();
+
+        assert!(load_items(&conn).unwrap().is_empty());
+        assert!(load_saved(&conn).unwrap().is_empty());
+        assert!(load_details(&conn).unwrap().is_empty());
+        let states = load_states(&conn).unwrap();
+        assert!(states.saved.is_empty() && states.dismissed.is_empty());
+        // The profile stays; the cache's own timestamp does not.
+        assert_eq!(
+            get_setting(&conn, "skills").unwrap().as_deref(),
+            Some(r#"["Rust"]"#)
+        );
+        assert!(get_setting(&conn, "last_refresh").unwrap().is_none());
     }
 
     #[test]

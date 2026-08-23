@@ -50,6 +50,7 @@ export {
   Sun,
   Tag,
   Target,
+  Trash2,
   TrendingUp,
   Wrench,
   X,

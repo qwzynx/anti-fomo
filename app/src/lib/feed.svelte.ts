@@ -290,6 +290,21 @@ export const feed = {
     await loadAll();
   },
 
+  /**
+   * Wipes the local store and reloads the now-empty lists. The field,
+   * interests and skills are untouched, so the next refresh ranks against the
+   * same profile rather than starting from the defaults.
+   */
+  async clearData() {
+    try {
+      await api.clearData();
+      error = null;
+    } catch (e) {
+      error = String(e);
+    }
+    await loadAll();
+  },
+
   /** Records that the user opened an item, which sinks it in later rankings. */
   async markSeen(item: ScrapedItem) {
     if (item.seen) return;

@@ -80,6 +80,7 @@ pub fn run() {
             commands::set_dismissed,
             commands::mark_seen,
             commands::clear_dismissed,
+            commands::clear_data,
             commands::list_interests,
             commands::get_interests,
             commands::set_interests,
