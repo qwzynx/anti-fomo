@@ -83,8 +83,10 @@ async fn fetch_board(employer: &'static Employer, client: reqwest::Client) -> Re
 
     let mut jobs = board.jobs;
     // The API returns no useful order, so sort before capping rather than
-    // truncating an arbitrary slice.
-    jobs.sort_by(|a, b| posted(b).cmp(&posted(a)));
+    // truncating an arbitrary slice. Cached key, not `sort_by`: `posted`
+    // parses a date, and a comparator would re-parse both sides on every
+    // comparison instead of once per job.
+    jobs.sort_by_cached_key(|job| std::cmp::Reverse(posted(job)));
     jobs.truncate(MAX_PER_EMPLOYER);
 
     Ok(jobs
