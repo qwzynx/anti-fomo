@@ -29,7 +29,7 @@ Everything ships from `/app`:
       block. **Every handler feeds its description through `sections::split`** —
       one that strips it to plain text instead throws away both the structure
       the UI renders and the headings that tell requirements from boilerplate.
-      Verify with `cargo run --bin detail_check`.
+      Verify with `cargo run --features dev-tools --bin detail_check`.
   - `location.rs`, `rank.rs`, `skills.rs` — pure functions (location tagging,
     discipline classification, interest-tag matching, recency decay, relevance
     scoring, round-robin per-source diversification, skill extraction).
@@ -54,7 +54,7 @@ Everything ships from `/app`:
     calls `invalidate()`. The list commands return `ListItem`, a borrowed
     projection of what a row renders; the fetched description, the score
     breakdown and `matched_skills` are not in it, and `get_item_detail(url)` is
-    where the pane gets the rest. `cargo run --release --bin perf_check` times
+    where the pane gets the rest. `cargo run --release --features dev-tools --bin perf_check` times
     the whole read path against the real database — measure before and after
     touching any of this.
   - `lib.rs` holds `run()` with `#[cfg_attr(mobile, tauri::mobile_entry_point)]`;
@@ -92,7 +92,7 @@ See `app/README.md` for the source list, the command table, and Android setup.
   `item_state` and the user's tags — they are never columns on the `items` row.
 - **Adding a source**: implement `Scraper` in a new `scrapers/` module, register it
   in `all_scrapers()` under its category, and verify with
-  `cargo run --bin scraper_check`. Prefer a JSON or RSS endpoint over HTML
+  `cargo run --features dev-tools --bin scraper_check`. Prefer a JSON or RSS endpoint over HTML
   scraping, and HTML over anything needing a browser — the app must never depend
   on a headless browser, which cannot exist on Android. Give every item a real
   timestamp; stamping `Utc::now()` on rows of unknown age makes the recency term

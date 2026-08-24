@@ -231,7 +231,7 @@ not the requirements alone, because a posting that names its stack once in the
 opening paragraph and never repeats it in a bullet is ordinary. `perks` is
 excluded: a benefits list says what the job pays, not what it asks for.
 
-`cargo run --bin detail_check` reports routing and live coverage per handler,
+`cargo run --features dev-tools --bin detail_check` reports routing and live coverage per handler,
 and what enrichment does to skill extraction, against the real cached database.
 
 ## Commands
@@ -269,8 +269,8 @@ for the one posting the pane is showing.
 ```bash
 npm run check                        # svelte-check
 cargo test --lib                     # unit tests (location, ranking, db)
-cargo run --bin scraper_check        # live per-source item counts
-cargo run --release --bin perf_check -- /path/to/copy.db
+cargo run --features dev-tools --bin scraper_check        # live per-source item counts
+cargo run --release --features dev-tools --bin perf_check -- /path/to/copy.db
 ```
 
 `perf_check` times every stage of a feed read against the real database — the

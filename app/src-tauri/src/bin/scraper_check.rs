@@ -1,5 +1,5 @@
 //! Per-source health check, plus an end-to-end pass over the real pipeline.
-//! Run with `cargo run --bin scraper_check`.
+//! Run with `cargo run --features dev-tools --bin scraper_check`.
 //!
 //! Two phases: every scraper is hit individually so a broken selector is
 //! attributable, then `fetch_all` runs the genuine dedupe/classify/rank path so

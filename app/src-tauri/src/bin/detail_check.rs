@@ -6,7 +6,7 @@
 //! corpus the user actually has. Run it after a refresh:
 //!
 //! ```text
-//! cargo run --bin detail_check -- [db_path] [sample_size]
+//! cargo run --features dev-tools --bin detail_check -- [db_path] [sample_size]
 //! ```
 
 use std::collections::HashMap;

@@ -7,7 +7,7 @@
 //! rather than assumed to have:
 //!
 //! ```text
-//! cargo run --release --bin perf_check -- [db_path]
+//! cargo run --release --features dev-tools --bin perf_check -- [db_path]
 //! ```
 //!
 //! Run it against a *copy* of the database. It opens the file directly rather

@@ -48,12 +48,14 @@ jobs:
         working-directory: app/src-tauri
         run: cargo fmt --check
 
+      # --features dev-tools so the gated *_check binaries are linted too;
+      # --all-targets alone skips a bin whose required-features are off.
       - name: Clippy
         working-directory: app/src-tauri
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --all-targets --features dev-tools -- -D warnings
 
       # Unit tests only — the scrapers hit live sites and are checked manually
-      # with `cargo run --bin scraper_check`.
+      # with `cargo run --features dev-tools --bin scraper_check`.
       - name: Rust tests
         working-directory: app/src-tauri
         run: cargo test --lib
