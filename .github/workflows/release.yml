@@ -1,30 +1,62 @@
 name: Release
 
-# Cross-compiling Tauri from Linux to Windows is unreliable, so Windows
-# binaries are produced on a Windows runner rather than locally.
+# Cross-compiling Tauri from Linux to Windows/macOS is unreliable, so those
+# binaries are produced on native runners rather than locally. macOS ships as
+# a single universal binary covering both Apple Silicon and Intel.
+#
+# Every job only *builds* and uploads its bundles as workflow artifacts; the
+# final `release` job is the one place a GitHub release is created. That keeps
+# the four platform jobs running in parallel and stops the matrix legs from
+# racing each other to create the same draft.
 on:
   push:
     tags:
       - "v*"
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing v* tag to build and attach the release to"
+        required: true
+        type: string
+
+permissions:
+  contents: read
 
 jobs:
-  build:
-    permissions:
-      contents: write
+  desktop:
     strategy:
       fail-fast: false
       matrix:
         include:
           - platform: ubuntu-22.04
             args: ""
+            bundles: |
+              app/src-tauri/target/release/bundle/deb/*.deb
+              app/src-tauri/target/release/bundle/rpm/*.rpm
+              app/src-tauri/target/release/bundle/appimage/*.AppImage
           - platform: windows-latest
             args: ""
+            bundles: |
+              app/src-tauri/target/release/bundle/msi/*.msi
+              app/src-tauri/target/release/bundle/nsis/*-setup.exe
+          - platform: macos-latest
+            args: "--target universal-apple-darwin"
+            bundles: |
+              app/src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
 
     runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
 
+      # ubuntu-22.04 rather than a newer image on purpose: the .deb and the
+      # AppImage link against whatever glibc/webkit the builder has, so the
+      # oldest runner still carrying libwebkit2gtk-4.1 gives the widest reach.
+      # The last two are for the AppImage bundler specifically: linuxdeploy is
+      # itself an AppImage and needs FUSE 2 to mount, and the bundler copies
+      # the host's xdg-open into the AppDir so the packaged app can open links.
+      # Both are pinned here rather than assumed off the runner image.
       - name: Install Linux webview dependencies
         if: matrix.platform == 'ubuntu-22.04'
         run: |
@@ -35,7 +67,9 @@ jobs:
             librsvg2-dev \
             patchelf \
             build-essential \
-            libssl-dev
+            libssl-dev \
+            libfuse2 \
+            xdg-utils
 
       - uses: actions/setup-node@v6
         with:
@@ -45,6 +79,10 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
+      - name: Add macOS universal-binary targets
+        if: matrix.platform == 'macos-latest'
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+
       - uses: swatinem/rust-cache@v2
         with:
           workspaces: app/src-tauri -> target
@@ -53,13 +91,162 @@ jobs:
         working-directory: app
         run: npm ci
 
+      # No tagName/releaseName/releaseId, so the action builds and uploads
+      # nothing — the bundles are collected below instead.
       - uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           projectPath: app
-          tagName: ${{ github.ref_name }}
-          releaseName: "Anti-FOMO ${{ github.ref_name }}"
-          releaseDraft: true
-          prerelease: false
           args: ${{ matrix.args }}
+
+      - name: Collect bundles
+        shell: bash
+        run: |
+          mkdir -p dist
+          while IFS= read -r pattern; do
+            [ -z "$pattern" ] && continue
+            # Unquoted on purpose: these are globs, not literal paths.
+            cp $pattern dist/
+          done <<< "${{ matrix.bundles }}"
+          ls -lh dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bundles-${{ matrix.platform }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7
+
+  android:
+    runs-on: ubuntu-22.04
+    # Must match scripts/setup-android.sh, which is what a contributor's local
+    # env is built from — a version drift here would pass locally and fail
+    # (or silently build against a different SDK) in CI.
+    env:
+      ANDROID_PLATFORM: android-36
+      ANDROID_BUILD_TOOLS: 36.0.0
+      ANDROID_NDK_VERSION: 27.2.12479018
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: app/src-tauri -> target
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Install Android platform, build-tools and NDK
+        run: |
+          sdkmanager --install \
+            "platforms;$ANDROID_PLATFORM" \
+            "build-tools;$ANDROID_BUILD_TOOLS" \
+            "ndk;$ANDROID_NDK_VERSION"
+          echo "NDK_HOME=$ANDROID_HOME/ndk/$ANDROID_NDK_VERSION" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/$ANDROID_NDK_VERSION" >> "$GITHUB_ENV"
+
+      - name: Install frontend dependencies
+        working-directory: app
+        run: npm ci
+
+      - name: Init Android project
+        working-directory: app
+        run: npm run tauri android init
+
+      # The `secrets` context is not available in a step-level `if`, so the
+      # "are we signing?" test lives in the script rather than a condition.
+      # See app/README.md's "Releasing" section for how to generate these.
+      - name: Write release keystore
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          if [ -z "$ANDROID_KEYSTORE_BASE64" ]; then
+            echo "::warning title=Unsigned Android build::ANDROID_KEYSTORE_BASE64 is not set, so the APK/AAB will be unsigned and cannot be installed. Set the signing secrets and re-run."
+            exit 0
+          fi
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > app/src-tauri/gen/android/upload-keystore.jks
+          cat > app/src-tauri/gen/android/keystore.properties <<EOF
+          keyAlias=$ANDROID_KEY_ALIAS
+          password=$ANDROID_KEY_PASSWORD
+          storeFile=upload-keystore.jks
+          EOF
+
+      # No-op when the step above was skipped, leaving an unsigned build.
+      - name: Add release signing config
+        run: node scripts/patch-android-signing.mjs
+
+      - name: Build Android release
+        working-directory: app
+        run: npm run tauri android build -- --apk --aab
+
+      # Gradle names every output app-universal-release.*, which says nothing
+      # in a release asset list, so they get the app's name and tag instead.
+      - name: Collect bundles
+        shell: bash
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          mkdir -p dist
+          outputs=app/src-tauri/gen/android/app/build/outputs
+          for f in "$outputs"/apk/*/release/*.apk "$outputs"/bundle/*[Rr]elease/*.aab; do
+            [ -e "$f" ] || continue
+            name="anti-fomo_${TAG#v}_android"
+            # Gradle marks an unsigned release build in the filename. Keep that
+            # marker: such a build cannot be installed, and a release asset
+            # that does not say so is worse than no asset at all.
+            case "$f" in *unsigned*) name="$name-unsigned" ;; esac
+            cp "$f" "dist/$name.${f##*.}"
+          done
+          ls -lh dist
+          # An empty dist here means the gradle output layout moved.
+          [ -n "$(ls -A dist)" ]
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bundles-android
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7
+
+  # The single point where a release is created. Draft, so nothing is public
+  # until a maintainer reviews the assets and hits publish.
+  release:
+    needs: [desktop, android]
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: bundles-*
+          merge-multiple: true
+          path: dist
+
+      - run: ls -lh dist
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag || github.ref_name }}
+          name: "Anti-FOMO ${{ inputs.tag || github.ref_name }}"
+          draft: true
+          prerelease: false
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: dist/*
