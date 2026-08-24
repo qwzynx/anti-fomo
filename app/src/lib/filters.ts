@@ -148,3 +148,70 @@ export function matchesSpecialty(haystack: string, specialty: string): boolean {
 export function toggle<T>(list: T[], value: T): T[] {
   return list.includes(value) ? list.filter((v) => v !== value) : [...list, value];
 }
+
+/**
+ * A facet that can require a value, rule it out, or say nothing about it —
+ * Source and Specialty on the hub. `included` and `excluded` are kept as two
+ * separate lists rather than one map so they reuse the same `Set`-membership
+ * shape as every other multi-select facet.
+ */
+export type TriState = { included: string[]; excluded: string[] };
+
+/** Cycles one value through a tri-state facet: unset → include → exclude → unset. */
+export function cycleTriState(state: TriState, value: string): TriState {
+  if (state.included.includes(value)) {
+    return { included: state.included.filter((v) => v !== value), excluded: [...state.excluded, value] };
+  }
+  if (state.excluded.includes(value)) {
+    return { included: state.included, excluded: state.excluded.filter((v) => v !== value) };
+  }
+  return { included: [...state.included, value], excluded: state.excluded };
+}
+
+/** Drops a value out of a tri-state facet regardless of which side it is on. */
+export function clearTriState(state: TriState, value: string): TriState {
+  return {
+    included: state.included.filter((v) => v !== value),
+    excluded: state.excluded.filter((v) => v !== value),
+  };
+}
+
+// --- hub filter persistence ---
+//
+// The chip bar's selections used to reset every time you left Roles. This is
+// UI state, not ranking input, so it is kept in localStorage next to theme
+// rather than round-tripped through `set_setting` — that command invalidates
+// the ranked-item cache on every call because it also carries `major` and
+// `weights`, and a chip tap is not a profile change worth a cache rebuild.
+
+const HUB_FILTERS_KEY = "antifomo_hub_filters";
+
+export type HubFilterState = {
+  discipline: string;
+  type: TypeFilter;
+  sources: string[];
+  sourcesExcluded: string[];
+  specialties: string[];
+  specialtiesExcluded: string[];
+  modality: Modality;
+  locations: string[];
+  freshness: FreshnessLabel;
+  goodMatchOnly: boolean;
+  sort: HubSort;
+};
+
+/** Best-effort restore. A missing or unparseable record just means defaults. */
+export function loadHubFilters(): Partial<HubFilterState> {
+  if (typeof localStorage === "undefined") return {};
+  try {
+    const raw = localStorage.getItem(HUB_FILTERS_KEY);
+    return raw ? JSON.parse(raw) : {};
+  } catch {
+    return {};
+  }
+}
+
+export function saveHubFilters(state: HubFilterState): void {
+  if (typeof localStorage === "undefined") return;
+  localStorage.setItem(HUB_FILTERS_KEY, JSON.stringify(state));
+}

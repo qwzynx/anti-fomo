@@ -9,7 +9,7 @@
   import RowSkeleton from "$lib/components/RowSkeleton.svelte";
   import SortMenu from "$lib/components/SortMenu.svelte";
   import { feed } from "$lib/feed.svelte";
-  import { Briefcase, ChevronDown, Filter, Search, X } from "$lib/icons";
+  import { Ban, Briefcase, ChevronDown, Filter, Search, X } from "$lib/icons";
   import {
     FRESHNESS,
     HUB_DISCIPLINES,
@@ -17,13 +17,18 @@
     MODALITIES,
     SPECIALTIES,
     TYPES,
+    clearTriState,
+    cycleTriState,
     freshnessCutoff,
+    loadHubFilters,
     matchesSpecialty,
+    saveHubFilters,
     sortItems,
     toggle,
     type FreshnessLabel,
     type HubSort,
     type Modality,
+    type TriState,
     type TypeFilter,
   } from "$lib/filters";
 
@@ -45,15 +50,37 @@
   let selected = $state<ScrapedItem | null>(null);
   let moreOpen = $state(false);
 
-  let discipline = $state("All");
-  let type = $state<TypeFilter>("All");
-  let sources = $state<string[]>([]);
-  let specialties = $state<string[]>([]);
-  let modality = $state<Modality>("All");
-  let locations = $state<string[]>([]);
-  let freshness = $state<FreshnessLabel>("Any time");
-  let goodMatchOnly = $state(false);
-  let sort = $state<HubSort>("Best match");
+  // Restored once at mount — see `saveHubFilters` below for why this is
+  // localStorage rather than the `settings` table.
+  const savedFilters = loadHubFilters();
+
+  let discipline = $state(savedFilters.discipline ?? "All");
+  let type = $state<TypeFilter>(savedFilters.type ?? "All");
+  let sources = $state<string[]>(savedFilters.sources ?? []);
+  let sourcesExcluded = $state<string[]>(savedFilters.sourcesExcluded ?? []);
+  let specialties = $state<string[]>(savedFilters.specialties ?? []);
+  let specialtiesExcluded = $state<string[]>(savedFilters.specialtiesExcluded ?? []);
+  let modality = $state<Modality>(savedFilters.modality ?? "All");
+  let locations = $state<string[]>(savedFilters.locations ?? []);
+  let freshness = $state<FreshnessLabel>(savedFilters.freshness ?? "Any time");
+  let goodMatchOnly = $state(savedFilters.goodMatchOnly ?? false);
+  let sort = $state<HubSort>(savedFilters.sort ?? "Best match");
+
+  $effect(() => {
+    saveHubFilters({
+      discipline,
+      type,
+      sources,
+      sourcesExcluded,
+      specialties,
+      specialtiesExcluded,
+      modality,
+      locations,
+      freshness,
+      goodMatchOnly,
+      sort,
+    });
+  });
 
   const PAGE = 40;
   let shown = $state(PAGE);
@@ -88,14 +115,17 @@
    */
   const filtered = $derived.by(() => {
     const cutoff = freshnessCutoff(freshness);
-    const sourceSet = sources.length > 0 ? new Set(sources) : null;
+    const sourceIncludeSet = sources.length > 0 ? new Set(sources) : null;
+    const sourceExcludeSet = sourcesExcluded.length > 0 ? new Set(sourcesExcluded) : null;
     const locationSet = locations.length > 0 ? new Set(locations) : null;
     const wantedSpecialties = specialties.length > 0 ? specialties : null;
+    const unwantedSpecialties = specialtiesExcluded.length > 0 ? specialtiesExcluded : null;
 
     const result = items.filter((item) => {
       if (type !== "All" && item.item_type !== type) return false;
       if (discipline !== "All" && item.discipline !== discipline) return false;
-      if (sourceSet && !sourceSet.has(item.source_platform)) return false;
+      if (sourceIncludeSet && !sourceIncludeSet.has(item.source_platform)) return false;
+      if (sourceExcludeSet && sourceExcludeSet.has(item.source_platform)) return false;
 
       if (modality !== "All" || locationSet) {
         const locTags = item.location_tags;
@@ -111,11 +141,15 @@
         if (!m || m.have / m.total < GOOD_MATCH) return false;
       }
 
-      // Last, because it is the only test that has to build a string.
-      if (wantedSpecialties) {
+      // Last, because it is the only test that has to build a string, and
+      // only built once for both the include and the exclude side.
+      if (wantedSpecialties || unwantedSpecialties) {
         const haystack =
           `${item.title} ${item.content_text ?? ""} ${item.location ?? ""}`.toLowerCase();
-        if (!wantedSpecialties.some((s) => matchesSpecialty(haystack, s))) return false;
+        if (wantedSpecialties && !wantedSpecialties.some((s) => matchesSpecialty(haystack, s)))
+          return false;
+        if (unwantedSpecialties && unwantedSpecialties.some((s) => matchesSpecialty(haystack, s)))
+          return false;
       }
       return true;
     });
@@ -149,7 +183,7 @@
     }
   });
 
-  type Chip = { label: string; active: boolean; onToggle: () => void };
+  type Chip = { label: string; active: boolean; excluded?: boolean; onToggle: () => void };
 
   /**
    * The chips on the bar itself: everything currently on, then a short list of
@@ -196,16 +230,51 @@
     }
 
     for (const s of SPECIALTIES) {
-      if (s === "Backend" || specialties.includes(s))
-        chips.push({
-          label: s,
-          active: specialties.includes(s),
-          onToggle: () => (specialties = toggle(specialties, s)),
-        });
+      const isIncluded = specialties.includes(s);
+      const isExcluded = specialtiesExcluded.includes(s);
+      if (s !== "Backend" && !isIncluded && !isExcluded) continue;
+      chips.push({
+        label: s,
+        active: isIncluded || isExcluded,
+        excluded: isExcluded,
+        // A neutral suggested chip includes on tap, same as every other
+        // facet's quick chip; an already-set one just clears — cycling to
+        // exclude only happens in the "More filters" panel below.
+        onToggle: () => {
+          if (!isIncluded && !isExcluded) {
+            specialties = [...specialties, s];
+            return;
+          }
+          const next = clearTriState({ included: specialties, excluded: specialtiesExcluded }, s);
+          specialties = next.included;
+          specialtiesExcluded = next.excluded;
+        },
+      });
     }
 
     for (const s of sources) {
-      chips.push({ label: s, active: true, onToggle: () => (sources = toggle(sources, s)) });
+      chips.push({
+        label: s,
+        active: true,
+        onToggle: () => {
+          const next = clearTriState({ included: sources, excluded: sourcesExcluded }, s);
+          sources = next.included;
+          sourcesExcluded = next.excluded;
+        },
+      });
+    }
+
+    for (const s of sourcesExcluded) {
+      chips.push({
+        label: s,
+        active: true,
+        excluded: true,
+        onToggle: () => {
+          const next = clearTriState({ included: sources, excluded: sourcesExcluded }, s);
+          sources = next.included;
+          sourcesExcluded = next.excluded;
+        },
+      });
     }
 
     if (discipline !== "All") {
@@ -228,7 +297,9 @@
     (type !== "All" ? 1 : 0) +
       (discipline !== "All" ? 1 : 0) +
       sources.length +
+      sourcesExcluded.length +
       specialties.length +
+      specialtiesExcluded.length +
       (modality !== "All" ? 1 : 0) +
       locations.length +
       (freshness !== "Any time" ? 1 : 0) +
@@ -239,7 +310,9 @@
     type = "All";
     discipline = "All";
     sources = [];
+    sourcesExcluded = [];
     specialties = [];
+    specialtiesExcluded = [];
     modality = "All";
     locations = [];
     freshness = "Any time";
@@ -268,6 +341,35 @@
             ? 'bg-brand text-brand-fg'
             : 'border border-line bg-surface text-muted hover:border-subtle'}"
         >
+          {option}
+        </button>
+      {/each}
+    </div>
+  </div>
+{/snippet}
+
+{#snippet facetTri(label: string, options: readonly string[], state: TriState, onCycle: (v: string) => void)}
+  <div class="flex flex-col gap-2">
+    <p class="text-[11px] font-bold tracking-wider text-subtle uppercase">
+      {label} <span class="font-normal normal-case text-subtle/70">— tap twice to exclude</span>
+    </p>
+    <div class="flex flex-wrap gap-1.5">
+      {#each options as option (option)}
+        {@const isIncluded = state.included.includes(option)}
+        {@const isExcluded = state.excluded.includes(option)}
+        <button
+          onclick={() => onCycle(option)}
+          aria-pressed={isIncluded || isExcluded}
+          aria-label={isExcluded ? `Excluding ${option}` : option}
+          class="chip inline-flex items-center gap-1 {isIncluded
+            ? 'bg-brand text-brand-fg'
+            : isExcluded
+              ? 'bg-danger text-danger-fg'
+              : 'border border-line bg-surface text-muted hover:border-subtle'}"
+        >
+          {#if isExcluded}
+            <Ban size={11} strokeWidth={2.5} class="shrink-0" />
+          {/if}
           {option}
         </button>
       {/each}
@@ -306,10 +408,15 @@
               onclick={chip.onToggle}
               aria-pressed={chip.active}
               class="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-full px-3 text-[13px] transition-colors
-                     {chip.active
-                ? 'bg-brand font-semibold text-brand-fg'
-                : 'border border-line bg-surface font-medium text-muted hover:border-subtle'}"
+                     {chip.excluded
+                ? 'bg-danger font-semibold text-danger-fg'
+                : chip.active
+                  ? 'bg-brand font-semibold text-brand-fg'
+                  : 'border border-line bg-surface font-medium text-muted hover:border-subtle'}"
             >
+              {#if chip.excluded}
+                <Ban size={12} strokeWidth={2.5} class="shrink-0" />
+              {/if}
               {chip.label}
               {#if chip.active}
                 <X size={12} strokeWidth={2.5} class="shrink-0" />
@@ -360,12 +467,20 @@
     {#if moreOpen}
       <div class="animate-fade-in mt-3 flex flex-col gap-4 rounded-xl border border-line bg-surface p-4">
         {@render facet("Type", TYPES.filter((t) => t !== "All"), type === "All" ? [] : [type], (v) => (type = type === v ? "All" : (v as TypeFilter)))}
-        {@render facet("Specialty", SPECIALTIES, specialties, (v) => (specialties = toggle(specialties, v)))}
+        {@render facetTri("Specialty", SPECIALTIES, { included: specialties, excluded: specialtiesExcluded }, (v) => {
+          const next = cycleTriState({ included: specialties, excluded: specialtiesExcluded }, v);
+          specialties = next.included;
+          specialtiesExcluded = next.excluded;
+        })}
         {@render facet("Work mode", MODALITIES.filter((m) => m !== "All"), modality === "All" ? [] : [modality], (v) => (modality = modality === v ? "All" : (v as Modality)))}
         {@render facet("Location", LOCATIONS, locations, (v) => (locations = toggle(locations, v)))}
         {@render facet("Posted within", FRESHNESS.map((f) => f.label), [freshness], (v) => (freshness = v as FreshnessLabel))}
         {@render facet("Discipline", HUB_DISCIPLINES, [discipline], (v) => (discipline = v))}
-        {@render facet("Source", allSources, sources, (v) => (sources = toggle(sources, v)))}
+        {@render facetTri("Source", allSources, { included: sources, excluded: sourcesExcluded }, (v) => {
+          const next = cycleTriState({ included: sources, excluded: sourcesExcluded }, v);
+          sources = next.included;
+          sourcesExcluded = next.excluded;
+        })}
       </div>
     {/if}
   </div>

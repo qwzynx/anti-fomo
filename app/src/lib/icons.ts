@@ -5,6 +5,7 @@ export {
   ArrowLeft,
   ArrowUpDown,
   ArrowUpRight,
+  Ban,
   Banknote,
   Bookmark,
   BookmarkCheck,
