@@ -18,8 +18,8 @@ use std::collections::HashSet;
 
 use super::super::employers::{Board, Employer};
 use super::fan_out;
-use crate::scrapers::Scraper;
 use crate::models::{Item, ItemType};
+use crate::scrapers::Scraper;
 
 /// Workday caps a page at 20 regardless of what `limit` asks for.
 const PAGE: usize = 20;
@@ -82,7 +82,12 @@ impl Scraper for WorkdayBoards {
     }
 
     async fn fetch(&self, client: &reqwest::Client) -> Result<Vec<Item>> {
-        Ok(fan_out(client, |b| matches!(b, Board::Workday { .. }), |e, c| Box::pin(fetch_board(e, c))).await)
+        Ok(fan_out(
+            client,
+            |b| matches!(b, Board::Workday { .. }),
+            |e, c| Box::pin(fetch_board(e, c)),
+        )
+        .await)
     }
 }
 
@@ -90,7 +95,8 @@ async fn fetch_board(employer: &'static Employer, client: reqwest::Client) -> Re
     let Board::Workday { host, tenant, site } = employer.board else {
         return Ok(Vec::new());
     };
-    let endpoint = format!("https://{tenant}.{host}.myworkdayjobs.com/wday/cxs/{tenant}/{site}/jobs");
+    let endpoint =
+        format!("https://{tenant}.{host}.myworkdayjobs.com/wday/cxs/{tenant}/{site}/jobs");
     let base = format!("https://{tenant}.{host}.myworkdayjobs.com/{site}");
 
     // The first request doubles as the size probe: it tells us `total` and
@@ -184,7 +190,8 @@ async fn search(
 
 fn to_item(company: &str, base: &str, posting: Posting) -> Item {
     let url = format!("{base}{}", posting.external_path);
-    let location = (!posting.locations_text.trim().is_empty()).then(|| posting.locations_text.clone());
+    let location =
+        (!posting.locations_text.trim().is_empty()).then(|| posting.locations_text.clone());
     Item::new(posting.title.trim(), "Workday", ItemType::Job, url)
         .with_company(company)
         .with_location(location)
@@ -232,16 +239,25 @@ mod tests {
         assert_eq!(posted_on("Posted Today", now), now);
         assert_eq!(posted_on("Posted Yesterday", now), now - Duration::days(1));
         assert_eq!(posted_on("Posted 2 Days Ago", now), now - Duration::days(2));
-        assert_eq!(posted_on("Posted 5 Hours Ago", now), now - Duration::hours(5));
+        assert_eq!(
+            posted_on("Posted 5 Hours Ago", now),
+            now - Duration::hours(5)
+        );
     }
 
     #[test]
     fn unknown_age_floors_at_thirty_days_rather_than_now() {
         // The whole point: an undated row must never out-rank a fresh one.
         let now = at(2026, 8, 23);
-        assert_eq!(posted_on("Posted 30+ Days Ago", now), now - Duration::days(30));
+        assert_eq!(
+            posted_on("Posted 30+ Days Ago", now),
+            now - Duration::days(30)
+        );
         assert_eq!(posted_on("", now), now - Duration::days(30));
-        assert_eq!(posted_on("Publié il y a 3 jours", now), now - Duration::days(3));
+        assert_eq!(
+            posted_on("Publié il y a 3 jours", now),
+            now - Duration::days(3)
+        );
     }
 
     #[test]

@@ -38,23 +38,40 @@ pub struct Employer {
     pub board: Board,
 }
 
-const fn wd(name: &'static str, host: &'static str, tenant: &'static str, site: &'static str) -> Employer {
+const fn wd(
+    name: &'static str,
+    host: &'static str,
+    tenant: &'static str,
+    site: &'static str,
+) -> Employer {
     Employer {
         name,
         board: Board::Workday { host, tenant, site },
     }
 }
 const fn gh(name: &'static str, slug: &'static str) -> Employer {
-    Employer { name, board: Board::Greenhouse(slug) }
+    Employer {
+        name,
+        board: Board::Greenhouse(slug),
+    }
 }
 const fn lv(name: &'static str, slug: &'static str) -> Employer {
-    Employer { name, board: Board::Lever(slug) }
+    Employer {
+        name,
+        board: Board::Lever(slug),
+    }
 }
 const fn ab(name: &'static str, slug: &'static str) -> Employer {
-    Employer { name, board: Board::Ashby(slug) }
+    Employer {
+        name,
+        board: Board::Ashby(slug),
+    }
 }
 const fn sr(name: &'static str, slug: &'static str) -> Employer {
-    Employer { name, board: Board::SmartRecruiters(slug) }
+    Employer {
+        name,
+        board: Board::SmartRecruiters(slug),
+    }
 }
 
 pub const EMPLOYERS: &[Employer] = &[
@@ -73,7 +90,12 @@ pub const EMPLOYERS: &[Employer] = &[
     wd("BMO", "wd3", "bmo", "External"),
     wd("Sun Life", "wd3", "sunlife", "Experienced"),
     wd("OMERS", "wd3", "omers", "omers_External"),
-    wd("Thomson Reuters", "wd5", "thomsonreuters", "External_Career_Site"),
+    wd(
+        "Thomson Reuters",
+        "wd5",
+        "thomsonreuters",
+        "External_Career_Site",
+    ),
     wd("PwC", "wd3", "pwc", "Global_Experienced_Careers"),
     wd("Accenture", "wd103", "accenture", "accentureCareers"),
     wd("Morgan Stanley", "wd5", "ms", "External"),
@@ -88,7 +110,6 @@ pub const EMPLOYERS: &[Employer] = &[
     wd("HP", "wd5", "hp", "ExternalCareerSite"),
     wd("Autodesk", "wd1", "autodesk", "Ext"),
     wd("Workday", "wd5", "workday", "workday_Jobs"),
-
     // --- Greenhouse ---
     gh("Stripe", "stripe"),
     gh("Databricks", "databricks"),
@@ -138,14 +159,11 @@ pub const EMPLOYERS: &[Employer] = &[
     gh("DRW", "drweng"),
     gh("Optiver", "optiverus"),
     gh("IMC Trading", "imc"),
-
     // --- SmartRecruiters ---
     sr("Ubisoft", "Ubisoft2"),
-
     // --- Lever ---
     lv("Palantir", "palantir"),
     lv("Wattpad", "wattpad"),
-
     // --- Ashby ---
     ab("OpenAI", "openai"),
     ab("Cohere", "cohere"),
@@ -198,9 +216,16 @@ mod tests {
         for e in EMPLOYERS {
             match e.board {
                 Board::Workday { host, tenant, site } => {
-                    assert!(!host.is_empty() && !tenant.is_empty() && !site.is_empty(), "{}", e.name);
+                    assert!(
+                        !host.is_empty() && !tenant.is_empty() && !site.is_empty(),
+                        "{}",
+                        e.name
+                    );
                 }
-                Board::Greenhouse(s) | Board::Lever(s) | Board::Ashby(s) | Board::SmartRecruiters(s) => {
+                Board::Greenhouse(s)
+                | Board::Lever(s)
+                | Board::Ashby(s)
+                | Board::SmartRecruiters(s) => {
                     assert!(!s.is_empty(), "{}", e.name);
                 }
             }

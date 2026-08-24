@@ -160,7 +160,10 @@ impl Scraper for GithubInternships {
             .filter_map(|listing| {
                 let url = listing.url.clone()?;
                 let timestamp = listing.timestamp()?;
-                let company = listing.company_name.clone().unwrap_or_else(|| "Unknown".into());
+                let company = listing
+                    .company_name
+                    .clone()
+                    .unwrap_or_else(|| "Unknown".into());
                 let role = listing.title.clone().unwrap_or_else(|| "Intern".into());
                 let location = join_locations(&listing.locations);
 
@@ -246,10 +249,9 @@ mod tests {
         let base = r#""url":"https://e.com/j","date_posted":1,"#;
         assert!(!listing(&format!("{{{base}\"active\":false,\"is_visible\":true}}")).is_open());
         assert!(!listing(&format!("{{{base}\"active\":true,\"is_visible\":false}}")).is_open());
-        assert!(!listing(
-            r#"{"url":"","date_posted":1,"active":true,"is_visible":true}"#
-        )
-        .is_open());
+        assert!(
+            !listing(r#"{"url":"","date_posted":1,"active":true,"is_visible":true}"#).is_open()
+        );
     }
 
     #[test]

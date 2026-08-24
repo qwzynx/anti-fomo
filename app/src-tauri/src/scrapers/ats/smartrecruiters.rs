@@ -73,7 +73,12 @@ impl Scraper for SmartRecruitersBoards {
     }
 
     async fn fetch(&self, client: &reqwest::Client) -> Result<Vec<Item>> {
-        Ok(fan_out(client, |b| matches!(b, Board::SmartRecruiters(_)), |e, c| Box::pin(fetch_board(e, c))).await)
+        Ok(fan_out(
+            client,
+            |b| matches!(b, Board::SmartRecruiters(_)),
+            |e, c| Box::pin(fetch_board(e, c)),
+        )
+        .await)
     }
 }
 
@@ -90,7 +95,12 @@ async fn fetch_board(employer: &'static Employer, client: reqwest::Client) -> Re
         );
         // A failing page after the first ends the walk with what it has; a
         // failing first page is a real error, same rule as Job Bank.
-        let page: Page = match client.get(&url).send().await.and_then(|r| r.error_for_status()) {
+        let page: Page = match client
+            .get(&url)
+            .send()
+            .await
+            .and_then(|r| r.error_for_status())
+        {
             Ok(response) => response.json().await?,
             Err(e) if offset > 0 => {
                 log::debug!("{} page at offset {offset}: {e}", employer.name);
@@ -116,7 +126,11 @@ async fn fetch_board(employer: &'static Employer, client: reqwest::Client) -> Re
 
 fn to_item(company: &str, slug: &str, posting: Posting) -> Item {
     let url = format!("https://jobs.smartrecruiters.com/{slug}/{}", posting.id);
-    let location = posting.location.as_ref().map(Location::label).filter(|l| !l.is_empty());
+    let location = posting
+        .location
+        .as_ref()
+        .map(Location::label)
+        .filter(|l| !l.is_empty());
     let timestamp = posting
         .released_date
         .as_deref()

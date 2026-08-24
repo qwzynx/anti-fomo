@@ -279,10 +279,35 @@ const ALIASES: &[(&str, &str)] = &[
 /// Suffixes that are corporate boilerplate rather than identity. Stripped from
 /// the end only — "Apple Inc." is Apple, but "Incorporated Analytics" is not.
 const SUFFIXES: &[&str] = &[
-    "inc", "inc.", "incorporated", "llc", "l.l.c", "ltd", "ltd.", "limited",
-    "corp", "corp.", "corporation", "co", "co.", "company", "plc", "gmbh",
-    "sa", "nv", "ag", "pbc", "lp", "llp", "group", "holdings", "technologies",
-    "technology", "labs", "software", "systems",
+    "inc",
+    "inc.",
+    "incorporated",
+    "llc",
+    "l.l.c",
+    "ltd",
+    "ltd.",
+    "limited",
+    "corp",
+    "corp.",
+    "corporation",
+    "co",
+    "co.",
+    "company",
+    "plc",
+    "gmbh",
+    "sa",
+    "nv",
+    "ag",
+    "pbc",
+    "lp",
+    "llp",
+    "group",
+    "holdings",
+    "technologies",
+    "technology",
+    "labs",
+    "software",
+    "systems",
 ];
 
 /// Casefolds, drops punctuation, and strips corporate suffixes, so the same
@@ -437,7 +462,10 @@ mod tests {
         assert_eq!(tier("CIBC", &overrides), Some(1));
         // And they apply through an alias, since Settings stores the canonical
         // name and a source may not use it.
-        assert_eq!(tier("Canadian Imperial Bank of Commerce", &overrides), Some(1));
+        assert_eq!(
+            tier("Canadian Imperial Bank of Commerce", &overrides),
+            Some(1)
+        );
     }
 
     #[test]

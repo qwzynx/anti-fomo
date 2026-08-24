@@ -828,7 +828,10 @@ mod tests {
         assert_eq!(single.requirements, all[&item.url].requirements);
         assert_eq!(single.closes_at, all[&item.url].closes_at);
 
-        attach_details(&mut one, &std::iter::once((item.url.clone(), single)).collect());
+        attach_details(
+            &mut one,
+            &std::iter::once((item.url.clone(), single)).collect(),
+        );
         assert_eq!(one[0].requirements.as_deref(), Some("Rust\nPostgres"));
         assert!(one[0].closes_at.is_some());
 
@@ -846,7 +849,12 @@ mod tests {
             .iter()
             .enumerate()
             .map(|(i, source)| {
-                Item::new("x", *source, ItemType::Article, format!("https://x.test/{i}"))
+                Item::new(
+                    "x",
+                    *source,
+                    ItemType::Article,
+                    format!("https://x.test/{i}"),
+                )
             })
             .collect();
         save_items(&mut conn, &rows).unwrap();
@@ -857,7 +865,10 @@ mod tests {
         let items = load_items(&conn).unwrap();
         let states = load_states(&conn).unwrap();
         assert_eq!(count_items(&conn).unwrap(), items.len());
-        assert_eq!(state_counts(&conn).unwrap(), (states.saved.len(), states.dismissed.len()));
+        assert_eq!(
+            state_counts(&conn).unwrap(),
+            (states.saved.len(), states.dismissed.len())
+        );
 
         let counts = source_counts(&conn).unwrap();
         assert_eq!(counts["Simplify"], 2);

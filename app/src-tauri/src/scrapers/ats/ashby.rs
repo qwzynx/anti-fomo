@@ -81,7 +81,12 @@ impl Scraper for AshbyBoards {
     }
 
     async fn fetch(&self, client: &reqwest::Client) -> Result<Vec<Item>> {
-        Ok(fan_out(client, |b| matches!(b, Board::Ashby(_)), |e, c| Box::pin(fetch_board(e, c))).await)
+        Ok(fan_out(
+            client,
+            |b| matches!(b, Board::Ashby(_)),
+            |e, c| Box::pin(fetch_board(e, c)),
+        )
+        .await)
     }
 }
 
@@ -89,8 +94,15 @@ async fn fetch_board(employer: &'static Employer, client: reqwest::Client) -> Re
     let Board::Ashby(slug) = employer.board else {
         return Ok(Vec::new());
     };
-    let url = format!("https://api.ashbyhq.com/posting-api/job-board/{slug}?includeCompensation=true");
-    let board: BoardResponse = client.get(&url).send().await?.error_for_status()?.json().await?;
+    let url =
+        format!("https://api.ashbyhq.com/posting-api/job-board/{slug}?includeCompensation=true");
+    let board: BoardResponse = client
+        .get(&url)
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
 
     Ok(board
         .jobs
@@ -117,11 +129,16 @@ fn to_item(company: &str, job: Job) -> Item {
         _ => company.to_string(),
     };
 
-    let mut item = Item::new(job.title.trim(), "Ashby", ItemType::Job, job.job_url.clone())
-        .with_company(company)
-        .with_location(job.location.clone())
-        .with_timestamp(timestamp)
-        .with_content(content);
+    let mut item = Item::new(
+        job.title.trim(),
+        "Ashby",
+        ItemType::Job,
+        job.job_url.clone(),
+    )
+    .with_company(company)
+    .with_location(job.location.clone())
+    .with_timestamp(timestamp)
+    .with_content(content);
 
     if let Some(p) = job.compensation.as_ref().and_then(salary) {
         item.salary_min = p.min;
@@ -131,7 +148,10 @@ fn to_item(company: &str, job: Job) -> Item {
     }
 
     if let Some(html) = job.description_html.as_deref() {
-        seed_detail(&mut item, details::detail_of(sections::split(html), Vec::new()));
+        seed_detail(
+            &mut item,
+            details::detail_of(sections::split(html), Vec::new()),
+        );
     }
     item
 }
@@ -198,7 +218,9 @@ mod tests {
 
     #[test]
     fn a_posting_with_no_compensation_reports_none() {
-        let compensation = Compensation { summary_components: Vec::new() };
+        let compensation = Compensation {
+            summary_components: Vec::new(),
+        };
         assert!(salary(&compensation).is_none());
     }
 }

@@ -377,11 +377,62 @@ pub struct Profile {
 /// several ("Senior Software Engineer Intern" does exist) resolves to the
 /// first, and intern beats senior because the intern word is the specific one.
 const SENIORITY: &[(&str, &[&str])] = &[
-    ("Intern", &["intern", "internship", "co-op", "coop", " co op ", "student", "placement", "apprentice"]),
-    ("New grad", &["new grad", "new graduate", "recent graduate", "campus", "early career", "early talent", "graduate program", "rotational program", "entry level", "entry-level"]),
+    (
+        "Intern",
+        &[
+            "intern",
+            "internship",
+            "co-op",
+            "coop",
+            " co op ",
+            "student",
+            "placement",
+            "apprentice",
+        ],
+    ),
+    (
+        "New grad",
+        &[
+            "new grad",
+            "new graduate",
+            "recent graduate",
+            "campus",
+            "early career",
+            "early talent",
+            "graduate program",
+            "rotational program",
+            "entry level",
+            "entry-level",
+        ],
+    ),
     ("Junior", &["junior", " jr ", " jr.", " i ", " associate "]),
-    ("Lead", &["director", "vp ", "vice president", "head of", "chief", "principal", "distinguished", "fellow"]),
-    ("Senior", &["senior", " sr ", " sr.", "staff ", "lead ", "manager", "architect", " iii", " iv"]),
+    (
+        "Lead",
+        &[
+            "director",
+            "vp ",
+            "vice president",
+            "head of",
+            "chief",
+            "principal",
+            "distinguished",
+            "fellow",
+        ],
+    ),
+    (
+        "Senior",
+        &[
+            "senior",
+            " sr ",
+            " sr.",
+            "staff ",
+            "lead ",
+            "manager",
+            "architect",
+            " iii",
+            " iv",
+        ],
+    ),
 ];
 
 /// Reads the level off a job title. `None` where the title says nothing —
@@ -560,7 +611,10 @@ pub fn personalize_at(mut items: Vec<Item>, profile: &Profile, now: DateTime<Utc
             let tier = companies::tier(company, &profile.company_tiers);
             item.company_tier = tier;
             add(
-                &format!("{company} (tier {})", tier.map(|t| t.to_string()).unwrap_or_else(|| "—".into())),
+                &format!(
+                    "{company} (tier {})",
+                    tier.map(|t| t.to_string()).unwrap_or_else(|| "—".into())
+                ),
                 w.prestige * companies::tier_value(tier),
                 &mut score,
                 &mut breakdown,
@@ -580,7 +634,12 @@ pub fn personalize_at(mut items: Vec<Item>, profile: &Profile, now: DateTime<Utc
             if urgency < 0.0 {
                 add("Closed", -CLOSED_PENALTY, &mut score, &mut breakdown);
             } else {
-                add("Closing soon", w.urgency * urgency, &mut score, &mut breakdown);
+                add(
+                    "Closing soon",
+                    w.urgency * urgency,
+                    &mut score,
+                    &mut breakdown,
+                );
             }
         }
 
@@ -598,7 +657,12 @@ pub fn personalize_at(mut items: Vec<Item>, profile: &Profile, now: DateTime<Utc
         // 10. Location fit
         if let Some(home) = profile.home_region.as_deref() {
             if item.location_tags.iter().any(|t| t == home) {
-                add(&format!("In {home}"), w.location, &mut score, &mut breakdown);
+                add(
+                    &format!("In {home}"),
+                    w.location,
+                    &mut score,
+                    &mut breakdown,
+                );
             }
         }
 
@@ -750,8 +814,14 @@ mod tests {
 
         let ranked = rank(vec![article, event, job], "Software Engineering");
         // Every item is timestamped `now`, so each carries the full recency weight.
-        assert_eq!(ranked[0].relevance_score, Some(w().major + 5.0 + w().recency)); // field + opportunity
-        assert_eq!(ranked[1].relevance_score, Some(w().major + 4.0 + w().recency)); // field + event
+        assert_eq!(
+            ranked[0].relevance_score,
+            Some(w().major + 5.0 + w().recency)
+        ); // field + opportunity
+        assert_eq!(
+            ranked[1].relevance_score,
+            Some(w().major + 4.0 + w().recency)
+        ); // field + event
         assert_eq!(ranked[2].relevance_score, Some(w().recency)); // no discipline match
     }
 
@@ -867,7 +937,11 @@ mod tests {
         let mut it = item("Research Intern", "S", ItemType::Internship).with_timestamp(now);
         it.content_text = "Work on PyTorch and computer vision for our LLM team".into();
 
-        let ranked = personalize_at(vec![it], &profile("General", &["AI/ML".to_string()], &[]), now);
+        let ranked = personalize_at(
+            vec![it],
+            &profile("General", &["AI/ML".to_string()], &[]),
+            now,
+        );
         assert_eq!(ranked[0].matched_interests, vec!["AI/ML"]);
         // opportunity (5) + one interest (4) + full recency (6)
         assert_eq!(ranked[0].relevance_score, Some(5.0 + 4.0 + w().recency));
@@ -918,7 +992,11 @@ mod tests {
         let full = personalize_at(vec![it.clone()], &profile("General", &[], &have_all), now);
         let half = personalize_at(
             vec![it.clone()],
-            &profile("General", &[], &["Python".to_string(), "Django".to_string()]),
+            &profile(
+                "General",
+                &[],
+                &["Python".to_string(), "Django".to_string()],
+            ),
             now,
         );
         let none = personalize_at(vec![it], &profile("General", &[], &[]), now);
@@ -942,7 +1020,11 @@ mod tests {
         let mut it = item("Ops Intern", "S", ItemType::Internship).with_timestamp(now);
         it.content_text = "Some familiarity with Terraform.".into();
 
-        let ranked = personalize_at(vec![it], &profile("General", &[], &["Terraform".to_string()]), now);
+        let ranked = personalize_at(
+            vec![it],
+            &profile("General", &[], &["Terraform".to_string()]),
+            now,
+        );
         assert_eq!(ranked[0].required_skills, vec!["Terraform"]);
         assert_eq!(ranked[0].matched_skills, vec!["Terraform"]);
         // Below MIN_SKILLS_TO_SCORE, so the term is skipped entirely.
@@ -955,7 +1037,11 @@ mod tests {
         let mut it = item("Kubernetes at scale", "S", ItemType::Article).with_timestamp(now);
         it.content_text = "Docker, Terraform and Python throughout.".into();
 
-        let ranked = personalize_at(vec![it], &profile("General", &[], &["Docker".to_string()]), now);
+        let ranked = personalize_at(
+            vec![it],
+            &profile("General", &[], &["Docker".to_string()]),
+            now,
+        );
         assert!(ranked[0].required_skills.is_empty());
         assert!(ranked[0].matched_skills.is_empty());
         assert_eq!(ranked[0].relevance_score, Some(w().recency));

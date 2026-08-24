@@ -1,5 +1,5 @@
-pub mod companies;
 pub mod commands;
+pub mod companies;
 pub mod db;
 pub mod location;
 pub mod models;

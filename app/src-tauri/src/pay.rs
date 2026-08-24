@@ -70,7 +70,9 @@ pub fn annual_equivalent(pay: &Pay) -> Option<f64> {
         }
     };
     let annual = value * multiplier;
-    (MIN_ANNUAL..=MAX_ANNUAL).contains(&annual).then_some(annual)
+    (MIN_ANNUAL..=MAX_ANNUAL)
+        .contains(&annual)
+        .then_some(annual)
 }
 
 /// Maps whatever the source called the period onto our five labels.
@@ -84,7 +86,8 @@ pub fn normalize_period(raw: &str) -> Option<String> {
         "week"
     } else if s.contains("month") || s.contains("mo") {
         "month"
-    } else if s.contains("year") || s.contains("annual") || s.contains("annum") || s.contains("yr") {
+    } else if s.contains("year") || s.contains("annual") || s.contains("annum") || s.contains("yr")
+    {
         "year"
     } else {
         return None;
@@ -115,7 +118,9 @@ fn amount_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     // A money-looking number: an optional symbol, digits with optional group
     // separators and decimals, and an optional k/K suffix ("$120k").
-    RE.get_or_init(|| Regex::new(r"(?i)[$€£]?\s?(\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?)\s*(k\b)?").unwrap())
+    RE.get_or_init(|| {
+        Regex::new(r"(?i)[$€£]?\s?(\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?)\s*(k\b)?").unwrap()
+    })
 }
 
 fn parse_amount(digits: &str, k_suffix: bool) -> Option<f64> {
@@ -136,9 +141,18 @@ pub fn parse(text: &str) -> Option<Pay> {
     let mentions_money = text.contains('$')
         || text.contains('€')
         || text.contains('£')
-        || ["salary", "compensation", "pay range", "wage", "per hour", "hourly", "annually", "per year"]
-            .iter()
-            .any(|k| lower.contains(k));
+        || [
+            "salary",
+            "compensation",
+            "pay range",
+            "wage",
+            "per hour",
+            "hourly",
+            "annually",
+            "per year",
+        ]
+        .iter()
+        .any(|k| lower.contains(k));
     if !mentions_money {
         return None;
     }
@@ -292,9 +306,19 @@ mod tests {
 
     #[test]
     fn infers_the_period_from_magnitude_when_unstated() {
-        let hourly = Pay { min: Some(30.0), max: None, currency: None, period: None };
+        let hourly = Pay {
+            min: Some(30.0),
+            max: None,
+            currency: None,
+            period: None,
+        };
         assert_eq!(annual_equivalent(&hourly), Some(62_400.0));
-        let salaried = Pay { min: Some(90_000.0), max: None, currency: None, period: None };
+        let salaried = Pay {
+            min: Some(90_000.0),
+            max: None,
+            currency: None,
+            period: None,
+        };
         assert_eq!(annual_equivalent(&salaried), Some(90_000.0));
     }
 

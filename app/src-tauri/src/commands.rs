@@ -587,7 +587,10 @@ async fn enrich_details(app: &AppHandle) -> CmdResult<usize> {
     for (url, simplify_id) in candidates {
         let chain = details::route(&url, simplify_id.as_deref());
         if chain.is_empty() {
-            unsupported.push((url, models::JobDetail::with_status(models::DetailStatus::Unsupported)));
+            unsupported.push((
+                url,
+                models::JobDetail::with_status(models::DetailStatus::Unsupported),
+            ));
         } else if queue.len() < DETAIL_BUDGET {
             queue.push((url, chain));
         }

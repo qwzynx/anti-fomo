@@ -50,10 +50,16 @@ pub const SKILLS: &[Category] = &[
             ("Scala", &["scala ", "scala,", "scala."]),
             // Padded so it does not fire inside "postgresql" or "mysql", which
             // are their own skills.
-            ("SQL", &[" sql ", " sql,", " sql.", " sql/", "t-sql", "pl/sql"]),
+            (
+                "SQL",
+                &[" sql ", " sql,", " sql.", " sql/", "t-sql", "pl/sql"],
+            ),
             ("R", &[" r ", " r,", " r/", "rstudio", "tidyverse"]),
             ("MATLAB", &["matlab", "simulink"]),
-            ("Shell / Bash", &["bash", "shell script", "zsh", "powershell"]),
+            (
+                "Shell / Bash",
+                &["bash", "shell script", "zsh", "powershell"],
+            ),
         ],
     ),
     (
@@ -73,7 +79,10 @@ pub const SKILLS: &[Category] = &[
             ),
             ("WebGL", &["webgl", "three.js", "canvas api"]),
             // " vite" rather than "vite", which fires inside "invite".
-            ("Webpack / Vite", &["webpack", " vite ", " vite,", "vite.config", "esbuild"]),
+            (
+                "Webpack / Vite",
+                &["webpack", " vite ", " vite,", "vite.config", "esbuild"],
+            ),
         ],
     ),
     (
@@ -97,14 +106,28 @@ pub const SKILLS: &[Category] = &[
         &[
             ("Node.js", &["node.js", "nodejs", "node js"]),
             // Not a bare "express", which fires on "express interest in".
-            ("Express", &["express.js", "expressjs", "express framework", "express server"]),
+            (
+                "Express",
+                &[
+                    "express.js",
+                    "expressjs",
+                    "express framework",
+                    "express server",
+                ],
+            ),
             ("Django", &["django"]),
             ("Flask", &["flask"]),
             ("FastAPI", &["fastapi"]),
-            ("Spring Boot", &["spring boot", "spring framework", "springboot"]),
+            (
+                "Spring Boot",
+                &["spring boot", "spring framework", "springboot"],
+            ),
             (".NET", &[".net", "dotnet", "asp.net"]),
             // Not a bare "rails ", which fires inside "guardrails".
-            ("Ruby on Rails", &["ruby on rails", "rails app", "activerecord"]),
+            (
+                "Ruby on Rails",
+                &["ruby on rails", "rails app", "activerecord"],
+            ),
             ("REST APIs", &["rest api", "restful", "http api"]),
             ("GraphQL", &["graphql", "apollo"]),
             ("gRPC", &["grpc", "protobuf", "protocol buffer"]),
@@ -128,11 +151,20 @@ pub const SKILLS: &[Category] = &[
             ("Redis", &["redis", "memcached"]),
             ("SQLite", &["sqlite"]),
             ("Elasticsearch", &["elasticsearch", "opensearch", "lucene"]),
-            ("Apache Spark", &["apache spark", "pyspark", "spark sql", "spark job"]),
+            (
+                "Apache Spark",
+                &["apache spark", "pyspark", "spark sql", "spark job"],
+            ),
             ("Kafka", &["kafka", "kinesis", "event streaming"]),
             (
                 "ETL / Pipelines",
-                &[" etl ", " elt ", "etl pipeline", "data pipeline", "ingestion pipeline"],
+                &[
+                    " etl ",
+                    " elt ",
+                    "etl pipeline",
+                    "data pipeline",
+                    "ingestion pipeline",
+                ],
             ),
             ("Snowflake", &["snowflake"]),
             ("BigQuery", &["bigquery", "redshift", "data warehouse"]),
@@ -153,23 +185,57 @@ pub const SKILLS: &[Category] = &[
             ),
             (
                 "NLP",
-                &["natural language processing", " nlp ", "text classification"],
+                &[
+                    "natural language processing",
+                    " nlp ",
+                    "text classification",
+                ],
             ),
             (
                 "Computer Vision",
-                &["computer vision", "image recognition", "opencv", "object detection"],
+                &[
+                    "computer vision",
+                    "image recognition",
+                    "opencv",
+                    "object detection",
+                ],
             ),
             (
                 "LLMs",
-                &["large language model", " llm ", "llms", "gpt-", "prompt engineering"],
+                &[
+                    "large language model",
+                    " llm ",
+                    "llms",
+                    "gpt-",
+                    "prompt engineering",
+                ],
             ),
             (
                 "RAG",
-                &["retrieval-augmented", " rag ", "vector database", "embeddings"],
+                &[
+                    "retrieval-augmented",
+                    " rag ",
+                    "vector database",
+                    "embeddings",
+                ],
             ),
-            ("Hugging Face", &["hugging face", "huggingface", "transformers library"]),
-            ("MLOps", &["mlops", "model serving", "model deployment", "feature store"]),
-            ("Reinforcement Learning", &["reinforcement learning", " rlhf ", "policy gradient"]),
+            (
+                "Hugging Face",
+                &["hugging face", "huggingface", "transformers library"],
+            ),
+            (
+                "MLOps",
+                &[
+                    "mlops",
+                    "model serving",
+                    "model deployment",
+                    "feature store",
+                ],
+            ),
+            (
+                "Reinforcement Learning",
+                &["reinforcement learning", " rlhf ", "policy gradient"],
+            ),
         ],
     ),
     (
@@ -178,22 +244,48 @@ pub const SKILLS: &[Category] = &[
             // " aws" rather than "aws", which fires inside "laws" and "flaws".
             (
                 "AWS",
-                &[" aws ", " aws,", " aws.", " aws/", "amazon web services", "ec2 ", "lambda function"],
+                &[
+                    " aws ",
+                    " aws,",
+                    " aws.",
+                    " aws/",
+                    "amazon web services",
+                    "ec2 ",
+                    "lambda function",
+                ],
             ),
             ("Azure", &["azure"]),
             ("GCP", &["gcp", "google cloud"]),
             ("Docker", &["docker", "containeriz"]),
             ("Kubernetes", &["kubernetes", "k8s", "helm chart"]),
-            ("Terraform", &["terraform", "pulumi", "infrastructure as code"]),
-            ("CI/CD", &["ci/cd", "continuous integration", "continuous deployment"]),
+            (
+                "Terraform",
+                &["terraform", "pulumi", "infrastructure as code"],
+            ),
+            (
+                "CI/CD",
+                &["ci/cd", "continuous integration", "continuous deployment"],
+            ),
             ("GitHub Actions", &["github actions"]),
             ("Jenkins", &["jenkins", "circleci", "gitlab ci", "teamcity"]),
             ("Linux", &["linux", "unix", "ubuntu", "debian"]),
-            ("Nginx", &["nginx", "apache http", "load balanc", "reverse proxy"]),
-            ("Serverless", &["serverless", "cloud function", "edge function"]),
+            (
+                "Nginx",
+                &["nginx", "apache http", "load balanc", "reverse proxy"],
+            ),
+            (
+                "Serverless",
+                &["serverless", "cloud function", "edge function"],
+            ),
             (
                 "Observability",
-                &["observability", "prometheus", "grafana", "datadog", "opentelemetry"],
+                &[
+                    "observability",
+                    "prometheus",
+                    "grafana",
+                    "datadog",
+                    "opentelemetry",
+                ],
             ),
             ("Ansible", &["ansible", "puppet", " chef "]),
         ],
@@ -201,19 +293,56 @@ pub const SKILLS: &[Category] = &[
     (
         "Systems & Low-level",
         &[
-            ("Operating Systems", &["operating system", "kernel", "scheduler design"]),
-            ("Compilers", &["compiler", "llvm", "interpreter design", "parser generator"]),
-            ("Embedded / Firmware", &["embedded", "firmware", "microcontroller", "rtos"]),
+            (
+                "Operating Systems",
+                &["operating system", "kernel", "scheduler design"],
+            ),
+            (
+                "Compilers",
+                &["compiler", "llvm", "interpreter design", "parser generator"],
+            ),
+            (
+                "Embedded / Firmware",
+                &["embedded", "firmware", "microcontroller", "rtos"],
+            ),
             (
                 "Concurrency",
-                &["concurrency", "multithread", "parallel programming", "async runtime"],
+                &[
+                    "concurrency",
+                    "multithread",
+                    "parallel programming",
+                    "async runtime",
+                ],
             ),
-            ("Networking", &["tcp/ip", "networking protocol", "socket programming", " dns "]),
-            ("Memory Management", &["memory management", "memory safety", "garbage collect"]),
-            ("Assembly", &["assembly language", "x86 assembly", "arm assembly"]),
-            ("FPGA / Verilog", &["fpga", "verilog", "vhdl", "hardware description"]),
-            ("Robotics / ROS", &["robotics", " ros ", "ros2", "motion planning"]),
-            ("Real-time Systems", &["real-time system", "low latency", "deterministic latency"]),
+            (
+                "Networking",
+                &[
+                    "tcp/ip",
+                    "networking protocol",
+                    "socket programming",
+                    " dns ",
+                ],
+            ),
+            (
+                "Memory Management",
+                &["memory management", "memory safety", "garbage collect"],
+            ),
+            (
+                "Assembly",
+                &["assembly language", "x86 assembly", "arm assembly"],
+            ),
+            (
+                "FPGA / Verilog",
+                &["fpga", "verilog", "vhdl", "hardware description"],
+            ),
+            (
+                "Robotics / ROS",
+                &["robotics", " ros ", "ros2", "motion planning"],
+            ),
+            (
+                "Real-time Systems",
+                &["real-time system", "low latency", "deterministic latency"],
+            ),
         ],
     ),
     (
@@ -221,18 +350,41 @@ pub const SKILLS: &[Category] = &[
         &[
             (
                 "Application Security",
-                &["application security", "appsec", "owasp", "secure development"],
+                &[
+                    "application security",
+                    "appsec",
+                    "owasp",
+                    "secure development",
+                ],
             ),
-            ("Cryptography", &["cryptograph", "encryption", " tls ", "public key"]),
+            (
+                "Cryptography",
+                &["cryptograph", "encryption", " tls ", "public key"],
+            ),
             (
                 "Penetration Testing",
                 &["penetration test", "pentest", "red team", "ethical hacking"],
             ),
-            ("Threat Modeling", &["threat model", "risk assessment", "attack surface"]),
-            ("OAuth / Identity", &["oauth", "openid", " saml ", "single sign-on", " iam "]),
-            ("Reverse Engineering", &["reverse engineer", "binary analysis", "disassembl"]),
-            ("Incident Response", &["incident response", " soc ", "siem", "threat detection"]),
-            ("Secure Code Review", &["secure code review", "static analysis", " sast ", " dast "]),
+            (
+                "Threat Modeling",
+                &["threat model", "risk assessment", "attack surface"],
+            ),
+            (
+                "OAuth / Identity",
+                &["oauth", "openid", " saml ", "single sign-on", " iam "],
+            ),
+            (
+                "Reverse Engineering",
+                &["reverse engineer", "binary analysis", "disassembl"],
+            ),
+            (
+                "Incident Response",
+                &["incident response", " soc ", "siem", "threat detection"],
+            ),
+            (
+                "Secure Code Review",
+                &["secure code review", "static analysis", " sast ", " dast "],
+            ),
         ],
     ),
     (
@@ -243,17 +395,37 @@ pub const SKILLS: &[Category] = &[
             // a posting asking for Git.
             ("Git", &[" git ", " git,", "version control"]),
             ("Agile / Scrum", &["agile", "scrum", "sprint ", "kanban"]),
-            ("Code Review", &["code review", "pull request", "peer review"]),
+            (
+                "Code Review",
+                &["code review", "pull request", "peer review"],
+            ),
             ("Unit Testing", &["unit test", "jest", "pytest", "junit"]),
             (
                 "Integration Testing",
-                &["integration test", "end-to-end test", "e2e test", "cypress", "playwright"],
+                &[
+                    "integration test",
+                    "end-to-end test",
+                    "e2e test",
+                    "cypress",
+                    "playwright",
+                ],
             ),
-            ("TDD", &["test-driven", " tdd ", "behaviour-driven", " bdd "]),
-            ("Debugging", &["debugging", "troubleshoot", "root cause analysis"]),
+            (
+                "TDD",
+                &["test-driven", " tdd ", "behaviour-driven", " bdd "],
+            ),
+            (
+                "Debugging",
+                &["debugging", "troubleshoot", "root cause analysis"],
+            ),
             (
                 "System Design",
-                &["system design", "software architecture", "design pattern", "scalable system"],
+                &[
+                    "system design",
+                    "software architecture",
+                    "design pattern",
+                    "scalable system",
+                ],
             ),
             (
                 "Data Structures & Algorithms",
@@ -263,7 +435,11 @@ pub const SKILLS: &[Category] = &[
             // posting and would put this chip on all of them.
             (
                 "Technical Writing",
-                &["technical writing", "technical documentation", "write documentation"],
+                &[
+                    "technical writing",
+                    "technical documentation",
+                    "write documentation",
+                ],
             ),
             ("Jira", &["jira", "confluence", "linear.app"]),
             ("Figma", &["figma", "design system", "wireframe"]),
@@ -417,7 +593,10 @@ const AMBIGUOUS: &[(&str, &[&str])] = &[
     ("Go", &["golang", " go/", "go programming"]),
     ("C", &[" c/", "c99", "c11", "c programming"]),
     ("R", &["rstudio", "tidyverse", " r/", "r programming"]),
-    ("RAG", &["retrieval-augmented", "vector database", "embeddings"]),
+    (
+        "RAG",
+        &["retrieval-augmented", "vector database", "embeddings"],
+    ),
 ];
 
 /// The keywords a skill may match on, given how much text there is to search.
@@ -480,7 +659,12 @@ impl Matcher {
 /// The catalog flattened once, so a skill has a stable index.
 fn catalog() -> &'static [Skill] {
     static FLAT: OnceLock<Vec<Skill>> = OnceLock::new();
-    FLAT.get_or_init(|| SKILLS.iter().flat_map(|(_, skills)| skills.iter().copied()).collect())
+    FLAT.get_or_init(|| {
+        SKILLS
+            .iter()
+            .flat_map(|(_, skills)| skills.iter().copied())
+            .collect()
+    })
 }
 
 fn matcher(long: bool) -> &'static Matcher {
@@ -505,10 +689,14 @@ const LONG_TEXT: usize = 400;
 /// `hasScrapedPosting` in `lib/item.ts` asks the same question of the same
 /// fields, and has to keep doing so — it is what picks the wording.
 pub fn from_posting(item: &Item) -> bool {
-    [&item.requirements, &item.responsibilities, &item.description]
-        .into_iter()
-        .flatten()
-        .any(|text| !text.trim().is_empty())
+    [
+        &item.requirements,
+        &item.responsibilities,
+        &item.description,
+    ]
+    .into_iter()
+    .flatten()
+    .any(|text| !text.trim().is_empty())
         || !item.tagged_skills.is_empty()
 }
 
@@ -529,7 +717,11 @@ fn extract_uncached(item: &Item) -> Vec<String> {
     // posting averages 3.5 KB, and the `format!(…).to_lowercase()` this
     // replaces walked that text three more times than it had to — allocating a
     // fresh copy each time — over every one of 17,739 opportunities.
-    let fields = [&item.requirements, &item.responsibilities, &item.description];
+    let fields = [
+        &item.requirements,
+        &item.responsibilities,
+        &item.description,
+    ];
     let body_len: usize = fields
         .iter()
         .flat_map(|f| f.iter())
@@ -593,7 +785,10 @@ mod tests {
     fn posting(title: &str, body: &str) -> Item {
         use std::sync::atomic::{AtomicUsize, Ordering};
         static NEXT: AtomicUsize = AtomicUsize::new(0);
-        let url = format!("https://example.com/{}", NEXT.fetch_add(1, Ordering::Relaxed));
+        let url = format!(
+            "https://example.com/{}",
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        );
         Item::new(title, "Test", ItemType::Internship, url).with_content(body)
     }
 
@@ -692,7 +887,10 @@ mod tests {
             "Kubernetes",
             "Unit Testing",
         ] {
-            assert!(found.iter().any(|s| s == expected), "missing {expected} in {found:?}");
+            assert!(
+                found.iter().any(|s| s == expected),
+                "missing {expected} in {found:?}"
+            );
         }
     }
 
@@ -719,7 +917,10 @@ mod tests {
              collaborative and rigorous environment.",
         ));
         for never in ["Go", "R", "C", "C++", "Rust"] {
-            assert!(!found.iter().any(|s| s == never), "false positive {never} in {found:?}");
+            assert!(
+                !found.iter().any(|s| s == never),
+                "false positive {never} in {found:?}"
+            );
         }
     }
 
@@ -734,21 +935,38 @@ mod tests {
             "We invite candidates who build trust, respect employment laws, design scalable \
              guardrails, and reason about scenarios end to end.",
         ));
-        for never in ["SQL", "AWS", "Rust", "Scala", "Webpack / Vite", "iOS", "Ruby on Rails"] {
-            assert!(!found.iter().any(|s| s == never), "false positive {never} in {found:?}");
+        for never in [
+            "SQL",
+            "AWS",
+            "Rust",
+            "Scala",
+            "Webpack / Vite",
+            "iOS",
+            "Ruby on Rails",
+        ] {
+            assert!(
+                !found.iter().any(|s| s == never),
+                "false positive {never} in {found:?}"
+            );
         }
     }
 
     #[test]
     fn a_database_name_is_not_also_the_language() {
         // PostgreSQL is its own skill; it must not also claim SQL.
-        let found = extract(&posting("Data Intern", "You will use PostgreSQL and MySQL daily."));
+        let found = extract(&posting(
+            "Data Intern",
+            "You will use PostgreSQL and MySQL daily.",
+        ));
         assert!(found.iter().any(|s| s == "PostgreSQL"));
         assert!(found.iter().any(|s| s == "MySQL"));
         assert!(!found.iter().any(|s| s == "SQL"), "{found:?}");
 
         // Written on its own it still matches.
-        let plain = extract(&posting("Data Intern", "Strong SQL, and comfort with dashboards."));
+        let plain = extract(&posting(
+            "Data Intern",
+            "Strong SQL, and comfort with dashboards.",
+        ));
         assert!(plain.iter().any(|s| s == "SQL"), "{plain:?}");
     }
 
@@ -758,7 +976,11 @@ mod tests {
         // title is not evidence: a "Frontend Engineer Intern" that never says
         // React must not be credited with it, because the reader cannot tell
         // a credited guess from a credited reading.
-        assert!(extract(&posting("Frontend Engineer Intern", "Location: Toronto, ON")).is_empty());
+        assert!(extract(&posting(
+            "Frontend Engineer Intern",
+            "Location: Toronto, ON"
+        ))
+        .is_empty());
         assert!(extract(&posting("Internship at Skyscanner", "Location: London")).is_empty());
     }
 
@@ -793,7 +1015,10 @@ mod tests {
         ));
         assert!(found.iter().any(|s| s == "Svelte"), "{found:?}");
         for unsaid in ["React", "Web Accessibility"] {
-            assert!(!found.iter().any(|s| s == unsaid), "invented {unsaid} in {found:?}");
+            assert!(
+                !found.iter().any(|s| s == unsaid),
+                "invented {unsaid} in {found:?}"
+            );
         }
     }
 
@@ -826,7 +1051,10 @@ mod tests {
 
         let found = extract(&item);
         for expected in ["Kubernetes", "Terraform", "Kafka", "Rust", "PostgreSQL"] {
-            assert!(found.iter().any(|s| s == expected), "missing {expected} in {found:?}");
+            assert!(
+                found.iter().any(|s| s == expected),
+                "missing {expected} in {found:?}"
+            );
         }
     }
 
@@ -853,7 +1081,10 @@ mod tests {
         let found = extract(&enriched("Program Manager Intern", &prose));
 
         for never in ["Go", "C", "R"] {
-            assert!(!found.iter().any(|s| s == never), "false positive {never} in {found:?}");
+            assert!(
+                !found.iter().any(|s| s == never),
+                "false positive {never} in {found:?}"
+            );
         }
     }
 
@@ -868,7 +1099,10 @@ mod tests {
         ));
 
         for expected in ["Go", "C", "C++", "R"] {
-            assert!(found.iter().any(|s| s == expected), "missing {expected} in {found:?}");
+            assert!(
+                found.iter().any(|s| s == expected),
+                "missing {expected} in {found:?}"
+            );
         }
     }
 
@@ -893,7 +1127,10 @@ mod tests {
         let found = extract(&item);
 
         for expected in ["Python", "Node.js", "PostgreSQL"] {
-            assert!(found.iter().any(|s| s == expected), "missing {expected} in {found:?}");
+            assert!(
+                found.iter().any(|s| s == expected),
+                "missing {expected} in {found:?}"
+            );
         }
         assert!(!found.iter().any(|s| s == "Data Visualization"));
     }
@@ -917,7 +1154,10 @@ mod tests {
         // out first however the posting orders them.
         let found = extract(&posting("Intern", "We use Kubernetes, and Python too."));
         let python = found.iter().position(|s| s == "Python").expect("python");
-        let k8s = found.iter().position(|s| s == "Kubernetes").expect("kubernetes");
+        let k8s = found
+            .iter()
+            .position(|s| s == "Kubernetes")
+            .expect("kubernetes");
         assert!(python < k8s);
     }
 }

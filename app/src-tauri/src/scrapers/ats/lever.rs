@@ -84,7 +84,12 @@ impl Scraper for LeverBoards {
     }
 
     async fn fetch(&self, client: &reqwest::Client) -> Result<Vec<Item>> {
-        Ok(fan_out(client, |b| matches!(b, Board::Lever(_)), |e, c| Box::pin(fetch_board(e, c))).await)
+        Ok(fan_out(
+            client,
+            |b| matches!(b, Board::Lever(_)),
+            |e, c| Box::pin(fetch_board(e, c)),
+        )
+        .await)
     }
 }
 
@@ -123,11 +128,16 @@ fn to_item(company: &str, posting: Posting) -> Item {
         _ => company.to_string(),
     };
 
-    let mut item = Item::new(posting.text.trim(), "Lever", ItemType::Job, posting.hosted_url.clone())
-        .with_company(company)
-        .with_location(location)
-        .with_timestamp(timestamp)
-        .with_content(content);
+    let mut item = Item::new(
+        posting.text.trim(),
+        "Lever",
+        ItemType::Job,
+        posting.hosted_url.clone(),
+    )
+    .with_company(company)
+    .with_location(location)
+    .with_timestamp(timestamp)
+    .with_content(content);
 
     if let Some(p) = posting.salary_range.as_ref().and_then(salary) {
         item.salary_min = p.min;
@@ -136,7 +146,10 @@ fn to_item(company: &str, posting: Posting) -> Item {
         item.salary_period = p.period.clone();
     }
 
-    seed_detail(&mut item, details::detail_of(assemble(&posting), Vec::new()));
+    seed_detail(
+        &mut item,
+        details::detail_of(assemble(&posting), Vec::new()),
+    );
     item
 }
 
@@ -182,19 +195,39 @@ mod tests {
             text: "Software Engineer".into(),
             hosted_url: "https://jobs.lever.co/acme/1".into(),
             created_at: Some(1_711_403_416_463),
-            categories: Some(Categories { location: Some("Toronto".into()) }),
+            categories: Some(Categories {
+                location: Some("Toronto".into()),
+            }),
             description: Some("<p>We build things.</p>".into()),
             lists: vec![
-                TitledList { text: "What We Require".into(), content: "<ul><li>Rust</li></ul>".into() },
-                TitledList { text: "Responsibilities".into(), content: "<ul><li>Ship</li></ul>".into() },
+                TitledList {
+                    text: "What We Require".into(),
+                    content: "<ul><li>Rust</li></ul>".into(),
+                },
+                TitledList {
+                    text: "Responsibilities".into(),
+                    content: "<ul><li>Ship</li></ul>".into(),
+                },
             ],
             additional: None,
             salary_range: None,
         };
         let item = to_item("Acme", posting);
-        assert!(item.requirements.as_deref().unwrap_or_default().contains("Rust"));
-        assert!(item.responsibilities.as_deref().unwrap_or_default().contains("Ship"));
-        assert!(item.description.as_deref().unwrap_or_default().contains("We build things"));
+        assert!(item
+            .requirements
+            .as_deref()
+            .unwrap_or_default()
+            .contains("Rust"));
+        assert!(item
+            .responsibilities
+            .as_deref()
+            .unwrap_or_default()
+            .contains("Ship"));
+        assert!(item
+            .description
+            .as_deref()
+            .unwrap_or_default()
+            .contains("We build things"));
     }
 
     #[test]

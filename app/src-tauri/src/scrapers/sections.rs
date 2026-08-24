@@ -497,7 +497,10 @@ mod tests {
              <p>How We Work: Our Culture</p><ul><li>We do the right thing</li></ul>",
         );
         assert_eq!(s.requirements, ["Three years of Rust"]);
-        assert_eq!(s.overview, ["How We Work: Our Culture", "We do the right thing"]);
+        assert_eq!(
+            s.overview,
+            ["How We Work: Our Culture", "We do the right thing"]
+        );
     }
 
     #[test]
@@ -521,7 +524,10 @@ mod tests {
             "<h3>Qualifications</h3><p>A degree</p><h3>Equal Opportunity Employer</h3><p>We do not discriminate</p>",
         );
         assert_eq!(s.requirements, ["A degree"]);
-        assert_eq!(s.overview, ["Equal Opportunity Employer", "We do not discriminate"]);
+        assert_eq!(
+            s.overview,
+            ["Equal Opportunity Employer", "We do not discriminate"]
+        );
     }
 
     #[test]
@@ -536,7 +542,10 @@ mod tests {
 
     #[test]
     fn a_heading_naming_two_buckets_takes_the_first_it_names() {
-        assert_eq!(section_of("Responsibilities and Qualifications"), Section::Responsibilities);
+        assert_eq!(
+            section_of("Responsibilities and Qualifications"),
+            Section::Responsibilities
+        );
         assert_eq!(section_of("Compensation and Benefits"), Section::Perks);
         assert_eq!(section_of("Preferred Experience"), Section::Requirements);
     }
@@ -574,7 +583,10 @@ mod tests {
 
     #[test]
     fn a_known_default_keeps_unheaded_text_out_of_the_overview() {
-        let s = split_into("<p>A degree</p><h3>Preferred</h3><li>Rust</li>", Section::Requirements);
+        let s = split_into(
+            "<p>A degree</p><h3>Preferred</h3><li>Rust</li>",
+            Section::Requirements,
+        );
         assert_eq!(s.requirements, ["A degree", "Rust"]);
         assert!(s.overview.is_empty());
     }
@@ -588,7 +600,9 @@ mod tests {
 
     #[test]
     fn a_section_is_capped() {
-        let html: String = (0..MAX_LINES + 20).map(|i| format!("<li>line {i}</li>")).collect();
+        let html: String = (0..MAX_LINES + 20)
+            .map(|i| format!("<li>line {i}</li>"))
+            .collect();
         assert_eq!(split(&html).overview.len(), MAX_LINES);
     }
 }

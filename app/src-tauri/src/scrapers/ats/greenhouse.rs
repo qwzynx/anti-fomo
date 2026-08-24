@@ -59,7 +59,12 @@ impl Scraper for GreenhouseBoards {
     }
 
     async fn fetch(&self, client: &reqwest::Client) -> Result<Vec<Item>> {
-        Ok(fan_out(client, |b| matches!(b, Board::Greenhouse(_)), |e, c| Box::pin(fetch_board(e, c))).await)
+        Ok(fan_out(
+            client,
+            |b| matches!(b, Board::Greenhouse(_)),
+            |e, c| Box::pin(fetch_board(e, c)),
+        )
+        .await)
     }
 }
 
@@ -68,7 +73,13 @@ async fn fetch_board(employer: &'static Employer, client: reqwest::Client) -> Re
         return Ok(Vec::new());
     };
     let url = format!("https://boards-api.greenhouse.io/v1/boards/{slug}/jobs");
-    let board: BoardResponse = client.get(&url).send().await?.error_for_status()?.json().await?;
+    let board: BoardResponse = client
+        .get(&url)
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
 
     let mut jobs = board.jobs;
     // The API returns no useful order, so sort before capping rather than
@@ -108,12 +119,17 @@ fn to_item(company: &str, job: Job) -> Item {
         Some(l) if !l.trim().is_empty() => format!("{company} · {l}"),
         _ => company.to_string(),
     };
-    Item::new(job.title.trim(), "Greenhouse", ItemType::Job, job.absolute_url.clone())
-        .with_company(company)
-        .with_location(location)
-        .with_timestamp(timestamp)
-        .with_closes_at(closes_at)
-        .with_content(content)
+    Item::new(
+        job.title.trim(),
+        "Greenhouse",
+        ItemType::Job,
+        job.absolute_url.clone(),
+    )
+    .with_company(company)
+    .with_location(location)
+    .with_timestamp(timestamp)
+    .with_closes_at(closes_at)
+    .with_content(content)
 }
 
 #[cfg(test)]
@@ -124,7 +140,9 @@ mod tests {
         Job {
             title: "Engineer".into(),
             absolute_url: "https://example.com/1".into(),
-            location: Some(Location { name: "Toronto".into() }),
+            location: Some(Location {
+                name: "Toronto".into(),
+            }),
             updated_at: updated.map(str::to_string),
             first_published: first.map(str::to_string),
             application_deadline: deadline.map(str::to_string),
@@ -133,13 +151,24 @@ mod tests {
 
     #[test]
     fn prefers_first_published_over_updated_at() {
-        let j = job(Some("2026-01-05T00:00:00Z"), Some("2026-08-20T00:00:00Z"), None);
+        let j = job(
+            Some("2026-01-05T00:00:00Z"),
+            Some("2026-08-20T00:00:00Z"),
+            None,
+        );
         assert_eq!(posted(&j), parse_date("2026-01-05T00:00:00Z").unwrap());
     }
 
     #[test]
     fn carries_the_application_deadline() {
-        let item = to_item("Stripe", job(Some("2026-08-01T00:00:00Z"), None, Some("2026-09-30T00:00:00Z")));
+        let item = to_item(
+            "Stripe",
+            job(
+                Some("2026-08-01T00:00:00Z"),
+                None,
+                Some("2026-09-30T00:00:00Z"),
+            ),
+        );
         assert_eq!(item.closes_at, parse_date("2026-09-30T00:00:00Z"));
         assert_eq!(item.company.as_deref(), Some("Stripe"));
     }

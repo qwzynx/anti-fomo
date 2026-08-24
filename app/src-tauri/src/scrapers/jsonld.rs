@@ -141,7 +141,9 @@ fn read(node: &Value) -> JobPostingLd {
             .get("hiringOrganization")
             .and_then(|o| text_of(o.get("name")).or_else(|| text_of(Some(o))))
             .filter(|n| !n.trim().is_empty()),
-        valid_through: text_of(node.get("validThrough")).as_deref().and_then(parse_date),
+        valid_through: text_of(node.get("validThrough"))
+            .as_deref()
+            .and_then(parse_date),
         salary: node.get("baseSalary").and_then(base_salary),
     }
 }
@@ -173,7 +175,9 @@ fn base_salary(node: &Value) -> Option<Pay> {
         Value::Object(map) => (
             map.get("minValue").and_then(number),
             map.get("maxValue").and_then(number),
-            map.get("unitText").and_then(|v| v.as_str()).map(str::to_string),
+            map.get("unitText")
+                .and_then(|v| v.as_str())
+                .map(str::to_string),
         ),
         other => (number(other), None, None),
     };
@@ -240,7 +244,9 @@ mod tests {
     use super::*;
 
     fn page(body: &str) -> String {
-        format!(r#"<html><head><script type="application/ld+json">{body}</script></head><body>shell</body></html>"#)
+        format!(
+            r#"<html><head><script type="application/ld+json">{body}</script></head><body>shell</body></html>"#
+        )
     }
 
     #[test]
@@ -261,10 +267,17 @@ mod tests {
             r#"{"@graph":[{"@type":"Organization","name":"Acme"},
                           {"@type":"JobPosting","description":"In the graph"}]}"#,
         );
-        assert_eq!(find(&graph).unwrap().description.as_deref(), Some("In the graph"));
+        assert_eq!(
+            find(&graph).unwrap().description.as_deref(),
+            Some("In the graph")
+        );
 
-        let list = page(r#"[{"@type":"WebPage"},{"@type":"JobPosting","description":"In the list"}]"#);
-        assert_eq!(find(&list).unwrap().description.as_deref(), Some("In the list"));
+        let list =
+            page(r#"[{"@type":"WebPage"},{"@type":"JobPosting","description":"In the list"}]"#);
+        assert_eq!(
+            find(&list).unwrap().description.as_deref(),
+            Some("In the list")
+        );
     }
 
     #[test]
@@ -297,7 +310,9 @@ mod tests {
 
     #[test]
     fn a_type_list_still_counts_as_a_posting() {
-        let found = find(&page(r#"{"@type":["JobPosting","Thing"],"description":"Listed type"}"#));
+        let found = find(&page(
+            r#"{"@type":["JobPosting","Thing"],"description":"Listed type"}"#,
+        ));
         assert_eq!(found.unwrap().description.as_deref(), Some("Listed type"));
     }
 }

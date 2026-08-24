@@ -20,9 +20,7 @@ const DEFAULT_SAMPLE: usize = 60;
 const CONCURRENCY: usize = 8;
 
 fn default_db() -> std::path::PathBuf {
-    dirs_next()
-        .join("dev.qwzynx.antifomo")
-        .join("antifomo.db")
+    dirs_next().join("dev.qwzynx.antifomo").join("antifomo.db")
 }
 
 fn dirs_next() -> std::path::PathBuf {
@@ -176,10 +174,22 @@ async fn main() -> anyhow::Result<()> {
         println!("  {n:>5}  status={status}");
     }
     let n = results.len();
-    println!("  {with_req:>5} ({:>4.1}%)  have requirements", pct(with_req, n));
-    println!("  {with_resp:>5} ({:>4.1}%)  have responsibilities", pct(with_resp, n));
-    println!("  {with_perks:>5} ({:>4.1}%)  have perks", pct(with_perks, n));
-    println!("  {with_tags:>5} ({:>4.1}%)  have tagged skills", pct(with_tags, n));
+    println!(
+        "  {with_req:>5} ({:>4.1}%)  have requirements",
+        pct(with_req, n)
+    );
+    println!(
+        "  {with_resp:>5} ({:>4.1}%)  have responsibilities",
+        pct(with_resp, n)
+    );
+    println!(
+        "  {with_perks:>5} ({:>4.1}%)  have perks",
+        pct(with_perks, n)
+    );
+    println!(
+        "  {with_tags:>5} ({:>4.1}%)  have tagged skills",
+        pct(with_tags, n)
+    );
 
     println!("\n  by the handler tried first:");
     let mut handlers: Vec<_> = by_handler.into_iter().collect();
@@ -239,8 +249,15 @@ async fn main() -> anyhow::Result<()> {
     );
 
     println!("\n=== three samples ===");
-    for (title, lead, d) in results.iter().filter(|(_, _, d)| d.status == DetailStatus::Ok).take(3) {
-        println!("\n  {} [{lead}]", title.chars().take(70).collect::<String>());
+    for (title, lead, d) in results
+        .iter()
+        .filter(|(_, _, d)| d.status == DetailStatus::Ok)
+        .take(3)
+    {
+        println!(
+            "\n  {} [{lead}]",
+            title.chars().take(70).collect::<String>()
+        );
         for (label, field) in [
             ("about", &d.description),
             ("requirements", &d.requirements),
@@ -249,7 +266,10 @@ async fn main() -> anyhow::Result<()> {
         ] {
             if let Some(text) = field {
                 let first = text.lines().next().unwrap_or_default();
-                println!("    {label}: {}", first.chars().take(90).collect::<String>());
+                println!(
+                    "    {label}: {}",
+                    first.chars().take(90).collect::<String>()
+                );
             }
         }
         if !d.tagged_skills.is_empty() {

@@ -58,14 +58,34 @@ const MAX_PAGE: usize = 2 * 1024 * 1024;
 /// parsed out of the posting link, so routing stays a pure function.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Handler {
-    Greenhouse { board: String, id: String },
-    Lever { org: String, id: String },
-    SmartRecruiters { company: String, id: String },
+    Greenhouse {
+        board: String,
+        id: String,
+    },
+    Lever {
+        org: String,
+        id: String,
+    },
+    SmartRecruiters {
+        company: String,
+        id: String,
+    },
     /// Workday's `cxs` endpoint, which serves the JSON its own single-page app
     /// reads. The host varies per tenant, hence carrying it.
-    Workday { host: String, tenant: String, site: String, path: String },
-    Workable { account: String, shortcode: String },
-    Eightfold { host: String, id: String },
+    Workday {
+        host: String,
+        tenant: String,
+        site: String,
+        path: String,
+    },
+    Workable {
+        account: String,
+        shortcode: String,
+    },
+    Eightfold {
+        host: String,
+        id: String,
+    },
     JobBank(String),
     /// Fetch the posting page and read its schema.org `JobPosting`.
     Page(String),
@@ -692,7 +712,11 @@ struct EightfoldJob {
     job_description: Option<String>,
 }
 
-async fn fetch_eightfold(client: &reqwest::Client, host: &str, id: &str) -> anyhow::Result<JobDetail> {
+async fn fetch_eightfold(
+    client: &reqwest::Client,
+    host: &str,
+    id: &str,
+) -> anyhow::Result<JobDetail> {
     let url = format!("https://{host}/api/apply/v2/jobs/{id}");
     let Some(job) = json::<EightfoldJob>(client, url).await? else {
         return Ok(JobDetail::with_status(DetailStatus::Empty));
@@ -962,12 +986,21 @@ mod tests {
     #[test]
     fn the_employers_own_api_comes_before_the_mirror() {
         assert_eq!(
-            names("https://job-boards.greenhouse.io/eudia/jobs/4379570009", Some("abc")),
+            names(
+                "https://job-boards.greenhouse.io/eudia/jobs/4379570009",
+                Some("abc")
+            ),
             ["greenhouse", "simplify.jobs"]
         );
         assert_eq!(
-            route("https://job-boards.greenhouse.io/eudia/jobs/4379570009", None)[0],
-            Handler::Greenhouse { board: "eudia".into(), id: "4379570009".into() }
+            route(
+                "https://job-boards.greenhouse.io/eudia/jobs/4379570009",
+                None
+            )[0],
+            Handler::Greenhouse {
+                board: "eudia".into(),
+                id: "4379570009".into()
+            }
         );
     }
 
@@ -991,7 +1024,10 @@ mod tests {
     fn a_workday_locale_segment_is_not_the_site() {
         // Leaving `en-US` in asks the API for a site that does not exist.
         assert_eq!(
-            route("https://baxter.wd1.myworkdayjobs.com/en-US/baxter/job/KC/Tech_JR-199054", None)[0],
+            route(
+                "https://baxter.wd1.myworkdayjobs.com/en-US/baxter/job/KC/Tech_JR-199054",
+                None
+            )[0],
             Handler::Workday {
                 host: "baxter.wd1.myworkdayjobs.com".into(),
                 tenant: "baxter".into(),
@@ -1004,7 +1040,10 @@ mod tests {
     #[test]
     fn the_shared_workday_host_names_its_tenant_in_the_path() {
         assert_eq!(
-            route("https://wd1.myworkdaysite.com/recruiting/snapchat/snap/job/Bellevue/Intern_R1", None)[0],
+            route(
+                "https://wd1.myworkdaysite.com/recruiting/snapchat/snap/job/Bellevue/Intern_R1",
+                None
+            )[0],
             Handler::Workday {
                 host: "wd1.myworkdaysite.com".into(),
                 tenant: "snapchat".into(),
@@ -1018,22 +1057,43 @@ mod tests {
     fn the_other_applicant_tracking_systems_parse_their_links() {
         assert_eq!(
             route("https://jobs.lever.co/zoox/51838a63-2dde/apply", None)[0],
-            Handler::Lever { org: "zoox".into(), id: "51838a63-2dde".into() }
+            Handler::Lever {
+                org: "zoox".into(),
+                id: "51838a63-2dde".into()
+            }
         );
         assert_eq!(
-            route("https://jobs.smartrecruiters.com/LLNL/3743990014731696", None)[0],
-            Handler::SmartRecruiters { company: "LLNL".into(), id: "3743990014731696".into() }
+            route(
+                "https://jobs.smartrecruiters.com/LLNL/3743990014731696",
+                None
+            )[0],
+            Handler::SmartRecruiters {
+                company: "LLNL".into(),
+                id: "3743990014731696".into()
+            }
         );
         assert_eq!(
-            route("https://apply.workable.com/altom-transport/j/6C00FDED5C/", None)[0],
-            Handler::Workable { account: "altom-transport".into(), shortcode: "6C00FDED5C".into() }
+            route(
+                "https://apply.workable.com/altom-transport/j/6C00FDED5C/",
+                None
+            )[0],
+            Handler::Workable {
+                account: "altom-transport".into(),
+                shortcode: "6C00FDED5C".into()
+            }
         );
         assert_eq!(
             route("https://eaton.eightfold.ai/careers/job/687238323389", None)[0],
-            Handler::Eightfold { host: "eaton.eightfold.ai".into(), id: "687238323389".into() }
+            Handler::Eightfold {
+                host: "eaton.eightfold.ai".into(),
+                id: "687238323389".into()
+            }
         );
         assert!(matches!(
-            route("https://www.jobbank.gc.ca/jobsearch/jobpostingtfw/123", None)[0],
+            route(
+                "https://www.jobbank.gc.ca/jobsearch/jobpostingtfw/123",
+                None
+            )[0],
             Handler::JobBank(_)
         ));
     }
@@ -1044,20 +1104,36 @@ mod tests {
             names("https://careers-sig.icims.com/jobs/9210/job", Some("abc")),
             ["schema.org", "simplify.jobs"]
         );
-        assert_eq!(names("https://jobs.ashbyhq.com/mercor/a0a9/application", None), ["schema.org"]);
+        assert_eq!(
+            names("https://jobs.ashbyhq.com/mercor/a0a9/application", None),
+            ["schema.org"]
+        );
     }
 
     #[test]
     fn a_site_we_measured_as_bare_is_not_fetched_for_metadata() {
         // Its own API already answered, or its pages carry no metadata at all.
-        assert_eq!(names("https://lifeattiktok.com/position/7676276048527214901", Some("x")), ["simplify.jobs"]);
-        assert_eq!(names("https://jobs.smartrecruiters.com/LLNL/374399", None), ["smartrecruiters"]);
+        assert_eq!(
+            names(
+                "https://lifeattiktok.com/position/7676276048527214901",
+                Some("x")
+            ),
+            ["simplify.jobs"]
+        );
+        assert_eq!(
+            names("https://jobs.smartrecruiters.com/LLNL/374399", None),
+            ["smartrecruiters"]
+        );
     }
 
     #[test]
     fn a_search_link_is_not_a_posting() {
         assert!(names("https://www.amazon.jobs/en/search?base_query=intern", None).is_empty());
-        assert!(names("https://wd1.myworkdaysite.com/recruiting/abinbev/USA/?keyword=intern", None).is_empty());
+        assert!(names(
+            "https://wd1.myworkdaysite.com/recruiting/abinbev/USA/?keyword=intern",
+            None
+        )
+        .is_empty());
     }
 
     #[test]
@@ -1065,7 +1141,10 @@ mod tests {
         assert!(route("", None).is_empty());
         assert!(route("mailto:jobs@example.com", None).is_empty());
         // An empty id is not an id.
-        assert_eq!(names("https://jobs.smartrecruiters.com/LLNL/374399", Some("")), ["smartrecruiters"]);
+        assert_eq!(
+            names("https://jobs.smartrecruiters.com/LLNL/374399", Some("")),
+            ["smartrecruiters"]
+        );
     }
 
     #[test]
@@ -1090,8 +1169,14 @@ mod tests {
             d.requirements.as_deref(),
             Some("You are proficient in Python, R, or MATLAB.\nComfortable with statistics.")
         );
-        assert_eq!(d.responsibilities.as_deref(), Some("Build scalable models."));
-        assert_eq!(d.perks.as_deref(), Some("Health Insurance\n401(k) Company Match"));
+        assert_eq!(
+            d.responsibilities.as_deref(),
+            Some("Build scalable models.")
+        );
+        assert_eq!(
+            d.perks.as_deref(),
+            Some("Health Insurance\n401(k) Company Match")
+        );
         assert_eq!(d.tagged_skills, vec!["Python", "Data Visualization"]);
     }
 
@@ -1114,7 +1199,10 @@ mod tests {
         assert_eq!(d.requirements.as_deref(), Some("Three years of Rust"));
         assert_eq!(d.perks.as_deref(), Some("Free lunch"));
         // Nothing in the description spoke to duties, so the rewrite stands in.
-        assert_eq!(d.responsibilities.as_deref(), Some("Build scalable models."));
+        assert_eq!(
+            d.responsibilities.as_deref(),
+            Some("Build scalable models.")
+        );
     }
 
     #[test]
@@ -1130,7 +1218,10 @@ mod tests {
             parse_simplify(r#"{"props":{"pageProps":{"jobPosting":null}}}"#).status,
             DetailStatus::Empty
         );
-        assert_eq!(parse_simplify("not json at all").status, DetailStatus::Failed);
+        assert_eq!(
+            parse_simplify("not json at all").status,
+            DetailStatus::Failed
+        );
     }
 
     #[test]
@@ -1159,7 +1250,10 @@ mod tests {
         };
         let d = parse_lever(&posting);
         assert_eq!(d.description.as_deref(), Some("About Zoox"));
-        assert_eq!(d.responsibilities.as_deref(), Some("Build forecasting models"));
+        assert_eq!(
+            d.responsibilities.as_deref(),
+            Some("Build forecasting models")
+        );
         assert_eq!(d.requirements.as_deref(), Some("Python\nSQL"));
     }
 
@@ -1168,10 +1262,18 @@ mod tests {
         let posting = SmartPosting {
             job_ad: Some(SmartJobAd {
                 sections: SmartSections {
-                    company: Some(SmartSection { text: "<p>About LLNL</p>".into() }),
-                    job: Some(SmartSection { text: "<p>Model energy systems</p>".into() }),
-                    qualifications: Some(SmartSection { text: "<ul><li>A degree</li></ul>".into() }),
-                    additional: Some(SmartSection { text: "<p>Full benefits</p>".into() }),
+                    company: Some(SmartSection {
+                        text: "<p>About LLNL</p>".into(),
+                    }),
+                    job: Some(SmartSection {
+                        text: "<p>Model energy systems</p>".into(),
+                    }),
+                    qualifications: Some(SmartSection {
+                        text: "<ul><li>A degree</li></ul>".into(),
+                    }),
+                    additional: Some(SmartSection {
+                        text: "<p>Full benefits</p>".into(),
+                    }),
                 },
             }),
         };
@@ -1202,13 +1304,20 @@ mod tests {
             </script></head><body></body></html>"#;
         let d = parse_page(page);
         assert_eq!(d.requirements.as_deref(), Some("Three years of Rust"));
-        assert!(d.description.as_deref().unwrap().contains("We build things"));
+        assert!(d
+            .description
+            .as_deref()
+            .unwrap()
+            .contains("We build things"));
         assert_eq!(d.tagged_skills, ["Rust", "Kubernetes"]);
     }
 
     #[test]
     fn a_page_without_metadata_is_empty() {
-        assert_eq!(parse_page("<html><body>A shell</body></html>").status, DetailStatus::Empty);
+        assert_eq!(
+            parse_page("<html><body>A shell</body></html>").status,
+            DetailStatus::Empty
+        );
     }
 
     #[test]
@@ -1225,9 +1334,21 @@ mod tests {
         let d = parse_job_bank(html);
 
         assert_eq!(d.status, DetailStatus::Ok);
-        assert!(d.responsibilities.as_deref().unwrap().contains("Write, modify and test"));
-        assert!(d.requirements.as_deref().unwrap().contains("C++ Java JavaScript Python"));
-        assert!(d.perks.as_deref().unwrap().contains("Free parking available"));
+        assert!(d
+            .responsibilities
+            .as_deref()
+            .unwrap()
+            .contains("Write, modify and test"));
+        assert!(d
+            .requirements
+            .as_deref()
+            .unwrap()
+            .contains("C++ Java JavaScript Python"));
+        assert!(d
+            .perks
+            .as_deref()
+            .unwrap()
+            .contains("Free parking available"));
         assert!(!d.responsibilities.as_deref().unwrap().contains("By email"));
     }
 
@@ -1236,7 +1357,11 @@ mod tests {
         let long = "word ".repeat(4_000);
         let out = field(&[long]).unwrap();
         assert!(out.len() <= MAX_FIELD);
-        assert!(out.ends_with("word"), "cut mid-word: {:?}", &out[out.len() - 20..]);
+        assert!(
+            out.ends_with("word"),
+            "cut mid-word: {:?}",
+            &out[out.len() - 20..]
+        );
     }
 
     #[test]

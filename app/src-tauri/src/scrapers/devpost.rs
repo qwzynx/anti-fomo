@@ -183,7 +183,10 @@ impl Devpost {
                 // for "when this appeared" — and left the app with no way to
                 // say when a hackathon actually closes. It now goes where it
                 // belongs, and the recency term reads the opening date.
-                let closes_at = h.submission_period_dates.as_deref().and_then(parse_deadline);
+                let closes_at = h
+                    .submission_period_dates
+                    .as_deref()
+                    .and_then(parse_deadline);
                 let opens_at = h.submission_period_dates.as_deref().and_then(parse_open);
 
                 Some(

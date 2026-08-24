@@ -35,7 +35,11 @@ macro_rules! time {
     ($label:expr, $body:expr) => {{
         let start = Instant::now();
         let value = $body;
-        println!("{:>34}  {:>8.1} ms", $label, start.elapsed().as_secs_f64() * 1000.0);
+        println!(
+            "{:>34}  {:>8.1} ms",
+            $label,
+            start.elapsed().as_secs_f64() * 1000.0
+        );
         value
     }};
 }
@@ -57,7 +61,9 @@ fn main() -> anyhow::Result<()> {
     time!("attach_details", db::attach_details(&mut items, &details));
     println!(
         "{:>34}  {:>8} items, {} details\n",
-        "corpus", items.len(), details.len()
+        "corpus",
+        items.len(),
+        details.len()
     );
 
     let profile = Profile {
@@ -69,8 +75,14 @@ fn main() -> anyhow::Result<()> {
     // --- ranking, cold and warm ---
     // Cold is the first read after a scrape, when the skill memo is empty;
     // warm is every read after that.
-    let ranked = time!("personalize (cold memo)", personalize(items.clone(), &profile));
-    let ranked2 = time!("personalize (warm memo)", personalize(items.clone(), &profile));
+    let ranked = time!(
+        "personalize (cold memo)",
+        personalize(items.clone(), &profile)
+    );
+    let ranked2 = time!(
+        "personalize (warm memo)",
+        personalize(items.clone(), &profile)
+    );
     drop(ranked2);
 
     let opportunities: Vec<_> = ranked
@@ -109,7 +121,10 @@ fn main() -> anyhow::Result<()> {
     time!("  (was: load_items + len)", db::load_items(&conn)?.len());
     time!(
         "skills::extract over the cache",
-        ranked.iter().map(|i| skills::extract(i).len()).sum::<usize>()
+        ranked
+            .iter()
+            .map(|i| skills::extract(i).len())
+            .sum::<usize>()
     );
 
     Ok(())
