@@ -42,6 +42,10 @@ export const SPECIALTIES = [
 export const MODALITIES = ["All", "Remote", "Hybrid", "On-site"] as const;
 export type Modality = (typeof MODALITIES)[number];
 
+/** The two `item_type`s the hub ever shows — it already filters to `is_opportunity()`. */
+export const TYPES = ["All", "Job", "Internship"] as const;
+export type TypeFilter = (typeof TYPES)[number];
+
 export const LOCATIONS = [
   "Canada",
   "USA",

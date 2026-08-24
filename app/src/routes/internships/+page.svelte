@@ -16,6 +16,7 @@
     LOCATIONS,
     MODALITIES,
     SPECIALTIES,
+    TYPES,
     freshnessCutoff,
     matchesSpecialty,
     sortItems,
@@ -23,6 +24,7 @@
     type FreshnessLabel,
     type HubSort,
     type Modality,
+    type TypeFilter,
   } from "$lib/filters";
 
   // The job-board layout: a scrolling result list beside a detail pane that
@@ -44,6 +46,7 @@
   let moreOpen = $state(false);
 
   let discipline = $state("All");
+  let type = $state<TypeFilter>("All");
   let sources = $state<string[]>([]);
   let specialties = $state<string[]>([]);
   let modality = $state<Modality>("All");
@@ -90,6 +93,7 @@
     const wantedSpecialties = specialties.length > 0 ? specialties : null;
 
     const result = items.filter((item) => {
+      if (type !== "All" && item.item_type !== type) return false;
       if (discipline !== "All" && item.discipline !== discipline) return false;
       if (sourceSet && !sourceSet.has(item.source_platform)) return false;
 
@@ -156,6 +160,15 @@
   const quickChips = $derived.by(() => {
     const chips: Chip[] = [];
 
+    for (const t of TYPES) {
+      if (t === "All") continue;
+      chips.push({
+        label: t === "Job" ? "Jobs" : "Internships",
+        active: type === t,
+        onToggle: () => (type = type === t ? "All" : t),
+      });
+    }
+
     for (const m of MODALITIES) {
       if (m === "All") continue;
       if (m === "Remote" || modality === m)
@@ -212,7 +225,8 @@
   });
 
   const activeFilters = $derived(
-    (discipline !== "All" ? 1 : 0) +
+    (type !== "All" ? 1 : 0) +
+      (discipline !== "All" ? 1 : 0) +
       sources.length +
       specialties.length +
       (modality !== "All" ? 1 : 0) +
@@ -222,6 +236,7 @@
   );
 
   function clearFilters() {
+    type = "All";
     discipline = "All";
     sources = [];
     specialties = [];
@@ -344,6 +359,7 @@
 
     {#if moreOpen}
       <div class="animate-fade-in mt-3 flex flex-col gap-4 rounded-xl border border-line bg-surface p-4">
+        {@render facet("Type", TYPES.filter((t) => t !== "All"), type === "All" ? [] : [type], (v) => (type = type === v ? "All" : (v as TypeFilter)))}
         {@render facet("Specialty", SPECIALTIES, specialties, (v) => (specialties = toggle(specialties, v)))}
         {@render facet("Work mode", MODALITIES.filter((m) => m !== "All"), modality === "All" ? [] : [modality], (v) => (modality = modality === v ? "All" : (v as Modality)))}
         {@render facet("Location", LOCATIONS, locations, (v) => (locations = toggle(locations, v)))}
