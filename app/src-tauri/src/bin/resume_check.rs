@@ -252,8 +252,8 @@ fn main() {
     }
 
     println!(
-        "{:<22} {:>6} {:>7} {:>8} {:>6}  {}",
-        "theme / page", "pages", "KB", "fill", "links", "extraction"
+        "{:<22} {:>6} {:>7} {:>8} {:>6}  extraction",
+        "theme / page", "pages", "KB", "fill", "links"
     );
     println!("{}", "-".repeat(78));
 
