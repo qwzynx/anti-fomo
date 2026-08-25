@@ -40,6 +40,8 @@ let relayoutTimer: ReturnType<typeof setTimeout> | undefined;
 let saveTimer: ReturnType<typeof setTimeout> | undefined;
 /** Guards against a slow layout landing on top of a newer one. */
 let layoutToken = 0;
+/** Whether the builder has already read a résumé this session; see `ensure`. */
+let started = false;
 /** The posting the preview is tailored against, if any. */
 let against: string | undefined;
 
@@ -99,6 +101,31 @@ export const resume = {
   /** Whether there is a résumé at all yet — what the empty state keys off. */
   get exists() {
     return doc !== null;
+  },
+
+  /**
+   * Reads the résumé once, and never again for the same session.
+   *
+   * The builder is a page the user leaves and comes back to — to look at a
+   * posting, to check the tailored copy, to go and find a date. Re-reading the
+   * row on every mount made that round trip lossy: the write is debounced by a
+   * second, so leaving mid-edit and coming straight back put the stored copy
+   * on screen, threw away whatever had not been written yet, and left the
+   * pending save to store the version it had just clobbered. The document is
+   * already in memory and already the newest one there is — coming back to it
+   * should show it, not fetch over it.
+   *
+   * Same shape as `feed.init`, for the same reason: mount work that must
+   * happen once, not once per navigation. `load` stays public for the cases
+   * that genuinely want a re-read — an import, a delete.
+   */
+  async ensure() {
+    if (started) return;
+    started = true;
+    await this.load();
+    // A read that failed is not a load. Latching it would leave the builder
+    // showing an error until the app restarted, with no way to try again.
+    if (doc === null && error !== null) started = false;
   },
 
   /**
@@ -199,10 +226,27 @@ export const resume = {
 
   /** Starts a new, empty résumé and saves it, so it has an id immediately. */
   async create(newName = "My résumé") {
+    started = true;
     id = null;
     name = newName;
     doc = emptyDoc();
     theme = themes[0]?.theme ?? null;
+    await this.save();
+  },
+
+  /**
+   * Empties the résumé being edited, keeping its id, name and design.
+   *
+   * The id is kept on purpose. It is what the row, the default flag and every
+   * saved per-posting variant are keyed by, so starting over on the same id is
+   * a document the user empties rather than a second row the builder can no
+   * longer reach. Callers ask first — this does not.
+   */
+  async reset() {
+    if (!doc) return;
+    clearTimeout(relayoutTimer);
+    clearTimeout(saveTimer);
+    doc = emptyDoc();
     await this.save();
   },
 
@@ -219,6 +263,13 @@ export const resume = {
 
   async importJson(json: string, importName?: string) {
     const newId = await api.importJsonResume(json, importName);
+    // An import creates a *row*, and `get_resume` with no id answers with the
+    // default one — so without this the builder would open the freshly
+    // imported résumé now and the old one on the next visit, which looks
+    // exactly like the import having been thrown away. There is no résumé
+    // picker in the UI, so any row that is not the default is unreachable.
+    await api.setDefaultResume(newId);
+    started = true;
     await this.load(newId);
     return newId;
   },

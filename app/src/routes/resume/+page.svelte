@@ -3,6 +3,7 @@
   import EmptyState from "$lib/components/EmptyState.svelte";
   import Field from "$lib/components/resume/Field.svelte";
   import EntryEditor from "$lib/components/resume/EntryEditor.svelte";
+  import ImportPanel from "$lib/components/resume/ImportPanel.svelte";
   import ResumePreview from "$lib/components/resume/ResumePreview.svelte";
   import ThemePicker from "$lib/components/resume/ThemePicker.svelte";
   import {
@@ -11,6 +12,7 @@
     Loader,
     Palette,
     Plus,
+    RotateCcw,
     Trash2,
     Upload,
   } from "$lib/icons";
@@ -35,9 +37,13 @@
   let importing = $state(false);
   let importText = $state("");
   let busy = $state(false);
+  let confirmingReset = $state(false);
 
+  // Once per session, not once per visit: coming back to the builder must show
+  // the document as the user left it, including edits the debounced save has
+  // not written yet. `resume.ensure` carries the reasoning.
   $effect(() => {
-    void resume.load();
+    void resume.ensure();
   });
 
   const doc = $derived(resume.doc);
@@ -109,6 +115,15 @@
     busy = false;
   }
 
+  /** Empties the résumé. Guarded by the two-step confirm in the Design tab. */
+  async function resetResume() {
+    busy = true;
+    await resume.reset();
+    confirmingReset = false;
+    notice = "Reset. The résumé is empty.";
+    busy = false;
+  }
+
   async function runImport() {
     if (!importText.trim()) return;
     busy = true;
@@ -161,7 +176,7 @@
       <EmptyState
         icon={FileText}
         title="No résumé yet"
-        body="Start an empty one and fill in your experience, or paste a resume.json you already have."
+        body="Start an empty one and fill in your experience, or bring in what you already have — a resume.json, or the CVs and notes sitting in a chat thread."
         actionLabel="Start a résumé"
         onAction={() => void resume.create()}
         {busy}
@@ -172,26 +187,12 @@
           class="inline-flex items-center gap-1.5 text-sm font-semibold text-brand hover:underline"
         >
           <Upload size={14} />
-          Import a JSON Resume instead
+          Bring in an existing résumé
         </button>
       </div>
       {#if importing}
         <div class="card mx-auto mt-4 max-w-2xl p-5">
-          <Field
-            label="resume.json"
-            bind:value={importText}
-            multiline
-            rows={10}
-            placeholder={'{ "basics": { "name": "…" }, "work": [ … ] }'}
-            hint="The open jsonresume.org format. Paste the file's contents here."
-          />
-          <button
-            onclick={runImport}
-            disabled={busy || !importText.trim()}
-            class="mt-3 rounded-xl bg-brand px-4 py-2 text-sm font-semibold text-brand-fg disabled:opacity-50"
-          >
-            Import
-          </button>
+          <ImportPanel bind:text={importText} {busy} onImport={runImport} />
         </div>
       {/if}
     </div>
@@ -253,23 +254,52 @@
               </p>
               {#if importing}
                 <div class="mt-3">
-                  <Field
-                    label="resume.json"
-                    bind:value={importText}
-                    multiline
-                    rows={8}
-                    hint="Imports as a new résumé; the current one is left alone."
+                  <ImportPanel
+                    bind:text={importText}
+                    {busy}
+                    onImport={runImport}
+                    hint="Imports as a separate résumé and opens it. Export the one you have first if you want it back."
                   />
-                  <button
-                    onclick={runImport}
-                    disabled={busy || !importText.trim()}
-                    class="mt-2 rounded-xl bg-brand px-4 py-2 text-sm font-semibold text-brand-fg disabled:opacity-50"
-                  >
-                    Import
-                  </button>
                 </div>
               {/if}
             </div>
+          </section>
+
+          <section class="card mt-5 border-danger/30 p-5">
+            <h3 class="mb-1 text-lg font-bold">Start over</h3>
+            <p class="mb-4 text-sm text-muted">
+              Empties every section — contact details, experience, projects, skills — and leaves
+              the blank headings behind. The design is kept. This cannot be undone, so export a
+              resume.json first if there is anything in here worth keeping.
+            </p>
+
+            {#if confirmingReset}
+              <div class="flex flex-wrap items-center gap-2">
+                <button
+                  onclick={resetResume}
+                  disabled={busy}
+                  class="inline-flex items-center gap-1.5 rounded-xl bg-danger px-4 py-2 text-sm font-semibold text-danger-fg transition-colors hover:opacity-90 disabled:opacity-50"
+                >
+                  <Trash2 size={15} />
+                  {busy ? "Erasing…" : "Yes, erase this résumé"}
+                </button>
+                <button
+                  onclick={() => (confirmingReset = false)}
+                  disabled={busy}
+                  class="rounded-xl border border-line px-4 py-2 text-sm font-semibold text-muted transition-colors hover:border-brand hover:text-brand disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+              </div>
+            {:else}
+              <button
+                onclick={() => (confirmingReset = true)}
+                class="inline-flex items-center gap-1.5 rounded-xl border border-danger/40 px-4 py-2 text-sm font-semibold text-danger transition-colors hover:bg-danger hover:text-danger-fg"
+              >
+                <RotateCcw size={15} />
+                Reset résumé
+              </button>
+            {/if}
           </section>
         {:else}
           <section class="card mb-5 p-5">

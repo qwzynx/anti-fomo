@@ -535,6 +535,76 @@ mod tests {
         );
     }
 
+    /// The document shape the in-app import prompt asks a chat assistant for.
+    ///
+    /// It is the one contract in this file with a copy of itself outside the
+    /// crate — `app/src/lib/resumePrompt.ts` tells the assistant which keys to
+    /// fill in and what each becomes on the page. A field quietly renamed here
+    /// would not fail to compile; it would produce résumés missing their
+    /// project stacks or their leadership section, from a prompt that still
+    /// reads correctly.
+    #[test]
+    fn imports_the_shape_the_prompt_asks_for() {
+        const AS_PROMPTED: &str = r#"{
+          "work": [{
+            "name": "Acme Corp", "position": "Backend Intern",
+            "startDate": "May 2025", "endDate": "Present",
+            "highlights": ["Cut p99 latency by profiling the PostgreSQL query path"]
+          }],
+          "projects": [{
+            "name": "Anti-FOMO", "url": "https://example.com/af",
+            "keywords": ["Rust", "Tauri", "SQLite"],
+            "highlights": ["Built an on-device job aggregator"]
+          }],
+          "volunteer": [{
+            "organization": "Coding Club", "position": "Workshop Lead",
+            "startDate": "Sep 2024", "endDate": "Apr 2025",
+            "highlights": ["Ran weekly Python workshops for forty students"]
+          }],
+          "awards": [{ "title": "Dean's List", "awarder": "York University", "date": "2024" }]
+        }"#;
+
+        let r = import(AS_PROMPTED).expect("import");
+        let section = |kind: SectionKind| r.sections.iter().find(|s| s.kind == kind).unwrap();
+
+        // Free-text dates survive verbatim, which is what lets the prompt ask
+        // for "Present" and "Expected Apr 2027".
+        let work = &section(SectionKind::Experience).entries[0];
+        assert_eq!(
+            (work.start.as_str(), work.end.as_str()),
+            ("May 2025", "Present")
+        );
+
+        // `keywords` is the stack line, so a project need not spend a bullet
+        // listing its technologies.
+        let project = &section(SectionKind::Projects).entries[0];
+        assert_eq!(project.org, "Anti-FOMO");
+        assert_eq!(project.detail.as_deref(), Some("Rust · Tauri · SQLite"));
+        assert_eq!(project.bullets.len(), 1, "keywords must not become bullets");
+
+        let leadership = &section(SectionKind::Leadership).entries[0];
+        assert_eq!(leadership.org, "Coding Club");
+        assert_eq!(leadership.title, "Workshop Lead");
+
+        let award = &section(SectionKind::Awards).entries[0];
+        assert_eq!(
+            (award.org.as_str(), award.title.as_str()),
+            ("York University", "Dean's List")
+        );
+
+        // The order the prompt promises the page will print in.
+        let kinds: Vec<_> = r.sections.iter().map(|s| s.kind).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                SectionKind::Experience,
+                SectionKind::Projects,
+                SectionKind::Leadership,
+                SectionKind::Awards
+            ]
+        );
+    }
+
     #[test]
     fn an_empty_document_imports_to_an_empty_resume() {
         let r = import("{}").expect("an empty object is a valid document");

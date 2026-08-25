@@ -23,6 +23,7 @@ export {
   Clock,
   Cloud,
   Code2,
+  Copy,
   CornerDownLeft,
   Cpu,
   Database,

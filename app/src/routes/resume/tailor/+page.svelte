@@ -57,7 +57,7 @@
     try {
       // The résumé store is shared with the builder, so this screen edits the
       // same document the builder does — no second copy to fall out of step.
-      if (!resume.exists) await resume.load();
+      await resume.ensure();
       const [stored, posting] = await Promise.all([
         resume.id ? api.getResumeVariant(url, resume.id) : Promise.resolve(null),
         api.getItemDetail(url),

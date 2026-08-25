@@ -349,6 +349,17 @@ look like data loss. Nothing is ever reworded — there is no model here and no
 API key, and a feature that silently rewrote somebody's job history would be a
 liability.
 
+Getting a résumé *in* has two doors, both behind Import. One is a `resume.json`
+from another tool. The other is the generated prompt in `src/lib/resumePrompt.ts`:
+copy it, hand it to a chat assistant along with the CVs and notes already sitting
+in that thread, and paste back the JSON. The prompt is built rather than written
+down because two things in it have to track the code — the field list, which is
+exactly what `jsonresume::import` reads, and the skill vocabulary, which comes
+from `list_skills` at runtime. A bullet written as "Golang" is a match silently
+not made. It also asks for a *superset*: 5–8 bullets a role, deliberately more
+than fits, because the trim above is what turns a superset into a page and a
+bullet that is not in the document can never be chosen.
+
 The faces are vendored in `static/fonts/resume/` and read twice: `include_bytes!`
 into the Rust binary so the PDF can embed them, and `@font-face` in `app.css` so
 the preview draws with the metrics the PDF was measured against. One file is
