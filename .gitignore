@@ -1,2 +1,5 @@
 # Written by scripts/setup-android.sh with machine-specific SDK paths.
 scripts/android-env.sh
+
+# Upstream font sources for scripts/subset-resume-fonts.sh (not vendored).
+.fonts/

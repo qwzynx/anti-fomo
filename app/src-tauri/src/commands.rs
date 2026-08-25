@@ -9,6 +9,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use crate::db;
 use crate::models::{self, Item, ItemType};
 use crate::rank::{self, personalize, DEFAULT_MAJOR};
+use crate::resume;
 use crate::scrapers::{self, details};
 use crate::skills::{self, SkillCategory};
 use crate::AppState;
@@ -397,9 +398,21 @@ pub fn get_saved(state: State<'_, AppState>) -> CmdResult<Vec<Item>> {
 /// than the 28 MB the whole table holds.
 #[tauri::command(async)]
 pub fn get_item_detail(state: State<'_, AppState>, url: String) -> CmdResult<Option<Item>> {
+    item_detail(state.inner(), &url)
+}
+
+/// One posting in full, resolved and re-scored.
+///
+/// Split out of the command because the résumé commands need exactly this and
+/// for exactly the same reasons — a posting the reader is tailoring against may
+/// well be one they saved months ago, which the ranked cache has long since
+/// pruned. Two lookups that disagreed about where a posting can be found would
+/// mean tailoring silently failing on saved jobs.
+fn item_detail(state: &AppState, url: &str) -> CmdResult<Option<Item>> {
+    let url = url.to_string();
     // The ranked cache already holds everything but the posting's own text and
     // the breakdown, both of which are stripped when it is built.
-    let ranked = ranked_items(&state, None)?;
+    let ranked = ranked_items(state, None)?;
     let cached = ranked.iter().find(|i| i.url == url).cloned();
 
     let mut items = {
@@ -428,7 +441,7 @@ pub fn get_item_detail(state: State<'_, AppState>, url: String) -> CmdResult<Opt
     // Re-scored for its own sake: the ranked cache drops `score_breakdown`
     // rather than hold 18,240 of them to render at most one, and the pane is
     // the only place the terms behind a position are ever shown.
-    let profile = current_profile(state.inner(), None);
+    let profile = current_profile(state, None);
     items = personalize(items, &profile);
     Ok(items.pop())
 }
@@ -836,4 +849,392 @@ pub fn set_setting(state: State<'_, AppState>, key: String, value: String) -> Cm
 pub fn list_sources(state: State<'_, AppState>) -> CmdResult<Vec<String>> {
     let conn = state.db.lock().unwrap();
     db::distinct_sources(&conn).map_err(err)
+}
+
+// --- résumés -----------------------------------------------------------
+//
+// Every one of these is `#[tauri::command(async)]` for the reason the rest of
+// this file is: a plain `#[tauri::command]` on a synchronous function runs on
+// the main thread, which is the webview's thread, so a save would freeze the
+// window it is trying to give feedback in.
+//
+// None of them calls `invalidate()`. That rule is about writes which change
+// what a *ranked read* returns, and nothing here does — a résumé does not enter
+// scoring. Bumping the generation would throw away a ranking pass over 18,000
+// items every time the user typed a bullet.
+
+/// One row of the résumé picker.
+#[derive(Serialize)]
+pub struct ResumeSummary {
+    id: String,
+    name: String,
+    is_default: bool,
+    updated_at: String,
+}
+
+/// A résumé as the builder edits it.
+#[derive(Serialize)]
+pub struct StoredResume {
+    id: String,
+    name: String,
+    doc: resume::Resume,
+    theme: resume::Theme,
+    is_default: bool,
+}
+
+/// A laid-out résumé, plus — when it was tailored to a posting — what the
+/// tailoring decided and why.
+#[derive(Serialize)]
+pub struct ResumeView {
+    pages: Vec<resume::layout::Page>,
+    /// How full the last page is, 0.0–1.0.
+    fill: f32,
+    /// Bullet ids on the page.
+    bullets: Vec<String>,
+    /// Entry ids on the page.
+    entries: Vec<String>,
+    /// Bullet id → the posting skills it covers.
+    why: std::collections::HashMap<String, Vec<String>>,
+    /// Bullets the page budget trimmed.
+    dropped: Vec<resume::tailor::Dropped>,
+    /// Posting skills the surviving bullets speak to, and everything it asked
+    /// for. The pane renders these as "your résumé covers 4 of 9".
+    covered: Vec<String>,
+    required: Vec<String>,
+    /// The theme actually used, once the variant's override is applied — the
+    /// picker has to show what is on screen, not what is stored.
+    theme: resume::Theme,
+    /// What a save dialog should suggest.
+    filename: String,
+}
+
+fn now_rfc3339() -> String {
+    Utc::now().to_rfc3339()
+}
+
+/// Reads one stored résumé, or the default when no id is given.
+fn stored_resume(state: &AppState, id: Option<&str>) -> CmdResult<Option<db::StoredResume>> {
+    let conn = state.db.lock().unwrap();
+    match id {
+        Some(id) => db::load_resume(&conn, id).map_err(err),
+        None => db::default_resume(&conn).map_err(err),
+    }
+}
+
+/// Parses a stored row into the model, degrading a corrupt row to a usable
+/// starting point rather than failing the whole screen. Losing the styling of a
+/// résumé is recoverable; being unable to open it at all is not.
+fn parse_stored(row: db::StoredResume) -> (String, String, resume::Resume, resume::Theme, bool) {
+    let doc: resume::Resume = serde_json::from_str(&row.doc).unwrap_or_else(|e| {
+        log::warn!(
+            "résumé {} did not parse ({e}); opening an empty one",
+            row.id
+        );
+        resume::Resume::starter()
+    });
+    let theme: resume::Theme = serde_json::from_str(&row.theme).unwrap_or_default();
+    (row.id, row.name, doc, theme.sanitized(), row.is_default)
+}
+
+#[tauri::command(async)]
+pub fn list_resumes(state: State<'_, AppState>) -> CmdResult<Vec<ResumeSummary>> {
+    let conn = state.db.lock().unwrap();
+    Ok(db::list_resumes(&conn)
+        .map_err(err)?
+        .into_iter()
+        .map(|r| ResumeSummary {
+            id: r.id,
+            name: r.name,
+            is_default: r.is_default,
+            updated_at: r.updated_at,
+        })
+        .collect())
+}
+
+/// One résumé. `id` absent means the default one, which is how the builder
+/// opens without the UI having to know an id first.
+#[tauri::command(async)]
+pub fn get_resume(
+    state: State<'_, AppState>,
+    id: Option<String>,
+) -> CmdResult<Option<StoredResume>> {
+    let Some(row) = stored_resume(state.inner(), id.as_deref())? else {
+        return Ok(None);
+    };
+    let (id, name, doc, theme, is_default) = parse_stored(row);
+    Ok(Some(StoredResume {
+        id,
+        name,
+        doc,
+        theme,
+        is_default,
+    }))
+}
+
+/// Creates or updates a résumé. Returns the id, which is how the UI learns the
+/// id of one it just created.
+#[tauri::command(async)]
+pub fn save_resume(
+    state: State<'_, AppState>,
+    id: Option<String>,
+    name: String,
+    doc: resume::Resume,
+    theme: resume::Theme,
+) -> CmdResult<String> {
+    let mut doc = doc;
+    // Mints any missing id and re-reads every bullet's skills from its text.
+    // Doing it on save rather than on read means tailoring is a set
+    // intersection later, not a scan over every bullet on every keystroke.
+    doc.normalize();
+
+    let id = id
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(resume::model::new_id);
+    let name = match name.trim() {
+        "" => "Untitled résumé".to_string(),
+        name => name.to_string(),
+    };
+    let doc_json = serde_json::to_string(&doc).map_err(err)?;
+    let theme_json = serde_json::to_string(&theme.sanitized()).map_err(err)?;
+
+    let conn = state.db.lock().unwrap();
+    db::save_resume(&conn, &id, &name, &doc_json, &theme_json, &now_rfc3339()).map_err(err)?;
+    Ok(id)
+}
+
+#[tauri::command(async)]
+pub fn delete_resume(state: State<'_, AppState>, id: String) -> CmdResult<()> {
+    let mut conn = state.db.lock().unwrap();
+    db::delete_resume(&mut conn, &id).map_err(err)
+}
+
+#[tauri::command(async)]
+pub fn set_default_resume(state: State<'_, AppState>, id: String) -> CmdResult<()> {
+    let mut conn = state.db.lock().unwrap();
+    db::set_default_resume(&mut conn, &id).map_err(err)
+}
+
+/// The overrides saved for one posting, if any.
+#[tauri::command(async)]
+pub fn get_resume_variant(
+    state: State<'_, AppState>,
+    url: String,
+    resume_id: String,
+) -> CmdResult<Option<resume::Variant>> {
+    let conn = state.db.lock().unwrap();
+    Ok(db::load_variant(&conn, &url, &resume_id)
+        .map_err(err)?
+        .and_then(|json| serde_json::from_str(&json).ok()))
+}
+
+#[tauri::command(async)]
+pub fn save_resume_variant(
+    state: State<'_, AppState>,
+    url: String,
+    resume_id: String,
+    variant: resume::Variant,
+) -> CmdResult<()> {
+    let json = serde_json::to_string(&variant).map_err(err)?;
+    let conn = state.db.lock().unwrap();
+    db::save_variant(&conn, &url, &resume_id, &json, &now_rfc3339()).map_err(err)
+}
+
+/// Throws away a posting's overrides, putting it back to whatever the auto pass
+/// decides.
+#[tauri::command(async)]
+pub fn clear_resume_variant(
+    state: State<'_, AppState>,
+    url: String,
+    resume_id: String,
+) -> CmdResult<()> {
+    let conn = state.db.lock().unwrap();
+    db::delete_variant(&conn, &url, &resume_id).map_err(err)
+}
+
+/// Everything needed to draw a résumé: the pages, and — with a `url` — the
+/// tailoring against that posting.
+///
+/// One command rather than a layout call and a separate tailoring call, because
+/// the two are not independent: the fit loop *is* the tailoring, and asking for
+/// them apart would either lay the page out twice or let the panel disagree
+/// with the page beside it about which bullets survived.
+#[tauri::command(async)]
+pub fn layout_resume(
+    state: State<'_, AppState>,
+    id: Option<String>,
+    url: Option<String>,
+    theme: Option<resume::Theme>,
+) -> CmdResult<Option<ResumeView>> {
+    let Some(row) = stored_resume(state.inner(), id.as_deref())? else {
+        return Ok(None);
+    };
+    let (resume_id, _, doc, stored_theme, _) = parse_stored(row);
+    Ok(Some(build_view(
+        state.inner(),
+        &resume_id,
+        &doc,
+        stored_theme,
+        url.as_deref(),
+        theme,
+    )?))
+}
+
+/// The shared body of `layout_resume` and `render_resume_pdf`, so the file the
+/// user saves is laid out by the same call that drew the preview they approved.
+fn build_view(
+    state: &AppState,
+    resume_id: &str,
+    doc: &resume::Resume,
+    stored_theme: resume::Theme,
+    url: Option<&str>,
+    override_theme: Option<resume::Theme>,
+) -> CmdResult<ResumeView> {
+    let Some(url) = url else {
+        // No posting: the builder's own preview, everything included.
+        let theme = override_theme.unwrap_or(stored_theme).sanitized();
+        let laid_out = resume::preview(doc, &theme);
+        let selection = resume::tailor::everything(doc);
+        return Ok(view_of(laid_out, selection, theme, doc, None));
+    };
+
+    let variant: resume::Variant = {
+        let conn = state.db.lock().unwrap();
+        db::load_variant(&conn, url, resume_id)
+            .map_err(err)?
+            .and_then(|json| serde_json::from_str(&json).ok())
+            .unwrap_or_default()
+    };
+
+    // An explicit argument beats the variant, which beats the résumé's own
+    // theme: the picker has to be able to preview a theme before it is saved.
+    let theme = override_theme
+        .or(variant.theme)
+        .unwrap_or(stored_theme)
+        .sanitized();
+
+    let item = item_detail(state, url)?;
+    let required = item
+        .as_ref()
+        .map(|i| i.required_skills.clone())
+        .unwrap_or_default();
+    let have = current_skills(state);
+    let (laid_out, selection) = resume::tailored(doc, &required, &have, &variant, &theme);
+    let company = item.as_ref().and_then(|i| i.company.clone());
+    Ok(view_of(laid_out, selection, theme, doc, company.as_deref()))
+}
+
+fn view_of(
+    laid_out: resume::layout::LaidOut,
+    selection: resume::Selection,
+    theme: resume::Theme,
+    doc: &resume::Resume,
+    company: Option<&str>,
+) -> ResumeView {
+    ResumeView {
+        pages: laid_out.pages,
+        fill: laid_out.fill,
+        bullets: selection.bullets.iter().cloned().collect(),
+        entries: selection.entries.iter().cloned().collect(),
+        why: selection.why,
+        dropped: selection.dropped,
+        covered: selection.covered,
+        required: selection.required,
+        theme,
+        filename: resume::suggested_filename(&doc.contact.name, company),
+    }
+}
+
+/// The PDF itself.
+///
+/// Returns raw bytes through `tauri::ipc::Response` rather than a `Vec<u8>`:
+/// the default serializer would turn a 60 KB file into a JSON array of 60,000
+/// numbers, which is roughly a quarter of a megabyte of text to parse for a
+/// file the webview is about to hand straight to a save dialog.
+#[tauri::command(async)]
+pub fn render_resume_pdf(
+    state: State<'_, AppState>,
+    id: Option<String>,
+    url: Option<String>,
+    theme: Option<resume::Theme>,
+) -> CmdResult<tauri::ipc::Response> {
+    let Some(row) = stored_resume(state.inner(), id.as_deref())? else {
+        return Err("there is no résumé to render yet".into());
+    };
+    let (resume_id, _, doc, stored_theme, _) = parse_stored(row);
+    let view = build_view(
+        state.inner(),
+        &resume_id,
+        &doc,
+        stored_theme,
+        url.as_deref(),
+        theme,
+    )?;
+
+    let title = match doc.contact.name.trim() {
+        "" => "Résumé".to_string(),
+        name => format!("{name} — Résumé"),
+    };
+    let laid_out = resume::layout::LaidOut {
+        pages: view.pages,
+        fill: view.fill,
+    };
+    Ok(tauri::ipc::Response::new(resume::pdf::render(
+        &laid_out, &title,
+    )))
+}
+
+/// Imports a `resume.json` as a new résumé and returns its id.
+#[tauri::command(async)]
+pub fn import_json_resume(
+    state: State<'_, AppState>,
+    json: String,
+    name: Option<String>,
+) -> CmdResult<String> {
+    let mut doc = resume::jsonresume::import(&json)?;
+    doc.normalize();
+
+    let name = name
+        .map(|n| n.trim().to_string())
+        .filter(|n| !n.is_empty())
+        .or_else(|| Some(doc.contact.name.trim().to_string()).filter(|n| !n.is_empty()))
+        .unwrap_or_else(|| "Imported résumé".to_string());
+
+    let id = resume::model::new_id();
+    let doc_json = serde_json::to_string(&doc).map_err(err)?;
+    let theme_json = serde_json::to_string(&resume::Theme::default()).map_err(err)?;
+    let conn = state.db.lock().unwrap();
+    db::save_resume(&conn, &id, &name, &doc_json, &theme_json, &now_rfc3339()).map_err(err)?;
+    Ok(id)
+}
+
+/// Exports a résumé as a `resume.json` string.
+#[tauri::command(async)]
+pub fn export_json_resume(state: State<'_, AppState>, id: Option<String>) -> CmdResult<String> {
+    let Some(row) = stored_resume(state.inner(), id.as_deref())? else {
+        return Err("there is no résumé to export yet".into());
+    };
+    let (_, _, doc, _, _) = parse_stored(row);
+    resume::jsonresume::export(&doc)
+}
+
+/// The themes the picker offers, named and pre-coloured. Rust-owned for the
+/// same reason the skill catalog is: a theme the layout has no arm for would
+/// sit in the picker and render as the default, which reads as a broken button.
+#[tauri::command(async)]
+pub fn list_resume_themes() -> Vec<ResumeThemeOption> {
+    resume::theme::ThemeId::ALL
+        .iter()
+        .map(|id| ResumeThemeOption {
+            id: *id,
+            label: id.label().to_string(),
+            theme: resume::Theme::preset(*id, resume::theme::DEFAULT_ACCENT),
+        })
+        .collect()
+}
+
+#[derive(Serialize)]
+pub struct ResumeThemeOption {
+    id: resume::theme::ThemeId,
+    label: String,
+    theme: resume::Theme,
 }

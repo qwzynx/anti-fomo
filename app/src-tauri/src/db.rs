@@ -9,7 +9,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::models::{DetailStatus, Item, ItemType, JobDetail};
 
-const SCHEMA_VERSION: i32 = 7;
+const SCHEMA_VERSION: i32 = 8;
 
 pub fn open(path: &std::path::Path) -> Result<Connection> {
     if let Some(parent) = path.parent() {
@@ -232,6 +232,35 @@ fn migrate(conn: &Connection) -> Result<()> {
            AND description IS NOT NULL
            AND instr(description, char(10)) = 0
            AND length(description) > 400;
+
+        -- The résumés the user wrote, and the per-posting tailoring of them.
+        -- Durable in the strongest sense in this file: the items cache can be
+        -- rebuilt from the network and `job_details` can be refetched, but
+        -- nothing anywhere can reconstruct somebody's work history. Created
+        -- with IF NOT EXISTS and never dropped, whatever a schema bump does to
+        -- the cache around them.
+        CREATE TABLE IF NOT EXISTS resumes (
+            id         TEXT PRIMARY KEY,
+            name       TEXT NOT NULL,
+            doc        TEXT NOT NULL,
+            theme      TEXT NOT NULL,
+            is_default INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL
+        );
+
+        -- One posting's overrides over one résumé. Keyed by URL and
+        -- deliberately not a foreign key to `items`, for the same reason
+        -- `item_state` is not: the cache is pruned at 60 days, and the résumé
+        -- you tailored for a job you applied to has to outlive the listing.
+        CREATE TABLE IF NOT EXISTS resume_variants (
+            url        TEXT NOT NULL,
+            resume_id  TEXT NOT NULL,
+            overrides  TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (url, resume_id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_variant_resume ON resume_variants (resume_id);
         "#,
     )?;
 
@@ -737,6 +766,235 @@ mod tests {
         conn
     }
 
+    // --- résumés ---
+
+    fn put(conn: &Connection, id: &str, name: &str) {
+        save_resume(conn, id, name, "{}", "{}", "2026-08-24T00:00:00Z").unwrap();
+    }
+
+    #[test]
+    fn round_trips_a_resume() {
+        let conn = mem();
+        save_resume(
+            &conn,
+            "r1",
+            "Backend",
+            "{\"a\":1}",
+            "{\"b\":2}",
+            "2026-08-24T00:00:00Z",
+        )
+        .unwrap();
+        let got = load_resume(&conn, "r1").unwrap().expect("stored");
+        assert_eq!(got.name, "Backend");
+        assert_eq!(got.doc, "{\"a\":1}");
+        assert_eq!(got.theme, "{\"b\":2}");
+    }
+
+    #[test]
+    fn saving_the_same_id_updates_rather_than_duplicates() {
+        let conn = mem();
+        put(&conn, "r1", "First");
+        put(&conn, "r1", "Renamed");
+        assert_eq!(list_resumes(&conn).unwrap().len(), 1);
+        assert_eq!(load_resume(&conn, "r1").unwrap().unwrap().name, "Renamed");
+    }
+
+    /// The picker has to open on something, so the first résumé saved becomes
+    /// the default without anyone having to choose one.
+    #[test]
+    fn the_first_resume_becomes_the_default() {
+        let conn = mem();
+        put(&conn, "r1", "First");
+        put(&conn, "r2", "Second");
+        assert!(load_resume(&conn, "r1").unwrap().unwrap().is_default);
+        assert!(!load_resume(&conn, "r2").unwrap().unwrap().is_default);
+        assert_eq!(default_resume(&conn).unwrap().unwrap().id, "r1");
+    }
+
+    /// Updating must not silently hand the default flag to whoever saved last.
+    #[test]
+    fn saving_does_not_move_the_default() {
+        let mut conn = mem();
+        put(&conn, "r1", "First");
+        put(&conn, "r2", "Second");
+        set_default_resume(&mut conn, "r2").unwrap();
+        put(&conn, "r1", "First edited");
+        assert_eq!(default_resume(&conn).unwrap().unwrap().id, "r2");
+    }
+
+    #[test]
+    fn setting_a_default_clears_the_previous_one() {
+        let mut conn = mem();
+        put(&conn, "r1", "First");
+        put(&conn, "r2", "Second");
+        set_default_resume(&mut conn, "r2").unwrap();
+        let defaults: Vec<String> = list_resumes(&conn)
+            .unwrap()
+            .into_iter()
+            .filter(|r| r.is_default)
+            .map(|r| r.id)
+            .collect();
+        assert_eq!(defaults, vec!["r2".to_string()]);
+    }
+
+    /// A variant whose résumé is gone could never be applied to anything.
+    #[test]
+    fn deleting_a_resume_takes_its_variants_with_it() {
+        let mut conn = mem();
+        put(&conn, "r1", "First");
+        save_variant(
+            &conn,
+            "https://x.test/1",
+            "r1",
+            "{}",
+            "2026-08-24T00:00:00Z",
+        )
+        .unwrap();
+        delete_resume(&mut conn, "r1").unwrap();
+        assert!(load_resume(&conn, "r1").unwrap().is_none());
+        assert!(load_variant(&conn, "https://x.test/1", "r1")
+            .unwrap()
+            .is_none());
+    }
+
+    /// Deleting the default must leave one behind, or the picker opens on
+    /// nothing while résumés still exist.
+    #[test]
+    fn deleting_the_default_promotes_another() {
+        let mut conn = mem();
+        put(&conn, "r1", "First");
+        put(&conn, "r2", "Second");
+        delete_resume(&mut conn, "r1").unwrap();
+        assert_eq!(default_resume(&conn).unwrap().unwrap().id, "r2");
+        assert!(load_resume(&conn, "r2").unwrap().unwrap().is_default);
+    }
+
+    #[test]
+    fn variants_are_per_posting_and_per_resume() {
+        let conn = mem();
+        put(&conn, "r1", "First");
+        put(&conn, "r2", "Second");
+        save_variant(&conn, "https://x.test/1", "r1", "{\"a\":1}", "t").unwrap();
+        save_variant(&conn, "https://x.test/2", "r1", "{\"a\":2}", "t").unwrap();
+        save_variant(&conn, "https://x.test/1", "r2", "{\"a\":3}", "t").unwrap();
+
+        assert_eq!(
+            load_variant(&conn, "https://x.test/1", "r1")
+                .unwrap()
+                .unwrap(),
+            "{\"a\":1}"
+        );
+        assert_eq!(
+            load_variant(&conn, "https://x.test/2", "r1")
+                .unwrap()
+                .unwrap(),
+            "{\"a\":2}"
+        );
+        assert_eq!(
+            load_variant(&conn, "https://x.test/1", "r2")
+                .unwrap()
+                .unwrap(),
+            "{\"a\":3}"
+        );
+        assert!(load_variant(&conn, "https://x.test/3", "r1")
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn saving_a_variant_twice_overwrites_it() {
+        let conn = mem();
+        put(&conn, "r1", "First");
+        save_variant(&conn, "https://x.test/1", "r1", "{\"v\":1}", "t").unwrap();
+        save_variant(&conn, "https://x.test/1", "r1", "{\"v\":2}", "t").unwrap();
+        assert_eq!(
+            load_variant(&conn, "https://x.test/1", "r1")
+                .unwrap()
+                .unwrap(),
+            "{\"v\":2}"
+        );
+    }
+
+    #[test]
+    fn clearing_a_variant_leaves_the_resume() {
+        let conn = mem();
+        put(&conn, "r1", "First");
+        save_variant(&conn, "https://x.test/1", "r1", "{}", "t").unwrap();
+        delete_variant(&conn, "https://x.test/1", "r1").unwrap();
+        assert!(load_variant(&conn, "https://x.test/1", "r1")
+            .unwrap()
+            .is_none());
+        assert!(load_resume(&conn, "r1").unwrap().is_some());
+    }
+
+    /// `clear_data` empties the *feed cache*. A résumé is not cache — nothing
+    /// anywhere could rebuild it — so it has to survive the button.
+    #[test]
+    fn clearing_data_keeps_resumes_and_variants() {
+        let mut conn = mem();
+        put(&conn, "r1", "First");
+        save_variant(&conn, "https://x.test/1", "r1", "{}", "t").unwrap();
+        save_items(
+            &mut conn,
+            &[Item::new(
+                "Intern",
+                "S",
+                ItemType::Internship,
+                "https://x.test/1",
+            )],
+        )
+        .unwrap();
+
+        clear_data(&conn).unwrap();
+
+        assert_eq!(count_items(&conn).unwrap(), 0, "the cache should be empty");
+        assert!(
+            load_resume(&conn, "r1").unwrap().is_some(),
+            "the résumé was deleted"
+        );
+        assert!(
+            load_variant(&conn, "https://x.test/1", "r1")
+                .unwrap()
+                .is_some(),
+            "the tailoring was deleted"
+        );
+    }
+
+    /// The tables are `IF NOT EXISTS` and never dropped, so a bump that
+    /// rebuilds the item cache must leave them untouched.
+    #[test]
+    fn resumes_survive_a_schema_bump() {
+        let conn = mem();
+        put(&conn, "r1", "First");
+        save_variant(&conn, "https://x.test/1", "r1", "{}", "t").unwrap();
+
+        // What `open` does on a version bump: run the migration again.
+        conn.pragma_update(None, "user_version", 0).unwrap();
+        migrate(&conn).unwrap();
+
+        assert!(
+            load_resume(&conn, "r1").unwrap().is_some(),
+            "a schema bump dropped the résumé"
+        );
+        assert!(load_variant(&conn, "https://x.test/1", "r1")
+            .unwrap()
+            .is_some());
+    }
+
+    #[test]
+    fn resumes_list_default_first() {
+        let mut conn = mem();
+        put(&conn, "r1", "First");
+        put(&conn, "r2", "Second");
+        set_default_resume(&mut conn, "r2").unwrap();
+        let ids: Vec<String> = list_resumes(&conn)
+            .unwrap()
+            .into_iter()
+            .map(|r| r.id)
+            .collect();
+        assert_eq!(ids.first().map(String::as_str), Some("r2"));
+    }
+
     #[test]
     fn round_trips_items_with_tags() {
         let mut conn = mem();
@@ -1098,4 +1356,178 @@ mod tests {
             .saved
             .contains("https://x.test/1"));
     }
+}
+
+// --- résumés -----------------------------------------------------------
+//
+// Two tables, both durable. `clear_data` above deliberately leaves them
+// alone: that button empties the *feed cache*, and a résumé is not cache —
+// nothing could rebuild it. Variants survive the same way, so tailoring a job
+// again after a clear finds the work you already did on it.
+
+/// One row of the résumé picker.
+pub struct ResumeRow {
+    pub id: String,
+    pub name: String,
+    pub is_default: bool,
+    pub updated_at: String,
+}
+
+/// A stored résumé, with `doc` and `theme` still as the JSON they are held as.
+/// Parsing them is `commands`' job, so this module stays free of the résumé
+/// model the way it is free of every other domain type.
+pub struct StoredResume {
+    pub id: String,
+    pub name: String,
+    pub doc: String,
+    pub theme: String,
+    pub is_default: bool,
+}
+
+pub fn list_resumes(conn: &Connection) -> Result<Vec<ResumeRow>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, name, is_default, updated_at FROM resumes
+         ORDER BY is_default DESC, updated_at DESC",
+    )?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok(ResumeRow {
+                id: r.get(0)?,
+                name: r.get(1)?,
+                is_default: r.get::<_, i64>(2)? != 0,
+                updated_at: r.get(3)?,
+            })
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+pub fn load_resume(conn: &Connection, id: &str) -> Result<Option<StoredResume>> {
+    Ok(conn
+        .query_row(
+            "SELECT id, name, doc, theme, is_default FROM resumes WHERE id = ?1",
+            params![id],
+            |r| {
+                Ok(StoredResume {
+                    id: r.get(0)?,
+                    name: r.get(1)?,
+                    doc: r.get(2)?,
+                    theme: r.get(3)?,
+                    is_default: r.get::<_, i64>(4)? != 0,
+                })
+            },
+        )
+        .optional()?)
+}
+
+/// The résumé to open when nothing else is specified: the flagged one, else
+/// the most recently edited. Falling back rather than returning nothing means
+/// a database whose default flag was somehow lost still opens on a résumé.
+pub fn default_resume(conn: &Connection) -> Result<Option<StoredResume>> {
+    let id: Option<String> = conn
+        .query_row(
+            "SELECT id FROM resumes ORDER BY is_default DESC, updated_at DESC LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .optional()?;
+    match id {
+        Some(id) => load_resume(conn, &id),
+        None => Ok(None),
+    }
+}
+
+pub fn save_resume(
+    conn: &Connection,
+    id: &str,
+    name: &str,
+    doc: &str,
+    theme: &str,
+    now: &str,
+) -> Result<()> {
+    conn.execute(
+        "INSERT INTO resumes (id, name, doc, theme, is_default, updated_at)
+         VALUES (?1, ?2, ?3, ?4, COALESCE((SELECT is_default FROM resumes WHERE id = ?1), 0), ?5)
+         ON CONFLICT (id) DO UPDATE SET
+             name = excluded.name,
+             doc = excluded.doc,
+             theme = excluded.theme,
+             updated_at = excluded.updated_at",
+        params![id, name, doc, theme, now],
+    )?;
+    // The very first résumé is the default, or the picker would open on
+    // nothing until the user thought to set one.
+    conn.execute(
+        "UPDATE resumes SET is_default = 1
+          WHERE id = ?1 AND NOT EXISTS (SELECT 1 FROM resumes WHERE is_default = 1)",
+        params![id],
+    )?;
+    Ok(())
+}
+
+/// Deletes a résumé and every tailoring of it, in one transaction — a variant
+/// whose résumé is gone can never be applied to anything.
+pub fn delete_resume(conn: &mut Connection, id: &str) -> Result<()> {
+    let tx = conn.transaction()?;
+    tx.execute(
+        "DELETE FROM resume_variants WHERE resume_id = ?1",
+        params![id],
+    )?;
+    tx.execute("DELETE FROM resumes WHERE id = ?1", params![id])?;
+    // Deleting the default would otherwise leave the set with none.
+    tx.execute(
+        "UPDATE resumes SET is_default = 1
+          WHERE id = (SELECT id FROM resumes ORDER BY updated_at DESC LIMIT 1)
+            AND NOT EXISTS (SELECT 1 FROM resumes WHERE is_default = 1)",
+        [],
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
+pub fn set_default_resume(conn: &mut Connection, id: &str) -> Result<()> {
+    let tx = conn.transaction()?;
+    tx.execute("UPDATE resumes SET is_default = 0", [])?;
+    tx.execute(
+        "UPDATE resumes SET is_default = 1 WHERE id = ?1",
+        params![id],
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
+pub fn load_variant(conn: &Connection, url: &str, resume_id: &str) -> Result<Option<String>> {
+    Ok(conn
+        .query_row(
+            "SELECT overrides FROM resume_variants WHERE url = ?1 AND resume_id = ?2",
+            params![url, resume_id],
+            |r| r.get(0),
+        )
+        .optional()?)
+}
+
+pub fn save_variant(
+    conn: &Connection,
+    url: &str,
+    resume_id: &str,
+    overrides: &str,
+    now: &str,
+) -> Result<()> {
+    conn.execute(
+        "INSERT INTO resume_variants (url, resume_id, overrides, updated_at)
+         VALUES (?1, ?2, ?3, ?4)
+         ON CONFLICT (url, resume_id) DO UPDATE SET
+             overrides = excluded.overrides,
+             updated_at = excluded.updated_at",
+        params![url, resume_id, overrides, now],
+    )?;
+    Ok(())
+}
+
+pub fn delete_variant(conn: &Connection, url: &str, resume_id: &str) -> Result<()> {
+    conn.execute(
+        "DELETE FROM resume_variants WHERE url = ?1 AND resume_id = ?2",
+        params![url, resume_id],
+    )?;
+    Ok(())
 }

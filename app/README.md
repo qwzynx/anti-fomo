@@ -263,13 +263,25 @@ for the one posting the pane is showing.
 | `get_skills()` / `set_skills(skills)` | the skills the user says they have |
 | `get_setting(key)` / `set_setting(key, value)` | local preferences |
 | `list_sources()` | distinct sources currently cached |
+| `clear_data()` | empties the item cache; the profile and résumés are kept |
+| `list_resumes()` | the résumé picker's rows |
+| `get_resume(id?)` | one résumé; no id means the default one |
+| `save_resume(id?, name, doc, theme)` | creates or updates, returns the id |
+| `delete_resume(id)` / `set_default_resume(id)` | — |
+| `get_resume_variant(url, resumeId)` | one posting's overrides, if any |
+| `save_resume_variant(...)` / `clear_resume_variant(...)` | write / discard them |
+| `layout_resume(id?, url?, theme?)` | positioned boxes, plus the tailoring with a `url` |
+| `render_resume_pdf(id?, url?, theme?)` | the PDF, as raw bytes |
+| `import_json_resume(json, name?)` / `export_json_resume(id?)` | the JSON Resume format |
+| `list_resume_themes()` | the four versions, named and pre-coloured |
 
 ## Development
 
 ```bash
 npm run check                        # svelte-check
-cargo test --lib                     # unit tests (location, ranking, db)
+cargo test --lib                     # unit tests (location, ranking, résumé layout, db)
 cargo run --features dev-tools --bin scraper_check        # live per-source item counts
+cargo run --features dev-tools --bin resume_check         # résumé PDFs, incl. text extraction
 cargo run --release --features dev-tools --bin perf_check -- /path/to/copy.db
 ```
 
@@ -286,6 +298,70 @@ returns nothing. It then runs the real `fetch_all` + `personalize` path and
 reports the deduped type composition and how many distinct sources the top 20
 spans. That last number is the one that catches a ranking regression: a feed can
 have every scraper healthy and still put three repos on the whole first page.
+
+`resume_check` renders the fixture résumé in every version and both page sizes,
+checks nothing lands outside the margins, and — the part that matters — runs
+`pdftotext` over each file and asserts the name, the headings and every bullet
+come back out. An applicant tracking system reads a résumé with something very
+like it, and a PDF that renders perfectly and extracts as nothing is worse than
+no feature at all. It deliberately does **not** use printpdf's own
+`extract_text`, which replays the ops it was handed rather than parsing the file
+back: an early revision positioned text with `Td` (a *relative* move) instead of
+`Tm`, so every line after the first compounded its offset and the third ran off
+the page — `extract_text` cheerfully reported all three, `pdftotext` saw one.
+Install poppler for it; without it the geometry checks still run and the
+extraction check reports itself skipped rather than passing quietly.
+
+## Résumés
+
+A résumé the user writes once, and a PDF tailored to whichever posting they are
+looking at. Everything is in `src-tauri/src/resume/`, layered so one thing knows
+about each concern:
+
+```text
+  model    what a résumé is            (no styling, no layout)
+  theme    how it should look          (no content)
+  tailor   what belongs on this page   (pure; uses layout to test the fit)
+  text     how wide a string is        (pure; the font's own advances)
+  layout   where every box goes        (pure; emits positioned boxes)
+     ├── pdf      boxes → a file, via printpdf
+     └── preview  boxes → SVG, in ResumePreview.svelte
+  jsonresume  import/export against the open schema
+```
+
+**`layout` having two consumers is the load-bearing decision.** A résumé's whole
+job is fitting a page, so a preview that disagrees with the file about where a
+line breaks is worse than no preview. Rust wraps the text using the real glyph
+advances out of the same face printpdf embeds, resolves every alignment to a
+left `x`, and emits positioned boxes; the PDF writer and the webview both just
+draw them. The preview is SVG rather than HTML because `<text y>` puts the
+baseline exactly at `y`, which is what PDF's `Tm` does too — HTML would mean
+reproducing CSS line-box maths to work out where a baseline lands.
+
+The tailoring is the existing skill match pointed at the user's own words. Each
+bullet is read by `skills::from_text`, the same catalog and automaton that reads
+a job description, so matching a bullet to a posting is a set intersection over
+one vocabulary. Rust starts from the *whole* résumé and trims: lay out, and
+while it runs over the page budget drop the least valuable bullet and lay out
+again. Pinned bullets are never trimmed, an explicit exclusion always wins, and
+whatever came off is reported so the UI can show the trim rather than let it
+look like data loss. Nothing is ever reworded — there is no model here and no
+API key, and a feature that silently rewrote somebody's job history would be a
+liability.
+
+The faces are vendored in `static/fonts/resume/` and read twice: `include_bytes!`
+into the Rust binary so the PDF can embed them, and `@font-face` in `app.css` so
+the preview draws with the metrics the PDF was measured against. One file is
+what makes that guarantee; do not replace either side with a `.woff2`.
+`scripts/subset-resume-fonts.sh` regenerates them — subsetting is an authoring
+step because printpdf's runtime subsetter is a no-op without its `text_layout`
+feature, and that feature drags in a layout and fontconfig stack that has no
+business on Android. Unsubsetted it mattered: one page of text came out a 397 KB
+PDF, against 63 KB now.
+
+`resumes` and `resume_variants` are durable tables. `clear_data` empties the item
+cache and leaves them alone — the cache can be refetched and nothing anywhere
+can rebuild somebody's work history.
 
 ## Android
 

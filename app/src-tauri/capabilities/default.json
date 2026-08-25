@@ -2,11 +2,19 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Permissions for the main Anti-FOMO window.",
-  "windows": ["main"],
+  "windows": [
+    "main"
+  ],
   "permissions": [
     "core:default",
     "opener:allow-open-url",
     "opener:allow-default-urls",
-    "log:default"
+    "opener:allow-open-path",
+    "log:default",
+    "dialog:allow-save",
+    "dialog:allow-open",
+    "dialog:allow-message",
+    "fs:allow-write-file",
+    "fs:allow-read-file"
   ]
 }

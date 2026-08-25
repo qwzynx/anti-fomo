@@ -18,7 +18,12 @@
 >
   <div class="flex items-stretch justify-around">
     {#each TABS as link (link.href)}
-      {@const active = page.url.pathname === link.href}
+      <!-- `startsWith` for everything but the root, so a sub-route like
+           /resume/tailor still lights its own tab rather than none. -->
+      {@const active =
+        link.href === "/"
+          ? page.url.pathname === "/"
+          : page.url.pathname.startsWith(link.href)}
       <a
         href={link.href}
         aria-current={active ? "page" : undefined}

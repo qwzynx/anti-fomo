@@ -5,6 +5,7 @@ pub mod location;
 pub mod models;
 pub mod pay;
 pub mod rank;
+pub mod resume;
 pub mod scrapers;
 pub mod skills;
 
@@ -51,6 +52,8 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_fs::init())
         .plugin(
             tauri_plugin_log::Builder::new()
                 .level(log::LevelFilter::Info)
@@ -108,6 +111,19 @@ pub fn run() {
             commands::get_setting,
             commands::set_setting,
             commands::list_sources,
+            commands::list_resumes,
+            commands::get_resume,
+            commands::save_resume,
+            commands::delete_resume,
+            commands::set_default_resume,
+            commands::get_resume_variant,
+            commands::save_resume_variant,
+            commands::clear_resume_variant,
+            commands::layout_resume,
+            commands::render_resume_pdf,
+            commands::import_json_resume,
+            commands::export_json_resume,
+            commands::list_resume_themes,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Anti-FOMO");

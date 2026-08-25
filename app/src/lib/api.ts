@@ -197,3 +197,236 @@ export function timeAgo(iso: string): string {
   if (days < 30) return `${days}d ago`;
   return new Date(iso).toLocaleDateString();
 }
+
+// --- résumé ---
+// The Rust `resume` module's types, field-for-field. `layout_resume` returns
+// positioned boxes rather than HTML because the same boxes are what the PDF
+// writer draws — see `ResumePreview.svelte` and `resume/layout.rs`.
+
+export type ResumeFamily = "serif" | "sans";
+export type ResumeFontStyle = "regular" | "bold" | "italic" | "bolditalic";
+export type ResumeThemeId = "classic" | "accent" | "modern" | "banner";
+export type ResumePageSize = "letter" | "a4";
+export type ResumeHeadingStyle = "rule" | "plain" | "band";
+export type SectionKind =
+  | "education"
+  | "experience"
+  | "projects"
+  | "leadership"
+  | "skills"
+  | "awards"
+  | "custom";
+
+export interface Rgb {
+  r: number;
+  g: number;
+  b: number;
+}
+
+/** One positioned box. `y` on a text box is the **baseline**, not the top. */
+export type Draw =
+  | {
+      kind: "text";
+      x: number;
+      y: number;
+      size: number;
+      family: ResumeFamily;
+      style: ResumeFontStyle;
+      color: Rgb;
+      /** Extra points per character. Only the name and the headings use it. */
+      tracking: number;
+      text: string;
+    }
+  | { kind: "rect"; x: number; y: number; w: number; h: number; color: Rgb }
+  | { kind: "link"; x: number; y: number; w: number; h: number; url: string };
+
+/** One page, in points. US Letter is 612 × 792. */
+export interface ResumePage {
+  width: number;
+  height: number;
+  items: Draw[];
+}
+
+export interface AccentRoles {
+  name: boolean;
+  headings: boolean;
+  rules: boolean;
+  org: boolean;
+  bullet_marks: boolean;
+}
+
+export interface ResumeTheme {
+  id: ResumeThemeId;
+  page: ResumePageSize;
+  family: ResumeFamily;
+  base_size: number;
+  leading: number;
+  margin: number;
+  accent: Rgb;
+  heading: ResumeHeadingStyle;
+  accent_roles: AccentRoles;
+  max_pages: number;
+}
+
+export interface ResumeLink {
+  label: string;
+  url: string;
+}
+
+export interface ResumeContact {
+  name: string;
+  headline: string | null;
+  email: string;
+  phone: string;
+  location: string;
+  links: ResumeLink[];
+}
+
+export interface ResumeBullet {
+  id: string;
+  text: string;
+  /** Catalog skills Rust read out of `text`. Recomputed on every save. */
+  skills: string[];
+}
+
+export interface ResumeEntry {
+  id: string;
+  org: string;
+  title: string;
+  location: string;
+  start: string;
+  end: string;
+  link: string | null;
+  detail: string | null;
+  bullets: ResumeBullet[];
+}
+
+export interface ResumeSection {
+  id: string;
+  kind: SectionKind;
+  title: string;
+  entries: ResumeEntry[];
+}
+
+export interface ResumeDoc {
+  contact: ResumeContact;
+  sections: ResumeSection[];
+}
+
+export interface StoredResume {
+  id: string;
+  name: string;
+  doc: ResumeDoc;
+  theme: ResumeTheme;
+  is_default: boolean;
+}
+
+export interface ResumeSummary {
+  id: string;
+  name: string;
+  is_default: boolean;
+  updated_at: string;
+}
+
+export interface DroppedBullet {
+  id: string;
+  reason: string;
+}
+
+/**
+ * A laid-out résumé. When it was laid out against a posting, it also carries
+ * what the tailoring decided — `why` is the per-bullet evidence and `dropped`
+ * is what the page budget cut, so the panel can show the trim rather than let
+ * it look like data loss.
+ */
+export interface ResumeView {
+  pages: ResumePage[];
+  fill: number;
+  bullets: string[];
+  entries: string[];
+  why: Record<string, string[]>;
+  dropped: DroppedBullet[];
+  covered: string[];
+  required: string[];
+  theme: ResumeTheme;
+  filename: string;
+}
+
+export interface ResumeVariant {
+  theme: ResumeTheme | null;
+  headline: string | null;
+  /** Entry or bullet id → forced in (and never trimmed) or out. */
+  include: Record<string, boolean>;
+  order: Record<string, string[]>;
+  text: Record<string, string>;
+  skills_lead: string[];
+}
+
+export interface ResumeThemeOption {
+  id: ResumeThemeId;
+  label: string;
+  theme: ResumeTheme;
+}
+
+export const listResumes = () => invoke<ResumeSummary[]>("list_resumes");
+
+/** `id` omitted means the default résumé. */
+export const getResume = (id?: string) =>
+  invoke<StoredResume | null>("get_resume", { id: id ?? null });
+
+export const saveResume = (
+  id: string | null,
+  name: string,
+  doc: ResumeDoc,
+  theme: ResumeTheme,
+) => invoke<string>("save_resume", { id, name, doc, theme });
+
+export const deleteResume = (id: string) => invoke<void>("delete_resume", { id });
+
+export const setDefaultResume = (id: string) => invoke<void>("set_default_resume", { id });
+
+export const getResumeVariant = (url: string, resumeId: string) =>
+  invoke<ResumeVariant | null>("get_resume_variant", { url, resumeId });
+
+export const saveResumeVariant = (url: string, resumeId: string, variant: ResumeVariant) =>
+  invoke<void>("save_resume_variant", { url, resumeId, variant });
+
+export const clearResumeVariant = (url: string, resumeId: string) =>
+  invoke<void>("clear_resume_variant", { url, resumeId });
+
+/**
+ * The pages to draw. With a `url` the layout is tailored to that posting and
+ * the result carries the tailoring's reasoning; without one it is the builder's
+ * own preview with everything included.
+ */
+export const layoutResume = (opts: {
+  id?: string;
+  url?: string;
+  theme?: ResumeTheme;
+}) =>
+  invoke<ResumeView | null>("layout_resume", {
+    id: opts.id ?? null,
+    url: opts.url ?? null,
+    theme: opts.theme ?? null,
+  });
+
+/** The PDF itself, as raw bytes. */
+export const renderResumePdf = (opts: { id?: string; url?: string; theme?: ResumeTheme }) =>
+  invoke<ArrayBuffer>("render_resume_pdf", {
+    id: opts.id ?? null,
+    url: opts.url ?? null,
+    theme: opts.theme ?? null,
+  });
+
+export const importJsonResume = (json: string, name?: string) =>
+  invoke<string>("import_json_resume", { json, name: name ?? null });
+
+export const exportJsonResume = (id?: string) =>
+  invoke<string>("export_json_resume", { id: id ?? null });
+
+export const listResumeThemes = () => invoke<ResumeThemeOption[]>("list_resume_themes");
+
+/** `rgb(r g b)` for a colour that came from Rust. */
+export function cssColor(c: Rgb): string {
+  return `rgb(${c.r} ${c.g} ${c.b})`;
+}

@@ -700,6 +700,47 @@ pub fn from_posting(item: &Item) -> bool {
         || !item.tagged_skills.is_empty()
 }
 
+/// The catalog skills a piece of free text names.
+///
+/// The posting side reaches this through [`extract`]; a résumé bullet reaches
+/// it directly, which is the whole reason "Built a Rust service backed by
+/// SQLite" and a posting asking for Rust and SQLite meet on one vocabulary
+/// instead of two that drift.
+///
+/// `strict` forces the [`AMBIGUOUS`] tightening on regardless of length.
+/// Postings pass `false` and let the length rule decide, because a short line
+/// of scraped metadata naming "Go" almost certainly means the language. A
+/// résumé bullet passes `true`: it is English prose, where " go " is far more
+/// often the verb, and "went from 3 to 30 engineers" should not put Go on
+/// somebody's CV.
+pub fn from_text(text: &str, strict: bool) -> Vec<String> {
+    if text.trim().is_empty() {
+        return Vec::new();
+    }
+    // Padded and lowercased for the same reasons the posting path does it:
+    // keywords are written with leading and trailing spaces so they can match
+    // at either end, and every catalog keyword is ASCII.
+    let mut buf = String::with_capacity(text.len() + 2);
+    buf.push(' ');
+    buf.push_str(text);
+    buf.push(' ');
+    buf.make_ascii_lowercase();
+
+    let long = strict || buf.len() > LONG_TEXT;
+    hits_to_names(matcher(long).hits(&buf))
+}
+
+/// Catalog-ordered names for a hit flag per skill. Shared so the two callers
+/// cannot disagree about ordering, which is what makes the result stable.
+fn hits_to_names(found: Vec<bool>) -> Vec<String> {
+    catalog()
+        .iter()
+        .zip(&found)
+        .filter(|(_, hit)| **hit)
+        .map(|((name, _), _)| name.to_string())
+        .collect()
+}
+
 fn extract_uncached(item: &Item) -> Vec<String> {
     // Everything the employer wrote, read together. The requirements are the
     // densest part and the description the loosest, but a posting that names
@@ -763,12 +804,68 @@ fn extract_uncached(item: &Item) -> Vec<String> {
 
     // The flags are already in catalog order, so the result is too — and
     // therefore stable between calls.
-    catalog()
-        .iter()
-        .zip(&found)
-        .filter(|(_, hit)| **hit)
-        .map(|((name, _), _)| name.to_string())
-        .collect()
+    hits_to_names(found)
+}
+
+#[cfg(test)]
+mod from_text_tests {
+    use super::*;
+
+    #[test]
+    fn reads_a_resume_bullet() {
+        let got = from_text(
+            "Built a Rust service backed by PostgreSQL and deployed it on AWS",
+            true,
+        );
+        assert!(got.contains(&"Rust".to_string()), "{got:?}");
+        assert!(got.contains(&"PostgreSQL".to_string()), "{got:?}");
+        assert!(got.contains(&"AWS".to_string()), "{got:?}");
+    }
+
+    /// The reason `strict` exists. Loose matching would put Go on a CV for a
+    /// bullet about team growth, and the user would have to notice and remove
+    /// a skill they never claimed.
+    #[test]
+    fn strict_mode_ignores_english_prose() {
+        let prose = "Helped the team go from 3 to 30 engineers and kept velocity";
+        assert!(!from_text(prose, true).contains(&"Go".to_string()));
+    }
+
+    #[test]
+    fn strict_mode_still_finds_the_real_language() {
+        assert!(from_text("Wrote the ingest pipeline in Golang", true).contains(&"Go".to_string()));
+    }
+
+    #[test]
+    fn empty_text_names_nothing() {
+        assert!(from_text("   ", true).is_empty());
+    }
+
+    #[test]
+    fn results_are_in_catalog_order_and_stable() {
+        let text = "React and TypeScript on the front end, Python on the back";
+        assert_eq!(from_text(text, true), from_text(text, true));
+    }
+
+    /// The posting path and the résumé path must agree, or a bullet could
+    /// claim a skill the matcher will never find in a job description.
+    #[test]
+    fn agrees_with_the_posting_extractor() {
+        use crate::models::{Item, ItemType};
+        let text = "Docker, Kubernetes and Terraform for the deploy path";
+        let mut item = Item::new("Infra", "test", ItemType::Job, "https://example.com/agree");
+        item.requirements = Some(text.to_string());
+        let from_posting: Vec<String> = extract_uncached(&item)
+            .into_iter()
+            .filter(|s| s != "Infrastructure as Code")
+            .collect();
+        for skill in from_text(text, true) {
+            assert!(
+                from_posting.contains(&skill),
+                "{skill} missing from {from_posting:?}"
+            );
+        }
+    }
 }
 
 #[cfg(test)]

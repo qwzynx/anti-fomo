@@ -3,7 +3,7 @@
   import { timeAgo } from "$lib/api";
   import { feed } from "$lib/feed.svelte";
   import { Monitor, Moon, RefreshCw, Search, Sparkles, Sun } from "$lib/icons";
-  import { NAV, SETTINGS } from "$lib/nav";
+  import { NAV, TOOLS } from "$lib/nav";
   import { search } from "$lib/search.svelte";
   import { theme } from "$lib/theme.svelte";
 
@@ -128,17 +128,18 @@
         <ThemeIcon size={17} />
       </button>
 
-      <a
-        href={SETTINGS.href}
-        aria-label="Settings"
-        aria-current={page.url.pathname === SETTINGS.href ? "page" : undefined}
-        title="Settings"
-        class="tap h-[34px] w-[34px] {page.url.pathname === SETTINGS.href
-          ? 'bg-brand-soft text-brand-soft-fg'
-          : ''}"
-      >
-        <SETTINGS.icon size={17} />
-      </a>
+      {#each TOOLS as tool (tool.href)}
+        {@const here = page.url.pathname.startsWith(tool.href)}
+        <a
+          href={tool.href}
+          aria-label={tool.label}
+          aria-current={here ? "page" : undefined}
+          title={tool.label}
+          class="tap h-[34px] w-[34px] {here ? 'bg-brand-soft text-brand-soft-fg' : ''}"
+        >
+          <tool.icon size={17} />
+        </a>
+      {/each}
     </div>
   </div>
 </header>

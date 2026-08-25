@@ -1,4 +1,4 @@
-import { Bookmark, Briefcase, Home, Settings } from "./icons";
+import { Bookmark, Briefcase, FileText, Home, Settings } from "./icons";
 
 /**
  * Where you can go. Three destinations, not four: Settings is a tool you reach
@@ -14,6 +14,16 @@ export const NAV = [
   { href: "/saved", label: "Saved", icon: Bookmark },
 ] as const;
 
+/**
+ * Tools, not destinations. The résumé builder is the same shape as Settings —
+ * somewhere you go to change something and then come back from — so it joins
+ * the top bar's tool cluster rather than taking a fourth slot from the feed.
+ */
+export const RESUME = { href: "/resume", label: "Résumé", icon: FileText } as const;
+
 export const SETTINGS = { href: "/settings", label: "Settings", icon: Settings } as const;
 
-export const TABS = [...NAV, SETTINGS] as const;
+export const TOOLS = [RESUME, SETTINGS] as const;
+
+/** A phone has no top bar to hide the tools in, so they come back as tabs. */
+export const TABS = [...NAV, ...TOOLS] as const;

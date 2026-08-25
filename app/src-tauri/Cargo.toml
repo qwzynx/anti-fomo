@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Your internships, tech news and events in one ranked feed"
 authors = ["qwzynx"]
 edition = "2021"
-rust-version = "1.82"
+rust-version = "1.88"  # printpdf 0.12 requires it
 # Without this, the extra scraper_check binary makes `cargo run` ambiguous and
 # `tauri dev` cannot start.
 default-run = "anti-fomo"
@@ -52,6 +52,12 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
 tauri-plugin-log = "2"
+# Saving a résumé PDF. The dialog plugin picks the destination and the fs
+# plugin writes there — rather than `std::fs::write` from Rust, because on
+# Android the picker hands back a `content://` URI that only the fs plugin
+# knows how to open.
+tauri-plugin-dialog = "2"
+tauri-plugin-fs = "2"
 
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["raw_value"] }
@@ -77,6 +83,19 @@ rusqlite = { version = "0.40", features = ["bundled"] }
 # Already in the tree under `regex`. Used directly so skill extraction reads a
 # posting once instead of once per catalog keyword.
 aho-corasick = "1"
+
+# Résumé PDFs. `default-features = false` deliberately: the default `html`
+# feature pulls in azul-layout and rust-fontconfig, a browser-shaped layout
+# engine we have no use for — the résumé layout is ours, in `resume/layout.rs`
+# — and fontconfig is exactly the kind of system dependency that does not
+# cross-compile to the Android NDK. Stripped down it is pure Rust with no
+# `-sys` crate anywhere in the tree.
+#
+# It also does the font parsing: with `text_layout` off, `ParsedFont` exposes
+# the cmap and hmtx directly, so `resume::text` measures glyph advances with
+# the very table printpdf writes into the PDF's /W array. Two parsers could
+# disagree; one cannot.
+printpdf = { version = "0.12", default-features = false }
 scraper = "0.27"
 feed-rs = "2"
 regex = "1"
@@ -114,4 +133,12 @@ opt-level = 3
 [[bin]]
 name = "perf_check"
 path = "src/bin/perf_check.rs"
+required-features = ["dev-tools"]
+
+# Does the résumé PDF say what it looks like it says? Renders every theme and
+# runs `pdftotext` over the result, because that is what an applicant tracking
+# system does and printpdf's own extractor is not a substitute — see the bin.
+[[bin]]
+name = "resume_check"
+path = "src/bin/resume_check.rs"
 required-features = ["dev-tools"]

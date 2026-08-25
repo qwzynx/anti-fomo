@@ -18,6 +18,63 @@
   src: url("/fonts/outfit-latin.woff2") format("woff2");
 }
 
+/* The résumé faces.
+   These are the *same eight .ttf files* `resume/fonts.rs` compiles into the
+   Rust binary, served here so the preview draws with the metrics the PDF was
+   measured against. Every weight and slant is a real face rather than a
+   browser-synthesised one: a faux-bold is wider than the bold the PDF embeds,
+   which is exactly how a preview starts wrapping a line the file does not.
+   Do not swap either side for a .woff2 — one file is the guarantee.
+   Regenerate with `scripts/subset-resume-fonts.sh`. */
+@font-face {
+  font-family: "Resume Serif";
+  font-style: normal;
+  font-weight: 400;
+  src: url("/fonts/resume/serif-regular.ttf") format("truetype");
+}
+@font-face {
+  font-family: "Resume Serif";
+  font-style: normal;
+  font-weight: 700;
+  src: url("/fonts/resume/serif-bold.ttf") format("truetype");
+}
+@font-face {
+  font-family: "Resume Serif";
+  font-style: italic;
+  font-weight: 400;
+  src: url("/fonts/resume/serif-italic.ttf") format("truetype");
+}
+@font-face {
+  font-family: "Resume Serif";
+  font-style: italic;
+  font-weight: 700;
+  src: url("/fonts/resume/serif-bolditalic.ttf") format("truetype");
+}
+@font-face {
+  font-family: "Resume Sans";
+  font-style: normal;
+  font-weight: 400;
+  src: url("/fonts/resume/sans-regular.ttf") format("truetype");
+}
+@font-face {
+  font-family: "Resume Sans";
+  font-style: normal;
+  font-weight: 700;
+  src: url("/fonts/resume/sans-bold.ttf") format("truetype");
+}
+@font-face {
+  font-family: "Resume Sans";
+  font-style: italic;
+  font-weight: 400;
+  src: url("/fonts/resume/sans-italic.ttf") format("truetype");
+}
+@font-face {
+  font-family: "Resume Sans";
+  font-style: italic;
+  font-weight: 700;
+  src: url("/fonts/resume/sans-bolditalic.ttf") format("truetype");
+}
+
 /* --- Design tokens ---------------------------------------------------------
    Every colour in the UI resolves to one of these. Components reference the
    semantic name (`bg-surface`, `border-line`, `text-muted`) rather than a raw

@@ -7,6 +7,7 @@
     Banknote,
     Bookmark,
     BookmarkCheck,
+    FileText,
     Hourglass,
     MapPin,
     Sparkles,
@@ -88,6 +89,8 @@
   const saved = $derived(feed.isSaved(item.url));
   /** Whether the enrichment pass reached this posting. */
   const enriched = $derived(hasScrapedPosting(full) || Boolean(full.perks));
+  /** Only a role has requirements to tailor a résumé against. */
+  const isOpportunity = $derived(item.item_type === "Job" || item.item_type === "Internship");
   const locations = $derived(
     item.location
       ? item.location
@@ -314,12 +317,28 @@
         Could not hand this link to your browser. Open it directly: {item.url}
       </p>
     {/if}
-    <button
-      onclick={() => open(item.url)}
-      class="flex w-full items-center justify-center gap-1.5 rounded-xl bg-brand py-3 text-center font-semibold text-brand-fg transition-all hover:bg-brand-hover hover:shadow-lg hover:shadow-brand/25"
-    >
-      {cta}
-      <ArrowUpRight size={17} strokeWidth={2.5} />
-    </button>
+    <div class="flex gap-2">
+      <button
+        onclick={() => open(item.url)}
+        class="flex flex-1 items-center justify-center gap-1.5 rounded-xl bg-brand py-3 text-center font-semibold text-brand-fg transition-all hover:bg-brand-hover hover:shadow-lg hover:shadow-brand/25"
+      >
+        {cta}
+        <ArrowUpRight size={17} strokeWidth={2.5} />
+      </button>
+      <!-- Only where there is something to tailor against. Self-gating on
+           `required_skills` the same way the skills panel above does, so an
+           article never offers to write you a résumé. -->
+      {#if isOpportunity}
+        <a
+          href="/resume/tailor?url={encodeURIComponent(item.url)}"
+          onclick={onClose}
+          class="flex shrink-0 items-center justify-center gap-1.5 rounded-xl border border-line px-4 py-3 text-center font-semibold transition-colors hover:border-brand hover:text-brand"
+        >
+          <FileText size={16} strokeWidth={2.2} />
+          <span class="hidden sm:inline">Tailor résumé</span>
+          <span class="sm:hidden">Résumé</span>
+        </a>
+      {/if}
+    </div>
   </div>
 </div>

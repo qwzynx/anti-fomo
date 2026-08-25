@@ -40,9 +40,32 @@ Everything ships from `/app`:
     `skills::from_posting` says which case it is, and `hasScrapedPosting` in
     `lib/item.ts` must keep answering the same question, since that is what
     decides whether the UI shows a panel or explains its absence.
+    `skills::from_text(text, strict)` is the same reader pointed at one string,
+    and it is how a résumé bullet gets its skills — so a bullet and a job
+    description are matched over one vocabulary rather than two that drift.
+    Résumé callers pass `strict = true`, because a bullet is English prose
+    where " go " is far more often the verb than the language.
+  - `resume/` — the résumé builder and the tailored PDF. Layered so one thing
+    knows about each concern: `model` (what a résumé is), `theme` (how it
+    looks), `tailor` (what belongs on the page for a given posting), `text`
+    (how wide a string is), `layout` (where every box goes), `pdf`, and
+    `jsonresume`. **`layout` emits positioned boxes and has two consumers** —
+    `pdf.rs` writes them into a PDF and `ResumePreview.svelte` draws the very
+    same boxes as SVG. A résumé's whole job is fitting a page, so a preview
+    laid out separately from the file would drift about where a line breaks;
+    one pass, two backends, is what makes the preview *be* the file. Text is
+    measured with the glyph advances of the same face printpdf embeds. Nothing
+    is ever reworded — there is no model here and no API key. Verify with
+    `cargo run --features dev-tools --bin resume_check`, which renders every
+    theme and runs `pdftotext` over the output; printpdf's own `extract_text`
+    replays ops rather than reading the file back and will happily report text
+    that never reached the page.
   - `db.rs` — SQLite via `rusqlite` (bundled). Items are a rebuildable cache keyed
-    by URL. `settings` and `item_state` are the durable tables and must survive a
-    schema bump, so they are created with `IF NOT EXISTS` and never dropped.
+    by URL. `settings`, `item_state`, `job_details`, `resumes` and
+    `resume_variants` are the durable tables and must survive a schema bump, so
+    they are created with `IF NOT EXISTS` and never dropped. `clear_data`
+    empties the cache and leaves the résumés: a feed can be refetched and a
+    work history cannot.
   - `commands.rs` — the `invoke()` surface the UI calls. **Every command that
     touches the database is `#[tauri::command(async)]`.** A plain
     `#[tauri::command]` on a synchronous function runs on the *main thread*,
@@ -61,8 +84,11 @@ Everything ships from `/app`:
     `main.rs` is only a shim. **Mobile will not build if real code moves into
     `main.rs`.**
 - **`app/src`** — the Svelte UI. Routes are `/` (feed), `/internships`, `/saved`,
-  `/settings`, reached from a sidebar at `md:` and up and a bottom tab bar below
-  it; the two navigations are never on screen together. `lib/feed.svelte.ts` is
+  `/resume`, `/resume/tailor` and `/settings`. `NAV` is three destinations; the
+  résumé builder and Settings are *tools* — somewhere you go to change
+  something and come back from — so they sit in the top bar's tool cluster at
+  `md:` and up and return as tabs in the bottom bar below it. The two
+  navigations are never on screen together. `lib/feed.svelte.ts` is
   the single shared store; pages derive from it rather than fetching
   independently. **The three item lists are `$state.raw`**: the hub holds the
   whole opportunity cache, and plain `$state` deep-proxies every row and every
@@ -120,6 +146,16 @@ See `app/README.md` for the source list, the command table, and Android setup.
   `app/src/app.css`, and there is no `tailwind.config.js`. Use the token
   utilities, not raw palette colours. Dark mode is a `dark` class applied before
   first paint by a script in `app.html`.
+- **The résumé faces are read twice from one file.** The eight `.ttf`s in
+  `app/static/fonts/resume/` are `include_bytes!`d into the Rust binary so the
+  PDF can embed them *and* `@font-face`d in `app.css` so the preview draws with
+  the metrics the PDF was measured against. One copy on disk is the guarantee
+  those two agree; replacing either side with a `.woff2` breaks it silently, as
+  a preview that wraps one word earlier than the page it claims to be.
+  Subsetting is an authoring step (`scripts/subset-resume-fonts.sh`), because
+  printpdf's runtime subsetter is a no-op without its `text_layout` feature and
+  that feature drags in a layout and fontconfig stack that cannot cross-compile
+  to Android.
 - **Icons come from `lib/icons.ts`**, which re-exports the lucide set the UI uses
   — no emoji in the interface, and no importing from `lucide-svelte` directly.
   Type an icon prop as `IconComponent` from that file; lucide still declares its
