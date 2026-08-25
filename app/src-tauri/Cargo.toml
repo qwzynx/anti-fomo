@@ -1,6 +1,6 @@
 [package]
 name = "anti-fomo"
-version = "0.2.2"
+version = "0.2.3"
 description = "Your internships, tech news and events in one ranked feed"
 authors = ["qwzynx"]
 edition = "2021"
