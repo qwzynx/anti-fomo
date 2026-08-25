@@ -756,6 +756,180 @@ pub fn set_setting(conn: &Connection, key: &str, value: &str) -> Result<()> {
     Ok(())
 }
 
+// --- résumés -----------------------------------------------------------
+//
+// Two tables, both durable. `clear_data` above deliberately leaves them
+// alone: that button empties the *feed cache*, and a résumé is not cache —
+// nothing could rebuild it. Variants survive the same way, so tailoring a job
+// again after a clear finds the work you already did on it.
+
+/// One row of the résumé picker.
+pub struct ResumeRow {
+    pub id: String,
+    pub name: String,
+    pub is_default: bool,
+    pub updated_at: String,
+}
+
+/// A stored résumé, with `doc` and `theme` still as the JSON they are held as.
+/// Parsing them is `commands`' job, so this module stays free of the résumé
+/// model the way it is free of every other domain type.
+pub struct StoredResume {
+    pub id: String,
+    pub name: String,
+    pub doc: String,
+    pub theme: String,
+    pub is_default: bool,
+}
+
+pub fn list_resumes(conn: &Connection) -> Result<Vec<ResumeRow>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, name, is_default, updated_at FROM resumes
+         ORDER BY is_default DESC, updated_at DESC",
+    )?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok(ResumeRow {
+                id: r.get(0)?,
+                name: r.get(1)?,
+                is_default: r.get::<_, i64>(2)? != 0,
+                updated_at: r.get(3)?,
+            })
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+pub fn load_resume(conn: &Connection, id: &str) -> Result<Option<StoredResume>> {
+    Ok(conn
+        .query_row(
+            "SELECT id, name, doc, theme, is_default FROM resumes WHERE id = ?1",
+            params![id],
+            |r| {
+                Ok(StoredResume {
+                    id: r.get(0)?,
+                    name: r.get(1)?,
+                    doc: r.get(2)?,
+                    theme: r.get(3)?,
+                    is_default: r.get::<_, i64>(4)? != 0,
+                })
+            },
+        )
+        .optional()?)
+}
+
+/// The résumé to open when nothing else is specified: the flagged one, else
+/// the most recently edited. Falling back rather than returning nothing means
+/// a database whose default flag was somehow lost still opens on a résumé.
+pub fn default_resume(conn: &Connection) -> Result<Option<StoredResume>> {
+    let id: Option<String> = conn
+        .query_row(
+            "SELECT id FROM resumes ORDER BY is_default DESC, updated_at DESC LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .optional()?;
+    match id {
+        Some(id) => load_resume(conn, &id),
+        None => Ok(None),
+    }
+}
+
+pub fn save_resume(
+    conn: &Connection,
+    id: &str,
+    name: &str,
+    doc: &str,
+    theme: &str,
+    now: &str,
+) -> Result<()> {
+    conn.execute(
+        "INSERT INTO resumes (id, name, doc, theme, is_default, updated_at)
+         VALUES (?1, ?2, ?3, ?4, COALESCE((SELECT is_default FROM resumes WHERE id = ?1), 0), ?5)
+         ON CONFLICT (id) DO UPDATE SET
+             name = excluded.name,
+             doc = excluded.doc,
+             theme = excluded.theme,
+             updated_at = excluded.updated_at",
+        params![id, name, doc, theme, now],
+    )?;
+    // The very first résumé is the default, or the picker would open on
+    // nothing until the user thought to set one.
+    conn.execute(
+        "UPDATE resumes SET is_default = 1
+          WHERE id = ?1 AND NOT EXISTS (SELECT 1 FROM resumes WHERE is_default = 1)",
+        params![id],
+    )?;
+    Ok(())
+}
+
+/// Deletes a résumé and every tailoring of it, in one transaction — a variant
+/// whose résumé is gone can never be applied to anything.
+pub fn delete_resume(conn: &mut Connection, id: &str) -> Result<()> {
+    let tx = conn.transaction()?;
+    tx.execute(
+        "DELETE FROM resume_variants WHERE resume_id = ?1",
+        params![id],
+    )?;
+    tx.execute("DELETE FROM resumes WHERE id = ?1", params![id])?;
+    // Deleting the default would otherwise leave the set with none.
+    tx.execute(
+        "UPDATE resumes SET is_default = 1
+          WHERE id = (SELECT id FROM resumes ORDER BY updated_at DESC LIMIT 1)
+            AND NOT EXISTS (SELECT 1 FROM resumes WHERE is_default = 1)",
+        [],
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
+pub fn set_default_resume(conn: &mut Connection, id: &str) -> Result<()> {
+    let tx = conn.transaction()?;
+    tx.execute("UPDATE resumes SET is_default = 0", [])?;
+    tx.execute(
+        "UPDATE resumes SET is_default = 1 WHERE id = ?1",
+        params![id],
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
+pub fn load_variant(conn: &Connection, url: &str, resume_id: &str) -> Result<Option<String>> {
+    Ok(conn
+        .query_row(
+            "SELECT overrides FROM resume_variants WHERE url = ?1 AND resume_id = ?2",
+            params![url, resume_id],
+            |r| r.get(0),
+        )
+        .optional()?)
+}
+
+pub fn save_variant(
+    conn: &Connection,
+    url: &str,
+    resume_id: &str,
+    overrides: &str,
+    now: &str,
+) -> Result<()> {
+    conn.execute(
+        "INSERT INTO resume_variants (url, resume_id, overrides, updated_at)
+         VALUES (?1, ?2, ?3, ?4)
+         ON CONFLICT (url, resume_id) DO UPDATE SET
+             overrides = excluded.overrides,
+             updated_at = excluded.updated_at",
+        params![url, resume_id, overrides, now],
+    )?;
+    Ok(())
+}
+
+pub fn delete_variant(conn: &Connection, url: &str, resume_id: &str) -> Result<()> {
+    conn.execute(
+        "DELETE FROM resume_variants WHERE url = ?1 AND resume_id = ?2",
+        params![url, resume_id],
+    )?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1358,176 +1532,3 @@ mod tests {
     }
 }
 
-// --- résumés -----------------------------------------------------------
-//
-// Two tables, both durable. `clear_data` above deliberately leaves them
-// alone: that button empties the *feed cache*, and a résumé is not cache —
-// nothing could rebuild it. Variants survive the same way, so tailoring a job
-// again after a clear finds the work you already did on it.
-
-/// One row of the résumé picker.
-pub struct ResumeRow {
-    pub id: String,
-    pub name: String,
-    pub is_default: bool,
-    pub updated_at: String,
-}
-
-/// A stored résumé, with `doc` and `theme` still as the JSON they are held as.
-/// Parsing them is `commands`' job, so this module stays free of the résumé
-/// model the way it is free of every other domain type.
-pub struct StoredResume {
-    pub id: String,
-    pub name: String,
-    pub doc: String,
-    pub theme: String,
-    pub is_default: bool,
-}
-
-pub fn list_resumes(conn: &Connection) -> Result<Vec<ResumeRow>> {
-    let mut stmt = conn.prepare(
-        "SELECT id, name, is_default, updated_at FROM resumes
-         ORDER BY is_default DESC, updated_at DESC",
-    )?;
-    let rows = stmt
-        .query_map([], |r| {
-            Ok(ResumeRow {
-                id: r.get(0)?,
-                name: r.get(1)?,
-                is_default: r.get::<_, i64>(2)? != 0,
-                updated_at: r.get(3)?,
-            })
-        })?
-        .collect::<std::result::Result<Vec<_>, _>>()?;
-    Ok(rows)
-}
-
-pub fn load_resume(conn: &Connection, id: &str) -> Result<Option<StoredResume>> {
-    Ok(conn
-        .query_row(
-            "SELECT id, name, doc, theme, is_default FROM resumes WHERE id = ?1",
-            params![id],
-            |r| {
-                Ok(StoredResume {
-                    id: r.get(0)?,
-                    name: r.get(1)?,
-                    doc: r.get(2)?,
-                    theme: r.get(3)?,
-                    is_default: r.get::<_, i64>(4)? != 0,
-                })
-            },
-        )
-        .optional()?)
-}
-
-/// The résumé to open when nothing else is specified: the flagged one, else
-/// the most recently edited. Falling back rather than returning nothing means
-/// a database whose default flag was somehow lost still opens on a résumé.
-pub fn default_resume(conn: &Connection) -> Result<Option<StoredResume>> {
-    let id: Option<String> = conn
-        .query_row(
-            "SELECT id FROM resumes ORDER BY is_default DESC, updated_at DESC LIMIT 1",
-            [],
-            |r| r.get(0),
-        )
-        .optional()?;
-    match id {
-        Some(id) => load_resume(conn, &id),
-        None => Ok(None),
-    }
-}
-
-pub fn save_resume(
-    conn: &Connection,
-    id: &str,
-    name: &str,
-    doc: &str,
-    theme: &str,
-    now: &str,
-) -> Result<()> {
-    conn.execute(
-        "INSERT INTO resumes (id, name, doc, theme, is_default, updated_at)
-         VALUES (?1, ?2, ?3, ?4, COALESCE((SELECT is_default FROM resumes WHERE id = ?1), 0), ?5)
-         ON CONFLICT (id) DO UPDATE SET
-             name = excluded.name,
-             doc = excluded.doc,
-             theme = excluded.theme,
-             updated_at = excluded.updated_at",
-        params![id, name, doc, theme, now],
-    )?;
-    // The very first résumé is the default, or the picker would open on
-    // nothing until the user thought to set one.
-    conn.execute(
-        "UPDATE resumes SET is_default = 1
-          WHERE id = ?1 AND NOT EXISTS (SELECT 1 FROM resumes WHERE is_default = 1)",
-        params![id],
-    )?;
-    Ok(())
-}
-
-/// Deletes a résumé and every tailoring of it, in one transaction — a variant
-/// whose résumé is gone can never be applied to anything.
-pub fn delete_resume(conn: &mut Connection, id: &str) -> Result<()> {
-    let tx = conn.transaction()?;
-    tx.execute(
-        "DELETE FROM resume_variants WHERE resume_id = ?1",
-        params![id],
-    )?;
-    tx.execute("DELETE FROM resumes WHERE id = ?1", params![id])?;
-    // Deleting the default would otherwise leave the set with none.
-    tx.execute(
-        "UPDATE resumes SET is_default = 1
-          WHERE id = (SELECT id FROM resumes ORDER BY updated_at DESC LIMIT 1)
-            AND NOT EXISTS (SELECT 1 FROM resumes WHERE is_default = 1)",
-        [],
-    )?;
-    tx.commit()?;
-    Ok(())
-}
-
-pub fn set_default_resume(conn: &mut Connection, id: &str) -> Result<()> {
-    let tx = conn.transaction()?;
-    tx.execute("UPDATE resumes SET is_default = 0", [])?;
-    tx.execute(
-        "UPDATE resumes SET is_default = 1 WHERE id = ?1",
-        params![id],
-    )?;
-    tx.commit()?;
-    Ok(())
-}
-
-pub fn load_variant(conn: &Connection, url: &str, resume_id: &str) -> Result<Option<String>> {
-    Ok(conn
-        .query_row(
-            "SELECT overrides FROM resume_variants WHERE url = ?1 AND resume_id = ?2",
-            params![url, resume_id],
-            |r| r.get(0),
-        )
-        .optional()?)
-}
-
-pub fn save_variant(
-    conn: &Connection,
-    url: &str,
-    resume_id: &str,
-    overrides: &str,
-    now: &str,
-) -> Result<()> {
-    conn.execute(
-        "INSERT INTO resume_variants (url, resume_id, overrides, updated_at)
-         VALUES (?1, ?2, ?3, ?4)
-         ON CONFLICT (url, resume_id) DO UPDATE SET
-             overrides = excluded.overrides,
-             updated_at = excluded.updated_at",
-        params![url, resume_id, overrides, now],
-    )?;
-    Ok(())
-}
-
-pub fn delete_variant(conn: &Connection, url: &str, resume_id: &str) -> Result<()> {
-    conn.execute(
-        "DELETE FROM resume_variants WHERE url = ?1 AND resume_id = ?2",
-        params![url, resume_id],
-    )?;
-    Ok(())
-}

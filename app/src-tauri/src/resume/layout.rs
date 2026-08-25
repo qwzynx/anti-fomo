@@ -469,11 +469,7 @@ fn display_url(url: &str, label: &str) -> String {
     if trimmed.is_empty() {
         return label.to_string();
     }
-    if label.is_empty() {
-        trimmed.to_string()
-    } else {
-        trimmed.to_string()
-    }
+    trimmed.to_string()
 }
 
 fn heading(pen: &mut Pen, title: &str, base: f32) {
