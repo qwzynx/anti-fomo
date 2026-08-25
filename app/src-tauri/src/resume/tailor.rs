@@ -32,8 +32,16 @@ use crate::skills;
 pub struct Variant {
     pub theme: Option<Theme>,
     pub headline: Option<String>,
-    /// Entry or bullet id → forced in (`true`, and never trimmed) or out
-    /// (`false`). Absent means the auto pass decides.
+    /// Section, entry or bullet id → forced in (`true`, and never trimmed) or
+    /// out (`false`). Absent means the auto pass decides.
+    ///
+    /// All three levels, because what is worth putting in front of one
+    /// employer is not what is worth putting in front of another: a project
+    /// that earns its space on a graphics posting is dead weight on a data
+    /// one, and the whole Leadership section can be the wrong thing to spend
+    /// six lines on. Only bullets have a meaningful `true`; sections and
+    /// entries are never trimmed to fit, so for them this map is a way to say
+    /// "not this time" and nothing else.
     pub include: BTreeMap<String, bool>,
     /// Section id → the order its entries should appear in.
     pub order: BTreeMap<String, Vec<String>>,
@@ -112,7 +120,7 @@ pub fn everything(resume: &Resume) -> Selection {
             }
         }
     }
-    selection.skills = skills_block(resume, &[], &[], &[]);
+    selection.skills = skills_block(resume, &[], &[], &[], &BTreeMap::new());
     selection
 }
 
@@ -133,7 +141,13 @@ pub fn tailor(
         order: variant.order.clone(),
         text: variant.text.clone(),
         required: required.to_vec(),
-        skills: skills_block(resume, required, have, &variant.skills_lead),
+        skills: skills_block(
+            resume,
+            required,
+            have,
+            &variant.skills_lead,
+            &variant.include,
+        ),
         ..Selection::default()
     };
 
@@ -141,6 +155,11 @@ pub fn tailor(
     // best match. A résumé is a document the user wrote on purpose; the default
     // has to be "all of it", with the trim explained.
     for section in &resume.sections {
+        // A section switched off takes its entries with it. Layout draws no
+        // heading over nothing, so this is all it takes to leave one out.
+        if variant.include.get(&section.id) == Some(&false) {
+            continue;
+        }
         for entry in &section.entries {
             if variant.include.get(&entry.id) == Some(&false) {
                 continue;
@@ -315,7 +334,9 @@ fn skills_block(
     required: &[String],
     have: &[String],
     lead: &[String],
+    include: &BTreeMap<String, bool>,
 ) -> Vec<(String, Vec<String>)> {
+    let kept = |id: &String| include.get(id) != Some(&false);
     let priority: HashSet<&str> = required
         .iter()
         .chain(lead.iter())
@@ -325,8 +346,13 @@ fn skills_block(
     let curated: Vec<(String, Vec<String>)> = resume
         .sections
         .iter()
-        .filter(|s| s.kind == SectionKind::Skills)
+        .filter(|s| s.kind == SectionKind::Skills && kept(&s.id))
         .flat_map(|s| &s.entries)
+        // A skills line is an entry like any other, and it is the one a
+        // posting most often wants a different half of. Excluding it here
+        // rather than only in the entry loop is what makes it disappear: the
+        // block is built from the résumé, not from `selection.entries`.
+        .filter(|entry| kept(&entry.id))
         .filter_map(|entry| {
             let label = entry.title.trim();
             let list = entry.detail.as_deref().unwrap_or("");
@@ -478,6 +504,54 @@ mod tests {
         let s = tailor(&r, &[], &[], &variant, &Theme::default());
         assert!(!s.entries.contains("e1"));
         assert!(s.bullets.is_empty());
+    }
+
+    /// A whole section switched off for one posting — six lines of Leadership
+    /// that a research lab will not read.
+    #[test]
+    fn an_excluded_section_takes_its_entries_with_it() {
+        let r = sample();
+        let experience = r
+            .sections
+            .iter()
+            .find(|s| s.kind == SectionKind::Experience)
+            .unwrap();
+        let mut variant = Variant::default();
+        variant.include.insert(experience.id.clone(), false);
+        let s = tailor(&r, &[], &[], &variant, &Theme::default());
+        assert!(!s.entries.contains("e1"), "the section's entry survived");
+        assert!(s.bullets.is_empty());
+    }
+
+    /// The skills block is built from the résumé rather than from the selected
+    /// entries, so it needs the exclusion applied to it directly or a line the
+    /// user switched off would print anyway.
+    #[test]
+    fn an_excluded_skills_line_leaves_the_block() {
+        let mut r = sample();
+        let skills_section = r
+            .sections
+            .iter_mut()
+            .find(|s| s.kind == SectionKind::Skills)
+            .unwrap();
+        skills_section.entries.push(Entry {
+            id: "s-lang".into(),
+            title: "Languages".into(),
+            detail: Some("Rust, TypeScript".into()),
+            ..Entry::default()
+        });
+        skills_section.entries.push(Entry {
+            id: "s-design".into(),
+            title: "Design".into(),
+            detail: Some("Figma".into()),
+            ..Entry::default()
+        });
+
+        let mut variant = Variant::default();
+        variant.include.insert("s-design".into(), false);
+        let s = tailor(&r, &[], &[], &variant, &Theme::default());
+        let labels: Vec<&str> = s.skills.iter().map(|(l, _)| l.as_str()).collect();
+        assert_eq!(labels, vec!["Languages"], "the excluded line still printed");
     }
 
     #[test]
