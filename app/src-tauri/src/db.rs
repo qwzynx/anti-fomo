@@ -498,6 +498,7 @@ fn load_items_where<P: rusqlite::Params>(
             // skill lists.
             matched_interests: Vec::new(),
             required_skills: Vec::new(),
+            key_skills: Vec::new(),
             matched_skills: Vec::new(),
             company_tier: None,
             score_breakdown: Vec::new(),
@@ -1487,12 +1488,14 @@ mod tests {
         let mut conn = open(&path.0).unwrap();
 
         save_items(&mut conn, &stale_items(2_000)).unwrap();
-        conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)").unwrap();
+        conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")
+            .unwrap();
         let full = path.size();
 
         prune_older_than(&conn, 60).unwrap();
         incremental_vacuum(&conn).unwrap();
-        conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)").unwrap();
+        conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")
+            .unwrap();
 
         // Nothing may be left on the freelist: a partial reclaim is the exact
         // failure this test exists for, and it is invisible in the row counts.
@@ -1535,7 +1538,10 @@ mod tests {
             .unwrap();
         assert_eq!(mode, INCREMENTAL_AUTO_VACUUM);
         assert_eq!(load_resume(&conn, "r1").unwrap().unwrap().name, "Backend");
-        assert!(load_states(&conn).unwrap().saved.contains("https://x.test/keep"));
+        assert!(load_states(&conn)
+            .unwrap()
+            .saved
+            .contains("https://x.test/keep"));
     }
 
     // --- item state ---

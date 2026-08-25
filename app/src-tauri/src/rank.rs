@@ -576,25 +576,46 @@ pub fn personalize_at(mut items: Vec<Item>, profile: &Profile, now: DateTime<Utc
         // part of scoring, and "skills this posting asks for" is meaningless
         // for an article that merely mentions a technology.
         if item.item_type.is_opportunity() {
-            let required = skills::extract(item);
-            let matched: Vec<String> = required
+            let demand = skills::demand(item);
+            let has = |skill: &str| profile.skills.iter().any(|u| u == skill);
+            let matched: Vec<String> = demand
                 .iter()
-                .filter(|s| profile.skills.iter().any(|u| u == *s))
-                .cloned()
+                .filter(|d| has(&d.skill))
+                .map(|d| d.skill.clone())
                 .collect();
 
-            if required.len() >= MIN_SKILLS_TO_SCORE {
-                let coverage = matched.len() as f64 / required.len() as f64;
+            if demand.len() >= MIN_SKILLS_TO_SCORE {
+                // Weighted by how hard the posting asked, not by how many
+                // chips there are. Covering the two things a posting called
+                // non-negotiable is a better fit than covering six it merely
+                // preferred, and the unweighted ratio said the opposite —
+                // which is how a posting with a long "nice to have" list
+                // ranked below one that wanted nothing in particular.
+                let total: f32 = demand.iter().map(|d| d.weight).sum();
+                let met: f32 = demand
+                    .iter()
+                    .filter(|d| has(&d.skill))
+                    .map(|d| d.weight)
+                    .sum();
+                let coverage = match total > 0.0 {
+                    true => (met / total) as f64,
+                    false => 0.0,
+                };
                 add(
-                    &format!("Skills you have ({}/{})", matched.len(), required.len()),
+                    &format!("Skills you have ({}/{})", matched.len(), demand.len()),
                     w.skill * coverage,
                     &mut score,
                     &mut breakdown,
                 );
             }
 
+            item.key_skills = demand
+                .iter()
+                .filter(|d| d.emphasis == skills::Emphasis::Must)
+                .map(|d| d.skill.clone())
+                .collect();
             item.matched_skills = matched;
-            item.required_skills = required;
+            item.required_skills = demand.into_iter().map(|d| d.skill).collect();
         }
 
         // 5. Recency
@@ -1012,6 +1033,52 @@ mod tests {
         assert!(none[0].matched_skills.is_empty());
         // Required is recorded regardless of what the user has.
         assert!(!none[0].required_skills.is_empty());
+    }
+
+    /// Coverage is weighed by how hard the posting asked, not by how many
+    /// chips it produced. Two readers who each cover two of four skills are
+    /// not equally good fits when one covers the pair the posting called
+    /// non-negotiable and the other covers the pair it called optional.
+    #[test]
+    fn coverage_weighs_what_the_posting_insisted_on() {
+        let now = Utc::now();
+        // A title of its own: `item` derives the URL from the title and
+        // `skills::demand` memoizes on the URL, so two fixtures sharing a
+        // title would have the second read back the first one's answer.
+        let mut it = item("Intern at Bar", "S", ItemType::Internship).with_timestamp(now);
+        it.requirements = Some(
+            "Strong Python and 3+ years of PostgreSQL.\n             Nice to have:\n             Docker.\n             Kubernetes."
+                .into(),
+        );
+
+        let required = personalize_at(
+            vec![it.clone()],
+            &profile(
+                "General",
+                &[],
+                &["Python".to_string(), "PostgreSQL".to_string()],
+            ),
+            now,
+        );
+        let preferred = personalize_at(
+            vec![it],
+            &profile(
+                "General",
+                &[],
+                &["Docker".to_string(), "Kubernetes".to_string()],
+            ),
+            now,
+        );
+
+        assert_eq!(required[0].matched_skills.len(), 2);
+        assert_eq!(preferred[0].matched_skills.len(), 2);
+        assert!(
+            required[0].relevance_score > preferred[0].relevance_score,
+            "covering the must-haves scored {:?}, the nice-to-haves {:?}",
+            required[0].relevance_score,
+            preferred[0].relevance_score
+        );
+        assert_eq!(required[0].key_skills, vec!["Python", "PostgreSQL"]);
     }
 
     #[test]

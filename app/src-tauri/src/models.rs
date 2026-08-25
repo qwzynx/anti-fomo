@@ -220,6 +220,13 @@ pub struct Item {
     /// that mentions Kubernetes is not asking you to know it.
     #[serde(default)]
     pub required_skills: Vec<String>,
+    /// The subset of `required_skills` the posting treats as non-negotiable —
+    /// named in the requirements or the title, or carrying a "must have" /
+    /// "4+ years of" cue. The rest arrived under a "nice to have" heading or
+    /// only in the duties, and a panel that draws both as the same chip has
+    /// thrown away the thing the reader is deciding on.
+    #[serde(default)]
+    pub key_skills: Vec<String>,
     /// The subset of `required_skills` the user has declared they have.
     #[serde(default)]
     pub matched_skills: Vec<String>,
@@ -284,6 +291,7 @@ impl Item {
             seniority: None,
             matched_interests: Vec::new(),
             required_skills: Vec::new(),
+            key_skills: Vec::new(),
             matched_skills: Vec::new(),
             company_tier: None,
             score_breakdown: Vec::new(),

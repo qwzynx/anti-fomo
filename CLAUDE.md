@@ -35,11 +35,22 @@ Everything ships from `/app`:
     scoring, round-robin per-source diversification, skill extraction).
     Unit-tested. **A posting's skills come from its own fetched text and
     nothing else** — its requirements, its duties, its description and the
-    tags the source attached, read together. Nothing is inferred from the job
-    title, so a posting whose page could not be read reports no skills at all;
-    `skills::from_posting` says which case it is, and `hasScrapedPosting` in
-    `lib/item.ts` must keep answering the same question, since that is what
-    decides whether the UI shows a panel or explains its absence.
+    tags the source attached, read together. Read **line by line**: where a
+    mention sits is most of what it means, so `skills::demand` returns each
+    skill with an `Emphasis` (must / nice / mentioned) and a weight, a
+    "Preferred qualifications:" heading governs the bullets under it, and a
+    skill the posting only offers to *teach* is dropped rather than reported
+    as an ask. `extract` is the names out of that, and is what
+    `required_skills` still is; `key_skills` is the must-have subset.
+    Matching is boundary-aware — a leading or trailing space in a catalog
+    keyword means *word boundary*, not a literal space, which is what lets
+    `" rust "` match "(Rust)" and "Rust/Go" while `+`/`#`/`&` count as word
+    bytes so "C" stays out of "C++" and "R" out of "R&D". Nothing is inferred
+    from the job title, so a posting whose page could not be read reports no
+    skills at all; `skills::from_posting` says which case it is, and
+    `hasScrapedPosting` in `lib/item.ts` must keep answering the same question,
+    since that is what decides whether the UI shows a panel or explains its
+    absence.
     `skills::from_text(text, strict)` is the same reader pointed at one string,
     and it is how a résumé bullet gets its skills — so a bullet and a job
     description are matched over one vocabulary rather than two that drift.
@@ -47,9 +58,21 @@ Everything ships from `/app`:
     where " go " is far more often the verb than the language.
   - `resume/` — the résumé builder and the tailored PDF. Layered so one thing
     knows about each concern: `model` (what a résumé is), `theme` (how it
-    looks), `tailor` (what belongs on the page for a given posting), `text`
-    (how wide a string is), `layout` (where every box goes), `pdf`, and
-    `jsonresume`. **`layout` emits positioned boxes and has two consumers** —
+    looks), `tailor` (what belongs on the page for a given posting), `terms`
+    (what a posting is about, in its own words), `text` (how wide a string
+    is), `layout` (where every box goes), `pdf`, and `jsonresume`.
+    **A bullet is matched to a posting twice**: on the catalog skills they
+    share, weighted by how hard the posting asked, and on how much of the
+    posting's own vocabulary it speaks. `terms` is the second half — stemmed,
+    bigrammed, boilerplate-stripped, weighted by section and repetition —
+    because the catalog is a hundred and fifty technologies and a posting says
+    far more, and a bullet about an on-call rotation names no catalog skill
+    and is exactly what an SRE posting wants kept. The two are reported apart
+    (`Selection::why` vs `Selection::echo`) so the weaker evidence cannot read
+    as coverage. Tailoring also *orders*: Projects, Leadership and Awards lead
+    with the entry that speaks to the posting, and Experience and Education
+    never do — a reordered work history reads as a mistake.
+    **`layout` emits positioned boxes and has two consumers** —
     `pdf.rs` writes them into a PDF and `ResumePreview.svelte` draws the very
     same boxes as SVG. A résumé's whole job is fitting a page, so a preview
     laid out separately from the file would drift about where a line breaks;

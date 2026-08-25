@@ -9,7 +9,7 @@
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::models::Item;
 
@@ -19,12 +19,18 @@ use crate::models::Item;
 /// chip rows with; the keywords decide whether a posting is asking for that
 /// skill.
 ///
-/// Keyword rules, inherited from [`crate::rank::INTERESTS`]: matching is naive
-/// substring containment over a space-padded lowercased haystack, so every
-/// keyword is either long enough to be distinctive or written space-padded
-/// (`" go "`, `" c "`, `" r "`). A bare short token like `"go"` or `"r"` fires
-/// inside ordinary words — "algorithms", "great" — and is never acceptable
-/// here. The tests at the bottom of this file guard exactly that.
+/// Keyword rules: matching is substring containment over a lowercased
+/// haystack, so every keyword is either long enough to be distinctive or
+/// written with a leading and/or trailing space (`" go "`, `" c "`, `" r "`).
+/// A bare short token like `"go"` or `"r"` fires inside ordinary words —
+/// "algorithms", "great" — and is never acceptable here.
+///
+/// Those outer spaces mean *word boundary*, not *literal space* — see
+/// [`Pattern`]. `" rust "` therefore matches "(Rust)", "Rust/Go" and
+/// "Rust-based" as well as "in Rust ", which is how postings actually write
+/// it, while still refusing the "rust" inside "trust". A keyword with no
+/// padding still matches anywhere, so "Dockerized" counts as Docker. The
+/// tests at the bottom of this file guard both halves.
 /// One skill: its display name and the keywords that betray it in a posting.
 pub type Skill = (&'static str, &'static [&'static str]);
 /// One category: its display name and the skills under it.
@@ -509,12 +515,252 @@ pub fn category_of(skill: &str) -> Option<&'static str> {
     })
 }
 
-/// Which catalog skills this posting wants, in catalog order.
+/// How hard a posting is asking for a skill.
+///
+/// "Preferred: Kubernetes" and "5+ years of production Kubernetes" are not the
+/// same ask, and a panel that draws both as the same chip has thrown away the
+/// distinction the reader is actually deciding on. So extraction reads the
+/// posting a line at a time and keeps the context each mention arrived in.
+///
+/// Ordered strongest-first, and the ordering is load-bearing: a skill named in
+/// several places keeps the strongest emphasis any one of them gave it.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "lowercase")]
+pub enum Emphasis {
+    /// In the requirements, in the title, or carrying a "must have" /
+    /// "proficiency in" / "3+ years of" cue wherever it appeared.
+    Must,
+    /// Under a "nice to have" / "preferred" / "bonus" heading, or with one of
+    /// those cues on its own line.
+    Nice,
+    /// In the duties or the blurb, with nothing marking it as an ask.
+    Mentioned,
+}
+
+/// One skill a posting asks for, and how hard it asks.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct Demand {
+    pub skill: String,
+    /// How much of the posting is about this skill. Only ever meaningful
+    /// against the other demands of the *same* posting — a terse Greenhouse
+    /// blurb and a 9 KB Workday page do not score on one scale — which is how
+    /// every consumer uses it.
+    pub weight: f32,
+    pub emphasis: Emphasis,
+}
+
+/// What a line of a posting is doing with the skills it names.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Tone {
+    /// "Must have", "proficiency in", "4+ years of".
+    Must,
+    /// A requirements bullet with no cue either way.
+    Plain,
+    /// "Nice to have", "preferred", "a plus", "familiarity with".
+    Nice,
+    /// "You will learn", "no prior experience needed". The posting names the
+    /// skill in order to say it is *not* asking for it.
+    Learn,
+}
+
+/// Cues that mean the posting is offering the skill rather than asking for it.
+///
+/// Tried first, and tightly worded, because this is the only tone that can
+/// remove a skill from the panel outright. "Willingness to learn Kubernetes"
+/// is not a Kubernetes requirement; "exposure to Kubernetes" is a weak one,
+/// and lives in [`NICE_CUES`] instead.
+const LEARN_CUES: &[&str] = &[
+    "you will learn",
+    "you'll learn",
+    "you’ll learn",
+    "opportunity to learn",
+    "chance to learn",
+    "will be trained",
+    "we will train",
+    "we'll train",
+    "we will teach",
+    "we'll teach",
+    "training provided",
+    "training will be provided",
+    "no prior experience",
+    "no previous experience",
+    "no experience with",
+    "no experience in",
+    "not required to have",
+    "willingness to learn",
+    "eagerness to learn",
+    "eager to learn",
+    "interest in learning",
+    "excited to learn",
+    "introduction to",
+    "get exposure to",
+    "you will be introduced",
+];
+
+/// Cues that mean the skill is wanted but not required.
+const NICE_CUES: &[&str] = &[
+    "nice to have",
+    "nice-to-have",
+    "preferred",
+    "preferable",
+    "preference will",
+    "a plus",
+    "big plus",
+    "plus if",
+    "bonus",
+    "an asset",
+    "is an asset",
+    "considered an asset",
+    "desirable",
+    "advantageous",
+    "would be great",
+    "we'd love",
+    "we’d love",
+    "ideally",
+    "optional",
+    "not required",
+    "familiarity with",
+    "exposure to",
+    "some experience",
+    "any experience",
+    "helpful but",
+    "good to have",
+];
+
+/// Cues that mean the skill is a hard requirement, wherever the line sits.
+const MUST_CUES: &[&str] = &[
+    "must have",
+    "must-have",
+    "must be able",
+    "you must",
+    "is required",
+    "are required",
+    "required:",
+    "requirement",
+    "minimum qualification",
+    "basic qualification",
+    "essential",
+    "proficien",
+    "expertise",
+    "expert in",
+    "strong ",
+    "solid ",
+    "deep ",
+    "extensive",
+    "advanced knowledge",
+    "in-depth",
+    "hands-on experience",
+    "demonstrated",
+    "track record",
+];
+
+/// Whether a line asks for a number of years, which is the most reliable
+/// "this is a hard requirement" mark a posting has. Written out rather than
+/// pulled from `regex` because it runs once per line of every posting in an
+/// 18,000-item cache and a scan for one word is cheaper than a match.
+fn wants_years(line: &str) -> bool {
+    let bytes = line.as_bytes();
+    let mut from = 0;
+    while let Some(at) = line[from..].find("year") {
+        let at = from + at;
+        let back = at.saturating_sub(8);
+        if bytes[back..at].iter().any(u8::is_ascii_digit) {
+            return true;
+        }
+        from = at + 4;
+    }
+    false
+}
+
+/// The three cue lists in one automaton, pattern index → what it means.
+///
+/// Read once per line of every posting in the cache, which is the reason this
+/// is not three `iter().any(|cue| line.contains(cue))` passes: that is
+/// seventy-odd scans of every line, and it cost half a second of the cold
+/// ranking pass over a 13,000-item store all by itself.
+fn cues() -> &'static (aho_corasick::AhoCorasick, Vec<Tone>) {
+    static CUES: OnceLock<(aho_corasick::AhoCorasick, Vec<Tone>)> = OnceLock::new();
+    CUES.get_or_init(|| {
+        let mut patterns: Vec<&str> = Vec::new();
+        let mut tones: Vec<Tone> = Vec::new();
+        for (list, tone) in [
+            (LEARN_CUES, Tone::Learn),
+            (NICE_CUES, Tone::Nice),
+            (MUST_CUES, Tone::Must),
+        ] {
+            for cue in list {
+                patterns.push(cue);
+                tones.push(tone);
+            }
+        }
+        let automaton =
+            aho_corasick::AhoCorasick::new(&patterns).expect("the cue lists build an automaton");
+        (automaton, tones)
+    })
+}
+
+/// Tones ordered by how specific they are, for picking between two on one line.
+fn rank(tone: Tone) -> u8 {
+    match tone {
+        Tone::Learn => 0,
+        Tone::Nice => 1,
+        Tone::Must => 2,
+        Tone::Plain => 3,
+    }
+}
+
+/// Longest a line may be and still govern the ones under it. Borrowed from
+/// `scrapers::sections`, and for the same reason: "Preferred qualifications"
+/// is a heading, a 200-character paragraph mentioning a preference is not.
+const MAX_CUE_HEADING: usize = 90;
+
+/// Which part of the posting a line came from.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Field {
+    Title,
+    Requirements,
+    Responsibilities,
+    Description,
+    /// The one line the unenriched sources give us. Read as an ask rather than
+    /// a mention: it is everything we know about the posting, so a stack named
+    /// there is the posting's stack.
+    Scraped,
+}
+
+impl Field {
+    /// How much a mention here is worth. The requirements are where a posting
+    /// says what it wants; the blurb is where it says what the company does.
+    fn base(self) -> f32 {
+        match self {
+            Field::Requirements => 3.0,
+            Field::Title | Field::Scraped => 2.0,
+            Field::Responsibilities => 1.6,
+            Field::Description => 1.0,
+        }
+    }
+
+    /// What an uncued mention here means.
+    fn plain_emphasis(self) -> Emphasis {
+        match self {
+            Field::Requirements | Field::Title | Field::Scraped => Emphasis::Must,
+            Field::Responsibilities | Field::Description => Emphasis::Mentioned,
+        }
+    }
+}
+
+/// What this posting asks for, in catalog order, with how hard it asks.
 ///
 /// Read off the posting and nothing else: catalog keywords found in the
 /// requirements, the duties and the description the enrichment pass fetched,
 /// plus any skill the source tagged the posting with. A posting whose page we
 /// could not read reports nothing, and the UI says so.
+///
+/// The reading is line by line rather than over one concatenated blob, because
+/// where a mention sits is most of what it means. A line under "Preferred
+/// qualifications" is a different ask from the same words under "Minimum
+/// qualifications", and "you will learn Kubernetes" is the posting telling you
+/// it is *not* asking for Kubernetes — which the blob read as a requirement
+/// like any other.
 ///
 /// There used to be a `ROLES` table here that guessed a toolset from the job
 /// title where the fetch came back empty. It is gone on purpose. A guess and a
@@ -526,7 +772,7 @@ pub fn category_of(skill: &str) -> Option<&'static str> {
 /// asking you to know it — so callers gate on
 /// [`ItemType::is_opportunity`](crate::models::ItemType::is_opportunity)
 /// rather than paying for this on every row of the feed.
-pub fn extract(item: &Item) -> Vec<String> {
+pub fn demand(item: &Item) -> Vec<Demand> {
     // Memoized because this is a pure function of the item's text, and the
     // caller runs it over the same unchanging cache again and again: one
     // `loadAll()` in the UI ranks the feed and the hub back to back, and every
@@ -542,7 +788,7 @@ pub fn extract(item: &Item) -> Vec<String> {
         return hit.clone();
     }
 
-    let found = extract_uncached(item);
+    let found = demand_uncached(item);
     let mut cache = memo().lock().unwrap();
     // The keys are URLs, so this is bounded by the item cache — but a long
     // session that refreshes for weeks would still creep. Dropping the whole
@@ -552,6 +798,15 @@ pub fn extract(item: &Item) -> Vec<String> {
     }
     cache.insert(key.clone(), found.clone());
     found
+}
+
+/// Which catalog skills this posting wants, in catalog order.
+///
+/// The names out of [`demand`], for the callers that only need the set —
+/// `Item::required_skills`, the match intersection, the chips. Everything that
+/// has to tell a must-have from a nice-to-have reads `demand` instead.
+pub fn extract(item: &Item) -> Vec<String> {
+    demand(item).into_iter().map(|d| d.skill).collect()
 }
 
 /// Comfortably larger than any cache the retention window can hold, so
@@ -565,8 +820,8 @@ pub fn extract(item: &Item) -> Vec<String> {
 /// so the number has to stay ahead of `RETENTION_DAYS` worth of postings.
 const MEMO_CAPACITY: usize = 100_000;
 
-fn memo() -> &'static Mutex<HashMap<String, Vec<String>>> {
-    static MEMO: OnceLock<Mutex<HashMap<String, Vec<String>>>> = OnceLock::new();
+fn memo() -> &'static Mutex<HashMap<String, Vec<Demand>>> {
+    static MEMO: OnceLock<Mutex<HashMap<String, Vec<Demand>>>> = OnceLock::new();
     MEMO.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
@@ -610,6 +865,30 @@ fn keywords_for<'a>(name: &str, keywords: &'a [&'a str], long: bool) -> &'a [&'a
     }
 }
 
+/// Bytes that continue a word, for deciding whether a keyword landed on one.
+///
+/// `+`, `#` and `&` are word bytes here even though they are punctuation
+/// everywhere else, and each earns it: without `+` and `#` the keyword `" c "`
+/// matches the "C" of "C++" and "C#", which are their own skills; without `&`
+/// the keyword `" r "` matches the "R" of "R&D", which is not a language.
+fn is_word(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || matches!(b, b'+' | b'#' | b'&')
+}
+
+/// One catalog keyword as the automaton stores it.
+///
+/// A leading or trailing space in a keyword means "a word boundary here", not
+/// "a literal space" — which is what lets `" rust "` match "(Rust)", "Rust/Go"
+/// and "Rust-based" as well as "in Rust ", all of which a literal space missed
+/// and all of which are how postings really write it. Keywords with no padding
+/// keep matching anywhere, so "Dockerized" still counts as Docker.
+struct Pattern {
+    /// Index into the flattened catalog.
+    owner: usize,
+    left: bool,
+    right: bool,
+}
+
 /// Every catalog keyword in one automaton, so a posting is read once.
 ///
 /// The scan used to be `keyword.iter().any(|kw| text.contains(kw))` per skill:
@@ -625,33 +904,61 @@ fn keywords_for<'a>(name: &str, keywords: &'a [&'a str], long: bool) -> &'a [&'a
 /// that contains it.
 struct Matcher {
     automaton: aho_corasick::AhoCorasick,
-    /// Pattern index → index into the flattened catalog.
-    owner: Vec<usize>,
+    patterns: Vec<Pattern>,
 }
 
 impl Matcher {
     fn build(long: bool) -> Self {
-        let mut patterns: Vec<&str> = Vec::new();
-        let mut owner: Vec<usize> = Vec::new();
+        let mut literals: Vec<&str> = Vec::new();
+        let mut patterns: Vec<Pattern> = Vec::new();
         for (skill, (name, keywords)) in catalog().iter().enumerate() {
             for keyword in keywords_for(name, keywords, long) {
-                patterns.push(keyword);
-                owner.push(skill);
+                // Only the outer spaces are boundary marks; the one inside
+                // "vue 3" or "shell script" is a space the posting has to have.
+                let literal = keyword.trim_matches(' ');
+                if literal.is_empty() {
+                    continue;
+                }
+                literals.push(literal);
+                patterns.push(Pattern {
+                    owner: skill,
+                    left: keyword.starts_with(' '),
+                    right: keyword.ends_with(' '),
+                });
             }
         }
         Matcher {
-            automaton: aho_corasick::AhoCorasick::new(&patterns)
+            automaton: aho_corasick::AhoCorasick::new(&literals)
                 .expect("the catalog's keywords build an automaton"),
-            owner,
+            patterns,
+        }
+    }
+
+    /// Calls `on_hit(offset, skill)` for every keyword that lands on a word
+    /// boundary, in increasing position — one pass over the whole text.
+    ///
+    /// Deliberately one call for a whole posting rather than one per line.
+    /// Restarting the automaton per line cost 150 ms of the cold ranking pass
+    /// over a 13,000-item store; the caller wants line context, and a binary
+    /// search from the offset is far cheaper than the restarts.
+    fn scan(&self, text: &str, mut on_hit: impl FnMut(usize, usize)) {
+        let bytes = text.as_bytes();
+        for m in self.automaton.find_overlapping_iter(text) {
+            let pattern = &self.patterns[m.pattern().as_usize()];
+            if pattern.left && m.start() > 0 && is_word(bytes[m.start() - 1]) {
+                continue;
+            }
+            if pattern.right && m.end() < bytes.len() && is_word(bytes[m.end()]) {
+                continue;
+            }
+            on_hit(m.start(), pattern.owner);
         }
     }
 
     /// Which catalog entries this text names, as a flag per skill.
     fn hits(&self, text: &str) -> Vec<bool> {
         let mut found = vec![false; catalog().len()];
-        for m in self.automaton.find_overlapping_iter(text) {
-            found[self.owner[m.pattern().as_usize()]] = true;
-        }
+        self.scan(text, |_, skill| found[skill] = true);
         found
     }
 }
@@ -702,7 +1009,7 @@ pub fn from_posting(item: &Item) -> bool {
 
 /// The catalog skills a piece of free text names.
 ///
-/// The posting side reaches this through [`extract`]; a résumé bullet reaches
+/// The posting side reaches this through [`demand`]; a résumé bullet reaches
 /// it directly, which is the whole reason "Built a Rust service backed by
 /// SQLite" and a posting asking for Rust and SQLite meet on one vocabulary
 /// instead of two that drift.
@@ -741,72 +1048,241 @@ fn hits_to_names(found: Vec<bool>) -> Vec<String> {
         .collect()
 }
 
-fn extract_uncached(item: &Item) -> Vec<String> {
-    // Everything the employer wrote, read together. The requirements are the
-    // densest part and the description the loosest, but a posting that names
-    // its stack in the opening paragraph and never repeats it in a bullet is
-    // ordinary, and reading only the bullets left those skills off the panel.
+/// One line of the posting, as a range into the buffer every field was
+/// lowercased into. Ranges rather than strings so the whole read is one
+/// allocation, which matters: this runs over every opportunity in the cache.
+struct Line {
+    span: std::ops::Range<usize>,
+    field: Field,
+}
+
+/// Appends a field's lines to the buffer, recording where each one landed.
+fn push_field(buf: &mut String, lines: &mut Vec<Line>, field: Field, text: &str) {
+    // `scrapers::details::field` joins a section's lines with newlines, which
+    // is exactly the structure this wants back: one bullet, one line.
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let start = buf.len();
+        buf.push_str(trimmed);
+        lines.push(Line {
+            span: start..buf.len(),
+            field,
+        });
+        buf.push('\n');
+    }
+}
+
+/// Which line an offset falls in. The spans are sorted and disjoint, and every
+/// keyword sits inside one of them because none of them contains a newline.
+fn line_at(lines: &[Line], at: usize) -> Option<usize> {
+    let index = lines.partition_point(|line| line.span.end <= at);
+    lines
+        .get(index)
+        .filter(|line| line.span.contains(&at))
+        .map(|_| index)
+}
+
+/// The tone every line carries, from one pass of the cue automaton over the
+/// whole buffer. `None` means the line said nothing either way and should
+/// inherit the heading above it.
+fn tone_per_line(buf: &str, lines: &[Line]) -> Vec<Option<Tone>> {
+    let mut tones: Vec<Option<Tone>> = vec![None; lines.len()];
+    let (automaton, of_pattern) = cues();
+    for m in automaton.find_overlapping_iter(buf) {
+        let Some(index) = line_at(lines, m.start()) else {
+            continue;
+        };
+        let tone = of_pattern[m.pattern().as_usize()];
+        tones[index] = Some(match tones[index] {
+            Some(current) if rank(current) <= rank(tone) => current,
+            _ => tone,
+        });
+    }
+    // "4+ years of Kubernetes" is a hard requirement, but a line that already
+    // said "preferred" is still preferred however many years it names.
+    for (index, line) in lines.iter().enumerate() {
+        if tones[index].is_none() && wants_years(&buf[line.span.clone()]) {
+            tones[index] = Some(Tone::Must);
+        }
+    }
+    tones
+}
+
+fn demand_uncached(item: &Item) -> Vec<Demand> {
+    // Everything the employer wrote, read together but not read as one thing.
     //
-    // `perks` is deliberately not here: a benefits list is what the job pays,
+    // `perks` is deliberately absent: a benefits list is what the job pays,
     // not what it asks for, and it is where "compensation" language lives.
     //
     // `content_text` is the fallback for the sources the enrichment pass could
     // not reach — one scraped line, usually the office location, which is what
     // [`LONG_TEXT`] distinguishes from a real description below.
-    //
-    // Built into one buffer and lowercased in place. The description of a real
-    // posting averages 3.5 KB, and the `format!(…).to_lowercase()` this
-    // replaces walked that text three more times than it had to — allocating a
-    // fresh copy each time — over every one of 17,739 opportunities.
-    let fields = [
-        &item.requirements,
-        &item.responsibilities,
-        &item.description,
+    let body = [
+        (Field::Requirements, &item.requirements),
+        (Field::Responsibilities, &item.responsibilities),
+        (Field::Description, &item.description),
     ];
-    let body_len: usize = fields
+    let body_len: usize = body
         .iter()
-        .flat_map(|f| f.iter())
+        .flat_map(|(_, text)| text.iter())
         .map(|t| t.len() + 1)
         .sum();
 
-    // Padded so keywords written with leading/trailing spaces (" go ") can
-    // match at the very start or end of the text.
-    let mut text = String::with_capacity(item.title.len() + body_len + item.content_text.len() + 3);
-    text.push(' ');
-    text.push_str(&item.title);
-    let title_end = text.len();
-    for field in fields.into_iter().flatten() {
-        text.push(' ');
-        text.push_str(field);
+    let mut buf = String::with_capacity(item.title.len() + body_len + item.content_text.len() + 3);
+    let mut lines: Vec<Line> = Vec::new();
+    push_field(&mut buf, &mut lines, Field::Title, &item.title);
+    let title_end = buf.len();
+    for (field, text) in body {
+        if let Some(text) = text {
+            push_field(&mut buf, &mut lines, field, text);
+        }
     }
-    if text[title_end..].trim().is_empty() {
-        text.push(' ');
-        text.push_str(&item.content_text);
+    if buf.len() == title_end {
+        push_field(&mut buf, &mut lines, Field::Scraped, &item.content_text);
     }
-    text.push(' ');
     // Every catalog keyword is ASCII, so ASCII casefolding is exactly as
-    // precise here as the Unicode one and does not have to reallocate.
-    text.make_ascii_lowercase();
-    let long = text.len() > LONG_TEXT;
+    // precise here as the Unicode one and does not have to reallocate. It also
+    // leaves every byte offset alone, which is what makes the spans valid.
+    buf.make_ascii_lowercase();
+    let long = buf.len() > LONG_TEXT;
 
-    let mut found = matcher(long).hits(&text);
+    // Two passes over the buffer, each of them one pass — which skills every
+    // line names, and what tone every line carries — and then the read itself
+    // in line order. The alternative, running both automatons per line, is the
+    // same bytes and several hundred thousand more automaton restarts.
+    let mut hits: Vec<(usize, usize)> = Vec::new();
+    let mut last = vec![usize::MAX; catalog().len()];
+    matcher(long).scan(&buf, |at, skill| {
+        let Some(line) = line_at(&lines, at) else {
+            return;
+        };
+        // A line naming Python twice is one line about Python.
+        if last[skill] == line {
+            return;
+        }
+        last[skill] = line;
+        hits.push((line, skill));
+    });
+    // Matches arrive in increasing position and every keyword sits inside one
+    // line, so this is already grouped by line — but sorting is cheap and the
+    // grouping below must not depend on the automaton's iteration order.
+    hits.sort_unstable();
+
+    // Most of the cache is postings that name nothing the catalog knows —
+    // events, articles, a listing whose page we never reached. Reading their
+    // requirement cues is work with nowhere to land.
+    if hits.is_empty() && item.tagged_skills.is_empty() {
+        return Vec::new();
+    }
+    let tone = tone_per_line(&buf, &lines);
+
+    let n = catalog().len();
+    let mut weight = vec![0.0f32; n];
+    let mut mentions = vec![0u32; n];
+    let mut emphasis = vec![Emphasis::Mentioned; n];
+    let mut present = vec![false; n];
+    // A skill named only in a "you will learn this" line is not being asked
+    // for, and reporting it as a requirement is how a posting that offers
+    // training reads as one that demands it.
+    let mut demanded = vec![false; n];
+
+    let mut cursor = 0;
+    let mut field = None;
+    let mut sticky = Tone::Plain;
+    for (index, line) in lines.iter().enumerate() {
+        if field != Some(line.field) {
+            field = Some(line.field);
+            sticky = Tone::Plain;
+        }
+        let from = cursor;
+        while cursor < hits.len() && hits[cursor].0 == index {
+            cursor += 1;
+        }
+        let named = &hits[from..cursor];
+        let own = tone[index];
+
+        // A short line that names no skill and carries a cue is a heading, and
+        // it governs the lines under it until the next one: "Preferred
+        // qualifications:" is how most postings mark the half of the list that
+        // is optional, and the bullets beneath it never repeat the word.
+        if named.is_empty() {
+            let text = &buf[line.span.clone()];
+            if text.len() <= MAX_CUE_HEADING {
+                match own {
+                    // "Nice to have" and "You'll learn" open a block whether
+                    // or not whoever wrote them reached for a colon.
+                    Some(tone @ (Tone::Nice | Tone::Learn)) => sticky = tone,
+                    // Any other heading closes the block above it. A cue-less
+                    // short bullet — "Comfortable with ambiguity" — is not a
+                    // heading and must leave the block it sits inside alone,
+                    // or the second half of a preferred list reads as required.
+                    _ if text.ends_with(':') => sticky = own.unwrap_or(Tone::Plain),
+                    _ => {}
+                }
+            }
+            continue;
+        }
+
+        let tone = match (own.unwrap_or(sticky), sticky) {
+            // A "strong" or a "5+ years" inside a preferred block is still
+            // preferred. The heading is the more reliable signal of the two.
+            (Tone::Must, Tone::Nice) => Tone::Nice,
+            (tone, _) => tone,
+        };
+        let factor = match tone {
+            Tone::Must => 1.5,
+            Tone::Plain => 1.0,
+            Tone::Nice => 0.45,
+            Tone::Learn => 0.1,
+        };
+        let said = match tone {
+            Tone::Must => Emphasis::Must,
+            Tone::Nice => Emphasis::Nice,
+            Tone::Learn => Emphasis::Mentioned,
+            Tone::Plain => line.field.plain_emphasis(),
+        };
+
+        for &(_, skill) in named {
+            // Diminishing returns per mention: a posting that says "Python" in
+            // nine bullets wants Python more than one that says it once, but
+            // not nine times more, and without the damping a boilerplate-heavy
+            // description outranks a terse one that is entirely about the job.
+            weight[skill] += line.field.base() * factor / (1.0 + 0.5 * mentions[skill] as f32);
+            mentions[skill] += 1;
+            present[skill] = true;
+            emphasis[skill] = emphasis[skill].min(said);
+            demanded[skill] |= tone != Tone::Learn;
+        }
+    }
 
     // Skills the source tagged the posting with, where they name something the
     // catalog knows. Trusted outright — a tag is somebody's judgement about
     // the posting, not a substring that happened to appear in it.
     for tag in &item.tagged_skills {
-        if let Some(name) = canonical(tag) {
-            if let Some(at) = catalog().iter().position(|(n, _)| *n == name) {
-                found[at] = true;
-            }
-        }
+        let Some(name) = canonical(tag) else { continue };
+        let Some(at) = catalog().iter().position(|(n, _)| *n == name) else {
+            continue;
+        };
+        weight[at] += Field::Requirements.base();
+        present[at] = true;
+        demanded[at] = true;
+        emphasis[at] = Emphasis::Must;
     }
 
-    // The flags are already in catalog order, so the result is too — and
-    // therefore stable between calls.
-    hits_to_names(found)
+    catalog()
+        .iter()
+        .enumerate()
+        .filter(|(skill, _)| present[*skill] && demanded[*skill])
+        .map(|(skill, (name, _))| Demand {
+            skill: name.to_string(),
+            weight: weight[skill],
+            emphasis: emphasis[skill],
+        })
+        .collect()
 }
-
 #[cfg(test)]
 mod from_text_tests {
     use super::*;
@@ -855,8 +1331,9 @@ mod from_text_tests {
         let text = "Docker, Kubernetes and Terraform for the deploy path";
         let mut item = Item::new("Infra", "test", ItemType::Job, "https://example.com/agree");
         item.requirements = Some(text.to_string());
-        let from_posting: Vec<String> = extract_uncached(&item)
+        let from_posting: Vec<String> = demand_uncached(&item)
             .into_iter()
+            .map(|d| d.skill)
             .filter(|s| s != "Infrastructure as Code")
             .collect();
         for skill in from_text(text, true) {
@@ -889,14 +1366,23 @@ mod tests {
         Item::new(title, "Test", ItemType::Internship, url).with_content(body)
     }
 
-    /// What the automaton replaced: one `contains` pass per keyword.
+    /// What the automaton replaced, with the boundary rule spelled out: one
+    /// `match_indices` pass per keyword, checking the ends by hand.
     fn naive_hits(text: &str, long: bool) -> Vec<bool> {
         catalog()
             .iter()
             .map(|(name, keywords)| {
-                keywords_for(name, keywords, long)
-                    .iter()
-                    .any(|kw| text.contains(kw))
+                keywords_for(name, keywords, long).iter().any(|kw| {
+                    let literal = kw.trim_matches(' ');
+                    let bytes = text.as_bytes();
+                    text.match_indices(literal).any(|(at, _)| {
+                        let end = at + literal.len();
+                        let left = !kw.starts_with(' ') || at == 0 || !is_word(bytes[at - 1]);
+                        let right =
+                            !kw.ends_with(' ') || end == bytes.len() || !is_word(bytes[end]);
+                        left && right
+                    })
+                })
             })
             .collect()
     }
@@ -1252,6 +1738,156 @@ mod tests {
         let found = extract(&posting("Intern", "We use Kubernetes, and Python too."));
         let python = found.iter().position(|s| s == "Python").expect("python");
         let k8s = found
+            .iter()
+            .position(|s| s == "Kubernetes")
+            .expect("kubernetes");
+        assert!(python < k8s);
+    }
+
+    fn demanded(item: &Item, skill: &str) -> Demand {
+        demand(item)
+            .into_iter()
+            .find(|d| d.skill == skill)
+            .unwrap_or_else(|| panic!("{skill} was not read off the posting"))
+    }
+
+    /// The line a skill sits on is most of what it means. Everything under
+    /// "Preferred qualifications" is an ask the reader can fail and still be
+    /// hired, and rendering it as the same chip as "Minimum qualifications"
+    /// throws away the only thing they wanted to know.
+    #[test]
+    fn a_preferred_heading_makes_what_follows_optional() {
+        let mut item = posting("Backend Intern", "Location: Toronto, ON");
+        item.requirements = Some(
+            "Minimum qualifications:\n             Experience building services in Python.\n             Preferred qualifications:\n             Experience operating Kubernetes.\n             Comfortable with ambiguity."
+                .into(),
+        );
+
+        assert_eq!(demanded(&item, "Python").emphasis, Emphasis::Must);
+        assert_eq!(demanded(&item, "Kubernetes").emphasis, Emphasis::Nice);
+        assert!(
+            demanded(&item, "Python").weight > demanded(&item, "Kubernetes").weight,
+            "a preferred skill outweighed a required one"
+        );
+    }
+
+    /// A cue-less bullet inside a preferred block must not end it. This used
+    /// to promote the second half of every "nice to have" list to required.
+    #[test]
+    fn an_ordinary_bullet_does_not_close_a_preferred_block() {
+        let mut item = posting("Backend Intern", "Location: Toronto, ON");
+        item.requirements = Some(
+            "Nice to have:\n             Curiosity and a bias to ship.\n             Experience operating Kubernetes."
+                .into(),
+        );
+        assert_eq!(demanded(&item, "Kubernetes").emphasis, Emphasis::Nice);
+    }
+
+    /// A posting that offers to teach a skill is saying it is *not* asking for
+    /// it, and reading that line as a requirement is how an internship written
+    /// to be welcoming ends up looking like the hardest one in the feed.
+    #[test]
+    fn a_skill_the_posting_offers_to_teach_is_not_an_ask() {
+        let mut item = posting("Platform Intern", "Location: Toronto, ON");
+        item.requirements = Some(
+            "Strong Python fundamentals.\n             You will learn Kubernetes and Terraform on the job — no prior \
+             experience with either is expected."
+                .into(),
+        );
+        let found = extract(&item);
+        assert!(found.iter().any(|s| s == "Python"), "{found:?}");
+        for taught in ["Kubernetes", "Terraform"] {
+            assert!(
+                !found.iter().any(|s| s == taught),
+                "{taught} was read as a requirement in {found:?}"
+            );
+        }
+    }
+
+    /// A skill the posting only teaches is still dropped when it is the only
+    /// thing said about it — but one that is *also* asked for elsewhere stays.
+    #[test]
+    fn a_taught_skill_still_counts_where_the_posting_also_asks_for_it() {
+        let mut item = posting("Platform Intern", "Location: Toronto, ON");
+        item.requirements = Some("Experience with Kubernetes in production.".into());
+        item.description = Some("You will learn Kubernetes at a much bigger scale.".into());
+        assert_eq!(demanded(&item, "Kubernetes").emphasis, Emphasis::Must);
+    }
+
+    /// The padded keywords used to need a literal space on both sides, so
+    /// every one of these — all of them ordinary ways to write a stack — read
+    /// as a posting that named no language at all.
+    #[test]
+    fn punctuation_no_longer_hides_a_language() {
+        let found = extract(&posting(
+            "Systems Intern",
+            "Stack: Rust/Go, some Java-based services, and (TypeScript) on the client.",
+        ));
+        for expected in ["Rust", "Go", "Java", "TypeScript"] {
+            assert!(
+                found.iter().any(|s| s == expected),
+                "missing {expected} in {found:?}"
+            );
+        }
+    }
+
+    /// Word boundaries are not the same as whitespace, and the difference is
+    /// what keeps "C" out of "C++" and "R" out of "R&D".
+    #[test]
+    fn a_boundary_is_not_just_a_space() {
+        let found = extract(&posting("Intern", "We write C++ in the R&D group."));
+        assert!(found.iter().any(|s| s == "C++"), "{found:?}");
+        assert!(!found.iter().any(|s| s == "C"), "C fired inside C++");
+        assert!(!found.iter().any(|s| s == "R"), "R fired inside R&D");
+    }
+
+    /// Where a skill is named decides how much it counts for. The requirements
+    /// are the employer saying what they want; the blurb is the employer
+    /// describing itself.
+    #[test]
+    fn the_requirements_outweigh_the_blurb() {
+        let mut item = posting("Intern at Foo", "Location: Toronto, ON");
+        item.requirements = Some("Experience writing Python.".into());
+        item.description = Some("Our platform is built on Kotlin.".into());
+
+        assert!(demanded(&item, "Python").weight > demanded(&item, "Kotlin").weight);
+        assert_eq!(demanded(&item, "Python").emphasis, Emphasis::Must);
+        assert_eq!(demanded(&item, "Kotlin").emphasis, Emphasis::Mentioned);
+    }
+
+    /// "4+ years of Kubernetes" is the least ambiguous requirement mark a
+    /// posting has, wherever the line it sits on happens to be.
+    #[test]
+    fn a_years_of_experience_line_is_a_hard_requirement() {
+        let mut item = posting("Intern at Foo", "Location: Toronto, ON");
+        item.responsibilities = Some("You will help out with Terraform.".into());
+        item.description = Some("4+ years of hands-on Kubernetes.".into());
+
+        assert_eq!(demanded(&item, "Terraform").emphasis, Emphasis::Mentioned);
+        assert_eq!(demanded(&item, "Kubernetes").emphasis, Emphasis::Must);
+    }
+
+    /// Saying it nine times does not mean it nine times.
+    #[test]
+    fn repetition_has_diminishing_returns() {
+        let mut once = posting("Intern at Foo", "Location: Toronto, ON");
+        once.requirements = Some("Experience with Python.".into());
+        let mut often = posting("Intern at Foo", "Location: Toronto, ON");
+        often.requirements = Some(["Experience with Python."; 9].join("\n"));
+
+        let one = demanded(&once, "Python").weight;
+        let nine = demanded(&often, "Python").weight;
+        assert!(nine > one, "more mentions did not count for more");
+        assert!(nine < one * 4.0, "nine mentions counted like nine postings");
+    }
+
+    #[test]
+    fn demands_follow_catalog_order() {
+        let mut item = posting("Intern", "Location: Toronto, ON");
+        item.requirements = Some("We use Kubernetes, and Python too.".into());
+        let names: Vec<String> = demand(&item).into_iter().map(|d| d.skill).collect();
+        let python = names.iter().position(|s| s == "Python").expect("python");
+        let k8s = names
             .iter()
             .position(|s| s == "Kubernetes")
             .expect("kubernetes");

@@ -9,7 +9,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use crate::db;
 use crate::models::{self, Item, ItemType};
 use crate::rank::{self, personalize, DEFAULT_MAJOR};
-use crate::resume;
+use crate::resume::{self, terms};
 use crate::scrapers::{self, details};
 use crate::skills::{self, SkillCategory};
 use crate::AppState;
@@ -901,12 +901,19 @@ pub struct ResumeView {
     entries: Vec<String>,
     /// Bullet id → the posting skills it covers.
     why: std::collections::HashMap<String, Vec<String>>,
+    /// Bullet id → the posting's own words it echoes. Weaker evidence than
+    /// `why`, and kept apart from it so the UI cannot let the two read alike.
+    echo: std::collections::HashMap<String, Vec<String>>,
     /// Bullets the page budget trimmed.
     dropped: Vec<resume::tailor::Dropped>,
     /// Posting skills the surviving bullets speak to, and everything it asked
     /// for. The pane renders these as "your résumé covers 4 of 9".
     covered: Vec<String>,
     required: Vec<String>,
+    /// The subset of `required` the posting treats as non-negotiable.
+    must: Vec<String>,
+    /// What the posting keeps coming back to, in its own words.
+    focus: Vec<String>,
     /// The theme actually used, once the variant's override is applied — the
     /// picker has to show what is on screen, not what is stored.
     theme: resume::Theme,
@@ -1119,14 +1126,37 @@ fn build_view(
         .sanitized();
 
     let item = item_detail(state, url)?;
-    let required = item
+    let target = item
         .as_ref()
-        .map(|i| i.required_skills.clone())
-        .unwrap_or_default();
+        .map(target_of)
+        .unwrap_or_else(resume::Target::none);
     let have = current_skills(state);
-    let (laid_out, selection) = resume::tailored(doc, &required, &have, &variant, &theme);
+    let (laid_out, selection) = resume::tailored(doc, &target, &have, &variant, &theme);
     let company = item.as_ref().and_then(|i| i.company.clone());
     Ok(view_of(laid_out, selection, theme, doc, company.as_deref()))
+}
+
+/// Everything the tailoring pass needs to know about the posting.
+///
+/// Two readings of the same page: what it asks for, and what it keeps coming
+/// back to. A saved posting whose text the prune has since dropped still has
+/// its `required_skills` snapshot, so it falls back to the skills alone rather
+/// than to nothing.
+fn target_of(item: &Item) -> resume::Target {
+    if !skills::from_posting(item) {
+        return resume::Target::for_skills(&item.required_skills);
+    }
+    let section = |text: &Option<String>| text.as_deref().unwrap_or("").to_string();
+    let parts = [
+        (section(&item.requirements), terms::REQUIREMENTS),
+        (section(&item.responsibilities), terms::RESPONSIBILITIES),
+        (section(&item.description), terms::DESCRIPTION),
+    ];
+    let parts: Vec<(&str, f32)> = parts
+        .iter()
+        .map(|(text, weight)| (text.as_str(), *weight))
+        .collect();
+    resume::Target::new(&skills::demand(item), terms::Focus::read(&parts))
 }
 
 fn view_of(
@@ -1142,9 +1172,12 @@ fn view_of(
         bullets: selection.bullets.iter().cloned().collect(),
         entries: selection.entries.iter().cloned().collect(),
         why: selection.why,
+        echo: selection.echo,
         dropped: selection.dropped,
         covered: selection.covered,
         required: selection.required,
+        must: selection.must,
+        focus: selection.focus,
         theme,
         filename: resume::suggested_filename(&doc.contact.name, company),
     }

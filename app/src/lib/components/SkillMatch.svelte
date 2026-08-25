@@ -21,14 +21,32 @@
   const SEGMENTS = 10;
 
   const required = $derived(item.required_skills ?? []);
+  // What the posting called non-negotiable, as against what it merely
+  // preferred. A snapshot saved before the split carries no `key_skills`, and
+  // an empty set reads as "no split known" rather than "nothing is required".
+  const must = $derived(new Set(item.key_skills ?? []));
+  const split = $derived(must.size > 0 && must.size < required.length);
   // Counted against the live profile rather than the `matched_skills` the
   // payload froze, so tapping a chip below moves the meter on the tap.
   const have = $derived(required.reduce((n, s) => n + (feed.hasSkill(s) ? 1 : 0), 0));
-  const groups = $derived(groupByCategory(required, feed.skillCatalog));
-  const filled = $derived(
-    required.length === 0 ? 0 : Math.round((have / required.length) * SEGMENTS),
+  const haveMust = $derived([...must].reduce((n, s) => n + (feed.hasSkill(s) ? 1 : 0), 0));
+  // The meter tracks the must-haves where the posting drew that line. Ten of
+  // eleven is a worse answer than three of three when the eleventh is the one
+  // it said it could not do without.
+  const scored = $derived(split ? haveMust : have);
+  const total = $derived(split ? must.size : required.length);
+  const groups = $derived(
+    groupByCategory(required, feed.skillCatalog).map((group) => ({
+      ...group,
+      // Must-haves lead their category. A stable sort, so everything else
+      // keeps catalog order.
+      skills: [...group.skills].sort((a, b) => Number(must.has(b)) - Number(must.has(a))),
+    })),
   );
-  const summary = $derived(`${have} of ${required.length} skills`);
+  const filled = $derived(total === 0 ? 0 : Math.round((scored / total) * SEGMENTS));
+  const summary = $derived(
+    split ? `${scored} of ${total} must-haves` : `${have} of ${required.length} skills`,
+  );
 </script>
 
 <div class="mb-4 rounded-xl bg-line-soft p-4">
@@ -59,6 +77,7 @@
             {skill}
             size="sm"
             has={feed.hasSkill(skill)}
+            optional={split && !must.has(skill)}
             onToggle={(s) => void feed.toggleSkill(s)}
           />
         {/each}
@@ -68,7 +87,12 @@
 
   <div class="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-line pt-2.5">
     <p class="text-[11px] text-subtle">
-      Read from this posting's own text. Tap a skill to say whether you have it.
+      {#if split}
+        Read from this posting's own text; a dashed chip is one it called nice to have. Tap a skill
+        to say whether you have it.
+      {:else}
+        Read from this posting's own text. Tap a skill to say whether you have it.
+      {/if}
     </p>
     <button
       onclick={() => feed.openSkillsForm()}

@@ -54,6 +54,13 @@ export interface ScrapedItem {
   matched_interests?: string[];
   /** Catalog skills this posting asks for. Opportunities only. */
   required_skills?: string[];
+  /**
+   * The subset of `required_skills` the posting treats as non-negotiable — named in the
+   * requirements or the title, or carrying a "must have" / "4+ years of" cue. The rest arrived
+   * under a "nice to have" heading or only in the duties. Absent on a snapshot saved before the
+   * split existed, which reads as "no split known" rather than "nothing is required".
+   */
+  key_skills?: string[];
   /** The subset of `required_skills` the user has declared. */
   matched_skills?: string[];
   /** 1-4, strongest first, with the user's per-company overrides applied. */
@@ -345,9 +352,19 @@ export interface ResumeView {
   bullets: string[];
   entries: string[];
   why: Record<string, string[]>;
+  /**
+   * Bullet id → the posting's own words it echoes. Weaker evidence than `why`, and kept apart
+   * from it for that reason: a bullet about an on-call rotation speaks to an SRE posting without
+   * covering a requirement it named.
+   */
+  echo: Record<string, string[]>;
   dropped: DroppedBullet[];
   covered: string[];
   required: string[];
+  /** The subset of `required` the posting treats as non-negotiable. */
+  must: string[];
+  /** What the posting keeps coming back to, in its own words. */
+  focus: string[];
   theme: ResumeTheme;
   filename: string;
 }

@@ -1,16 +1,24 @@
 //! Choosing what goes on the page for a particular job.
 //!
 //! The app already reads a posting and works out which catalog skills it asks
-//! for (`skills::extract`, surfaced as `Item::required_skills`). Every résumé
-//! bullet has been read by the same extractor (`skills::from_text`), so
-//! matching a bullet to a posting is a set intersection over one shared
-//! vocabulary rather than a guess.
+//! for and how hard (`skills::demand`, surfaced as `Item::required_skills`).
+//! Every résumé bullet has been read by the same extractor
+//! (`skills::from_text`), so matching a bullet to a posting is a set
+//! intersection over one shared vocabulary rather than a guess.
+//!
+//! That vocabulary is about a hundred and fifty named technologies, and a
+//! posting says far more than that. So a bullet is scored against a posting
+//! twice: once on the catalog skills they share, and once on how much of the
+//! posting's own language it speaks — see [`super::terms`]. A bullet about an
+//! on-call rotation names no catalog skill at all and is exactly the bullet an
+//! SRE posting wants kept.
 //!
 //! Nothing here writes prose. There is no model in this app and no API key, and
 //! a feature that silently reworded somebody's job history would be a liability
 //! rather than a convenience. What tailoring does is *choose and order*: which
-//! bullets earn their line for this posting, and which skills lead the skills
-//! block. The user's own words go on the page unchanged.
+//! bullets earn their line for this posting, which entries lead the sections
+//! that have no chronology to defend, and which skills lead the skills block.
+//! The user's own words go on the page unchanged.
 //!
 //! Every choice is a starting position. A [`Variant`] override always wins, and
 //! [`Selection::dropped`] records what the page budget cut and why, so the UI
@@ -22,8 +30,9 @@ use serde::{Deserialize, Serialize};
 
 use super::layout;
 use super::model::{Entry, Resume, Section, SectionKind};
+use super::terms::Focus;
 use super::theme::Theme;
-use crate::skills;
+use crate::skills::{self, Emphasis};
 
 /// The user's per-posting overrides. Everything is optional; an empty variant
 /// means "whatever the auto pass decides".
@@ -51,6 +60,127 @@ pub struct Variant {
     pub skills_lead: Vec<String>,
 }
 
+/// The posting a résumé is being tailored to, as everything the choosing needs
+/// to know about it.
+///
+/// Assembled by the caller rather than read here, because `resume/` does not
+/// know what an `Item` is and should not learn: the same tailoring runs against
+/// a live posting, against a saved snapshot whose text has been pruned, and
+/// against a fixture in a test.
+#[derive(Debug, Clone, Default)]
+pub struct Target {
+    /// Skill → how much this posting wants it, normalised so its strongest ask
+    /// is 1.0. Normalised because the numbers only ever compare *within* one
+    /// posting: a terse Greenhouse blurb and a 9 KB Workday page do not score
+    /// on one scale, and nothing here compares two postings.
+    demand: HashMap<String, f32>,
+    /// The asks, in catalog order — the coverage row's "6 of 9".
+    names: Vec<String>,
+    /// The subset the posting treats as non-negotiable.
+    must: Vec<String>,
+    focus: Focus,
+}
+
+/// A skill the posting asked for, in a bullet.
+const SKILL_WEIGHT: f32 = 2.0;
+/// A skill the posting asked for that only this bullet covers.
+const UNIQUE_WEIGHT: f32 = 1.5;
+/// How much a bullet the user has actually declared the skill for is worth
+/// over one that merely mentions it.
+const DECLARED: f32 = 1.3;
+/// Speaking the posting's own language, scaled against the skill terms above.
+const ECHO_WEIGHT: f32 = 1.5;
+/// A number in a bullet. Small, and not about this posting at all — "cut p99
+/// latency by 40%" is a better line than "improved latency" in front of
+/// anybody, and when two bullets are otherwise tied that is the tiebreak.
+const QUANTIFIED: f32 = 0.35;
+/// What a bullet is worth for existing. Keeps a bullet that speaks to nothing
+/// — "Led a team of four through a migration" — from being free to delete.
+const FLOOR: f32 = 0.5;
+
+impl Target {
+    /// A posting whose page could not be read. Everything scores zero, so the
+    /// résumé keeps its own order and only the page budget trims it.
+    pub fn none() -> Target {
+        Target::default()
+    }
+
+    /// The full reading: what the posting asks for, and what it keeps coming
+    /// back to.
+    pub fn new(demand: &[skills::Demand], focus: Focus) -> Target {
+        let peak = demand
+            .iter()
+            .map(|d| d.weight)
+            .fold(0.0f32, f32::max)
+            .max(f32::EPSILON);
+        Target {
+            demand: demand
+                .iter()
+                .map(|d| (d.skill.clone(), (d.weight / peak).clamp(0.0, 1.0)))
+                .collect(),
+            names: demand.iter().map(|d| d.skill.clone()).collect(),
+            must: demand
+                .iter()
+                .filter(|d| d.emphasis == Emphasis::Must)
+                .map(|d| d.skill.clone())
+                .collect(),
+            focus,
+        }
+    }
+
+    /// A posting known only by the skills it asks for, weighted alike. What a
+    /// saved posting whose text has been pruned falls back to, and what the
+    /// tests build.
+    pub fn for_skills(skills: &[String]) -> Target {
+        Target {
+            demand: skills.iter().map(|s| (s.clone(), 1.0)).collect(),
+            names: skills.to_vec(),
+            must: skills.to_vec(),
+            focus: Focus::empty(),
+        }
+    }
+
+    pub fn skills(&self) -> &[String] {
+        &self.names
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.names.is_empty() && self.focus.is_empty()
+    }
+
+    /// How much this posting wants a skill, 0.0 when it never asked.
+    fn wants(&self, skill: &str) -> f32 {
+        self.demand.get(skill).copied().unwrap_or(0.0)
+    }
+
+    /// How much a bullet says to this posting.
+    fn relevance(&self, skills: &[String], text: &str, have: &HashSet<&str>) -> f32 {
+        let mut score = 0.0;
+        for skill in skills {
+            let want = self.wants(skill);
+            if want <= 0.0 {
+                continue;
+            }
+            // A skill the user has declared on their profile is a claim they
+            // can stand behind in the interview; one that only turned up in
+            // the bullet's own text is a keyword match.
+            let declared = match have.contains(skill.as_str()) {
+                true => DECLARED,
+                false => 1.0,
+            };
+            score += SKILL_WEIGHT * want * declared;
+        }
+        // Logarithmic, so a bullet that shares four of the posting's terms
+        // beats one that shares two without a bullet that shares forty
+        // sweeping the page. Overlap is evidence, not a quantity.
+        score += ECHO_WEIGHT * (1.0 + self.focus.echo(text)).ln();
+        if text.bytes().any(|b| b.is_ascii_digit()) {
+            score += QUANTIFIED;
+        }
+        score
+    }
+}
+
 /// Why a bullet was cut.
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct Dropped {
@@ -68,17 +198,29 @@ pub struct Selection {
     pub skills: Vec<(String, Vec<String>)>,
     /// Bullet id → the posting skills it covers. Drives the UI's "why".
     pub why: HashMap<String, Vec<String>>,
+    /// Bullet id → the posting's own words it echoes, for the bullets that
+    /// speak to the job without naming a catalog skill. Kept apart from `why`
+    /// because these are a weaker kind of evidence and the UI should not let
+    /// them read as "covers this requirement".
+    pub echo: HashMap<String, Vec<String>>,
     /// What the page budget cut.
     pub dropped: Vec<Dropped>,
     /// Per-posting headline, when the variant set one.
     pub headline: Option<String>,
-    /// Section id → entry order, carried through from the variant.
+    /// Section id → entry order. The variant's, where it named one; otherwise
+    /// what the relevance pass worked out for the sections that have no
+    /// chronology to defend.
     order: BTreeMap<String, Vec<String>>,
     /// Bullet id → reworded text, carried through from the variant.
     pub text: BTreeMap<String, String>,
     /// How many of the posting's skills the selected bullets speak to.
     pub covered: Vec<String>,
     pub required: Vec<String>,
+    /// The subset of `required` the posting treats as non-negotiable.
+    pub must: Vec<String>,
+    /// What the posting keeps coming back to, in its own words. Shown so the
+    /// reader can check what the tailoring aimed at instead of trusting it.
+    pub focus: Vec<String>,
 }
 
 impl Selection {
@@ -120,40 +262,36 @@ pub fn everything(resume: &Resume) -> Selection {
             }
         }
     }
-    selection.skills = skills_block(resume, &[], &[], &[], &BTreeMap::new());
+    selection.skills = skills_block(resume, &Target::none(), &[], &[], &BTreeMap::new());
     selection
 }
 
-/// The full pass: pick what speaks to this posting, then trim to the page
-/// budget.
+/// The full pass: pick what speaks to this posting, order what has no order to
+/// defend, then trim to the page budget.
 pub fn tailor(
     resume: &Resume,
-    required: &[String],
+    target: &Target,
     have: &[String],
     variant: &Variant,
     theme: &Theme,
 ) -> Selection {
-    let required_set: HashSet<&str> = required.iter().map(String::as_str).collect();
     let have_set: HashSet<&str> = have.iter().map(String::as_str).collect();
 
     let mut selection = Selection {
         headline: variant.headline.clone(),
         order: variant.order.clone(),
         text: variant.text.clone(),
-        required: required.to_vec(),
-        skills: skills_block(
-            resume,
-            required,
-            have,
-            &variant.skills_lead,
-            &variant.include,
-        ),
+        required: target.names.clone(),
+        must: target.must.clone(),
+        focus: target.focus.top().to_vec(),
+        skills: skills_block(resume, target, have, &variant.skills_lead, &variant.include),
         ..Selection::default()
     };
 
     // Start from everything and take away, rather than building up from the
     // best match. A résumé is a document the user wrote on purpose; the default
     // has to be "all of it", with the trim explained.
+    let mut relevance: HashMap<String, f32> = HashMap::new();
     for section in &resume.sections {
         // A section switched off takes its entries with it. Layout draws no
         // heading over nothing, so this is all it takes to leave one out.
@@ -173,20 +311,35 @@ pub fn tailor(
                     continue;
                 }
                 selection.bullets.insert(bullet.id.clone());
+
+                // Scored on the text that will actually be drawn: a bullet the
+                // user reworded for this posting is the wording the posting
+                // gets read against.
+                let text = selection.text_of(&bullet.id, &bullet.text).to_string();
+                relevance.insert(
+                    bullet.id.clone(),
+                    target.relevance(&bullet.skills, &text, &have_set),
+                );
+
                 let covers: Vec<String> = bullet
                     .skills
                     .iter()
-                    .filter(|s| required_set.contains(s.as_str()))
+                    .filter(|s| target.wants(s) > 0.0)
                     .cloned()
                     .collect();
                 if !covers.is_empty() {
                     selection.why.insert(bullet.id.clone(), covers);
                 }
+                let echoes = target.focus.shared(&text, 3);
+                if !echoes.is_empty() {
+                    selection.echo.insert(bullet.id.clone(), echoes);
+                }
             }
         }
     }
 
-    fit(resume, &mut selection, variant, theme, &have_set);
+    promote(resume, &mut selection, target, variant, &relevance);
+    fit(resume, &mut selection, variant, theme, target, &relevance);
 
     // Coverage is reported over what survived the trim, because that is what
     // the reader of the PDF will actually see.
@@ -200,6 +353,72 @@ pub fn tailor(
     selection
 }
 
+/// Sections whose entries have no chronology to defend, so putting the
+/// relevant one first is what tailoring means.
+///
+/// Experience and Education keep the order the user wrote them in. A résumé
+/// that lists last summer's internship above this year's reads as a mistake
+/// however relevant last summer's was, and reordering a work history is the
+/// one rearrangement a recruiter will notice and hold against the document.
+fn reorderable(kind: SectionKind) -> bool {
+    matches!(
+        kind,
+        SectionKind::Projects | SectionKind::Leadership | SectionKind::Awards | SectionKind::Custom
+    )
+}
+
+/// Leads the reorderable sections with the entry that speaks to this posting.
+///
+/// Only where the variant has not already said what the order is, and only
+/// when something actually scored: a posting we could not read must not
+/// shuffle a résumé for no reason.
+fn promote(
+    resume: &Resume,
+    selection: &mut Selection,
+    target: &Target,
+    variant: &Variant,
+    relevance: &HashMap<String, f32>,
+) {
+    if target.is_empty() {
+        return;
+    }
+    // An entry is as good as its best bullet, plus a fraction of the rest: two
+    // relevant bullets beat one, but a long list of weak ones does not add up
+    // to a strong entry.
+    let score = |entry: &Entry| -> f32 {
+        let mut best = 0.0f32;
+        let mut total = 0.0f32;
+        for bullet in &entry.bullets {
+            let Some(value) = relevance.get(&bullet.id) else {
+                continue;
+            };
+            best = best.max(*value);
+            total += *value;
+        }
+        best + 0.3 * (total - best)
+    };
+
+    for section in &resume.sections {
+        if !reorderable(section.kind) || variant.order.contains_key(&section.id) {
+            continue;
+        }
+        let mut entries: Vec<&Entry> = section
+            .entries
+            .iter()
+            .filter(|e| selection.entries.contains(&e.id))
+            .collect();
+        if entries.len() < 2 || entries.iter().all(|e| score(e) <= 0.0) {
+            continue;
+        }
+        // A stable sort, so entries that tie keep the order the user wrote.
+        entries.sort_by(|a, b| score(b).total_cmp(&score(a)));
+        selection.order.insert(
+            section.id.clone(),
+            entries.iter().map(|e| e.id.clone()).collect(),
+        );
+    }
+}
+
 /// The page budget. Lay out, drop the least valuable bullet, lay out again.
 ///
 /// Layout is pure and cheap — no file is written and no font is re-parsed — so
@@ -210,7 +429,8 @@ fn fit(
     selection: &mut Selection,
     variant: &Variant,
     theme: &Theme,
-    have: &HashSet<&str>,
+    target: &Target,
+    relevance: &HashMap<String, f32>,
 ) {
     let budget = theme.sanitized().max_pages as usize;
 
@@ -222,7 +442,7 @@ fn fit(
         if layout::lay_out(resume, selection, theme).pages.len() <= budget {
             return;
         }
-        match weakest(resume, selection, variant, have) {
+        match weakest(resume, selection, variant, target, relevance) {
             Some(id) => {
                 selection.bullets.remove(&id);
                 selection.dropped.push(Dropped {
@@ -240,17 +460,19 @@ fn fit(
 
 /// The bullet whose removal costs the least.
 ///
-/// Value is what a bullet contributes that nothing else selected does: skills
-/// the posting asked for and no other surviving bullet covers, weighted up when
-/// the user has actually declared the skill. Plus a floor, so a bullet naming
-/// no catalog skill at all — "Led a team of four through a migration" — is not
-/// free to delete. Ties go to the later bullet, because people put their best
-/// one first.
+/// Value is [`Target::relevance`] — the posting's skills it names and the
+/// posting's language it speaks — plus what it contributes that nothing else
+/// still on the page does: a skill the posting asked for and no surviving
+/// bullet covers is worth keeping a line for even when the bullet is otherwise
+/// unremarkable. Plus a floor, so a bullet naming nothing at all is not free
+/// to delete. Ties go to the later bullet, because people put their best one
+/// first.
 fn weakest(
     resume: &Resume,
     selection: &Selection,
     variant: &Variant,
-    have: &HashSet<&str>,
+    target: &Target,
+    relevance: &HashMap<String, f32>,
 ) -> Option<String> {
     // How many surviving bullets cover each required skill, so "unique" means
     // unique among what is still on the page.
@@ -290,16 +512,13 @@ fn weakest(
                     continue;
                 }
 
-                let mut value = 1.0_f32;
+                let mut value = FLOOR + relevance.get(&bullet.id).copied().unwrap_or(0.0);
                 if let Some(covers) = selection.why.get(&bullet.id) {
                     for skill in covers {
                         let unique = cover_count.get(skill.as_str()).copied().unwrap_or(0) <= 1;
-                        let weight = if have.contains(skill.as_str()) {
-                            3.0
-                        } else {
-                            2.0
-                        };
-                        value += if unique { weight } else { weight * 0.25 };
+                        if unique {
+                            value += UNIQUE_WEIGHT * target.wants(skill);
+                        }
                     }
                 }
                 // Sorting an entry's only bullet to the back of the queue,
@@ -328,20 +547,24 @@ fn weakest(
 /// for job matching, grouped into the catalog's own categories. One skill list
 /// per person, not two that drift.
 ///
-/// Either way the posting's skills lead: within a line, then across lines.
+/// Either way the posting's skills lead: within a line, then across lines, and
+/// the ones it called non-negotiable lead the ones it merely preferred.
 fn skills_block(
     resume: &Resume,
-    required: &[String],
+    target: &Target,
     have: &[String],
     lead: &[String],
     include: &BTreeMap<String, bool>,
 ) -> Vec<(String, Vec<String>)> {
     let kept = |id: &String| include.get(id) != Some(&false);
-    let priority: HashSet<&str> = required
-        .iter()
-        .chain(lead.iter())
-        .map(String::as_str)
-        .collect();
+    // An explicit lead outranks everything the posting asked for; after that
+    // it is how hard the posting asked.
+    let rank = |skill: &str| -> f32 {
+        match lead.iter().any(|s| s == skill) {
+            true => 2.0,
+            false => target.wants(skill),
+        }
+    };
 
     let curated: Vec<(String, Vec<String>)> = resume
         .sections
@@ -386,11 +609,15 @@ fn skills_block(
     };
 
     // Lead with what the posting asked for — first inside each line, then by
-    // promoting the lines that matched at all.
+    // promoting the lines that matched at all. Both sorts are stable, so
+    // everything the posting did not name keeps the order the user wrote.
     for (_, items) in &mut lines {
-        items.sort_by_key(|s| !priority.contains(s.as_str()));
+        items.sort_by(|a, b| rank(b).total_cmp(&rank(a)));
     }
-    lines.sort_by_key(|(_, items)| !items.iter().any(|s| priority.contains(s.as_str())));
+    lines.sort_by(|(_, a), (_, b)| {
+        let best = |items: &[String]| items.iter().map(|s| rank(s)).fold(0.0f32, f32::max);
+        best(b).total_cmp(&best(a))
+    });
     lines
 }
 
@@ -399,6 +626,12 @@ mod tests {
     use super::*;
     use crate::resume::model::{Bullet, Entry, SectionKind};
     use crate::resume::theme::{Theme, ThemeId, DEFAULT_ACCENT};
+
+    /// A posting known only by the skills it asks for — no page text, so the
+    /// term overlap contributes nothing and the skill match is the whole score.
+    fn asking(skills: &[&str]) -> Target {
+        Target::for_skills(&skills.iter().map(|s| s.to_string()).collect::<Vec<_>>())
+    }
 
     fn bullet(id: &str, text: &str, skills: &[&str]) -> Bullet {
         Bullet {
@@ -451,10 +684,9 @@ mod tests {
     #[test]
     fn matching_bullets_record_why() {
         let r = sample();
-        let required = vec!["Rust".to_string(), "PostgreSQL".to_string()];
         let s = tailor(
             &r,
-            &required,
+            &asking(&["Rust", "PostgreSQL"]),
             &["Rust".to_string()],
             &Variant::default(),
             &Theme::default(),
@@ -476,8 +708,8 @@ mod tests {
     #[test]
     fn coverage_reports_what_survived() {
         let r = sample();
-        let required = vec!["Rust".into(), "PostgreSQL".into(), "Kubernetes".into()];
-        let s = tailor(&r, &required, &[], &Variant::default(), &Theme::default());
+        let target = asking(&["Rust", "PostgreSQL", "Kubernetes"]);
+        let s = tailor(&r, &target, &[], &Variant::default(), &Theme::default());
         assert_eq!(
             s.covered,
             vec!["PostgreSQL".to_string(), "Rust".to_string()]
@@ -491,7 +723,7 @@ mod tests {
         let r = sample();
         let mut variant = Variant::default();
         variant.include.insert("b-rust".into(), false);
-        let s = tailor(&r, &["Rust".to_string()], &[], &variant, &Theme::default());
+        let s = tailor(&r, &asking(&["Rust"]), &[], &variant, &Theme::default());
         assert!(!s.bullets.contains("b-rust"));
         assert!(s.bullets.contains("b-pg"));
     }
@@ -501,7 +733,7 @@ mod tests {
         let r = sample();
         let mut variant = Variant::default();
         variant.include.insert("e1".into(), false);
-        let s = tailor(&r, &[], &[], &variant, &Theme::default());
+        let s = tailor(&r, &Target::none(), &[], &variant, &Theme::default());
         assert!(!s.entries.contains("e1"));
         assert!(s.bullets.is_empty());
     }
@@ -518,7 +750,7 @@ mod tests {
             .unwrap();
         let mut variant = Variant::default();
         variant.include.insert(experience.id.clone(), false);
-        let s = tailor(&r, &[], &[], &variant, &Theme::default());
+        let s = tailor(&r, &Target::none(), &[], &variant, &Theme::default());
         assert!(!s.entries.contains("e1"), "the section's entry survived");
         assert!(s.bullets.is_empty());
     }
@@ -549,7 +781,7 @@ mod tests {
 
         let mut variant = Variant::default();
         variant.include.insert("s-design".into(), false);
-        let s = tailor(&r, &[], &[], &variant, &Theme::default());
+        let s = tailor(&r, &Target::none(), &[], &variant, &Theme::default());
         let labels: Vec<&str> = s.skills.iter().map(|(l, _)| l.as_str()).collect();
         assert_eq!(labels, vec!["Languages"], "the excluded line still printed");
     }
@@ -559,7 +791,7 @@ mod tests {
         let r = sample();
         let s = tailor(
             &r,
-            &["Rust".to_string()],
+            &asking(&["Rust"]),
             &[],
             &Variant::default(),
             &Theme::default(),
@@ -582,7 +814,13 @@ mod tests {
             })
             .collect();
         let r = resume_with(many);
-        let s = tailor(&r, &[], &[], &Variant::default(), &Theme::default());
+        let s = tailor(
+            &r,
+            &Target::none(),
+            &[],
+            &Variant::default(),
+            &Theme::default(),
+        );
         assert!(s.bullets.len() < 90, "nothing was trimmed");
         assert!(!s.dropped.is_empty(), "a trim was not recorded");
         let pages = layout::lay_out(&r, &s, &Theme::default()).pages.len();
@@ -599,7 +837,7 @@ mod tests {
         let r = resume_with(bullets);
         let s = tailor(
             &r,
-            &["Rust".to_string()],
+            &asking(&["Rust"]),
             &["Rust".to_string()],
             &Variant::default(),
             &Theme::default(),
@@ -620,7 +858,7 @@ mod tests {
         let r = resume_with(bullets);
         let mut variant = Variant::default();
         variant.include.insert("b-pin".into(), true);
-        let s = tailor(&r, &[], &[], &variant, &Theme::default());
+        let s = tailor(&r, &Target::none(), &[], &variant, &Theme::default());
         assert!(s.bullets.contains("b-pin"), "a pinned bullet was trimmed");
     }
 
@@ -635,7 +873,7 @@ mod tests {
         );
         let one = tailor(
             &r,
-            &[],
+            &Target::none(),
             &[],
             &Variant::default(),
             &Theme {
@@ -645,7 +883,7 @@ mod tests {
         );
         let three = tailor(
             &r,
-            &[],
+            &Target::none(),
             &[],
             &Variant::default(),
             &Theme {
@@ -666,7 +904,7 @@ mod tests {
         ];
         let s = tailor(
             &r,
-            &["React".to_string()],
+            &asking(&["React"]),
             &have,
             &Variant::default(),
             &Theme::default(),
@@ -701,7 +939,7 @@ mod tests {
         });
         let s = tailor(
             &r,
-            &["TypeScript".to_string()],
+            &asking(&["TypeScript"]),
             &["Python".to_string()],
             &Variant::default(),
             &Theme::default(),
@@ -736,7 +974,7 @@ mod tests {
         variant
             .order
             .insert("sec".into(), vec!["e2".into(), "e1".into()]);
-        let s = tailor(&r, &[], &[], &variant, &Theme::default());
+        let s = tailor(&r, &Target::none(), &[], &variant, &Theme::default());
         let section = r.sections.iter().find(|s| s.id == "sec").unwrap();
         let ids: Vec<&str> = s.order_for(section).iter().map(|e| e.id.as_str()).collect();
         assert_eq!(ids, vec!["e2", "e1"]);
@@ -749,7 +987,7 @@ mod tests {
         variant
             .text
             .insert("b-rust".into(), "Rewritten for this job".into());
-        let s = tailor(&r, &[], &[], &variant, &Theme::default());
+        let s = tailor(&r, &Target::none(), &[], &variant, &Theme::default());
         assert_eq!(s.text_of("b-rust", "original"), "Rewritten for this job");
         assert_eq!(s.text_of("b-pg", "original"), "original");
         // The master résumé is untouched.
@@ -769,12 +1007,269 @@ mod tests {
         );
         for id in ThemeId::ALL {
             let theme = Theme::preset(id, DEFAULT_ACCENT);
-            let s = tailor(&r, &[], &[], &Variant::default(), &theme);
+            let s = tailor(&r, &Target::none(), &[], &Variant::default(), &theme);
             assert_eq!(
                 layout::lay_out(&r, &s, &theme).pages.len(),
                 1,
                 "{id:?} did not converge"
             );
         }
+    }
+
+    /// A posting read in full, the way `commands::target_of` builds one.
+    fn posting(requirements: &str) -> Target {
+        Target::new(
+            &[],
+            crate::resume::terms::Focus::read(&[(
+                requirements,
+                crate::resume::terms::REQUIREMENTS,
+            )]),
+        )
+    }
+
+    /// The half of the match the catalog cannot see. "On-call rotation" is not
+    /// a skill in any catalog and is the whole subject of a great many
+    /// infrastructure postings, and the bullet that speaks to it has to
+    /// outlive the one that does not.
+    #[test]
+    fn a_bullet_that_speaks_the_postings_language_survives() {
+        let filler = "Reorganised the annual charity bake sale and kept the spreadsheet tidy \
+                      for everyone involved across the whole of the calendar year";
+        let mut bullets = vec![bullet(
+            "b-oncall",
+            "Ran the on-call rotation and cut paging volume",
+            &[],
+        )];
+        bullets.extend((0..80).map(|n| bullet(&format!("b{n}"), filler, &[])));
+        let r = resume_with(bullets);
+
+        let target = posting(
+            "You have run an on-call rotation.\n             You have cut paging volume for a team that owns its own uptime.",
+        );
+        let s = tailor(&r, &target, &[], &Variant::default(), &Theme::default());
+        assert!(
+            s.bullets.contains("b-oncall"),
+            "the bullet about the actual job was trimmed"
+        );
+        assert!(
+            !s.echo["b-oncall"].is_empty(),
+            "nothing was recorded about why it was kept"
+        );
+    }
+
+    /// Echoing the posting is weaker evidence than naming what it asked for,
+    /// and the UI has to be able to say which happened.
+    #[test]
+    fn why_and_echo_are_kept_apart() {
+        let r = sample();
+        let mut target = Target::new(
+            &[skills::Demand {
+                skill: "Rust".into(),
+                weight: 3.0,
+                emphasis: Emphasis::Must,
+            }],
+            crate::resume::terms::Focus::read(&[(
+                "You will model schemas and own the migration",
+                crate::resume::terms::REQUIREMENTS,
+            )]),
+        );
+        target.must = vec!["Rust".into()];
+        let s = tailor(&r, &target, &[], &Variant::default(), &Theme::default());
+
+        assert_eq!(
+            s.why.get("b-rust").map(Vec::as_slice),
+            Some(&["Rust".to_string()][..])
+        );
+        assert!(
+            !s.why.contains_key("b-pg"),
+            "an echo was reported as coverage"
+        );
+        assert!(
+            s.echo.contains_key("b-none"),
+            "the migration bullet echoed nothing: {:?}",
+            s.echo
+        );
+        assert_eq!(s.must, vec!["Rust".to_string()]);
+        assert!(
+            !s.focus.is_empty(),
+            "the posting's own words were not reported"
+        );
+    }
+
+    /// Projects have no chronology to defend, so the one that speaks to the
+    /// posting leads. This is the difference between a tailored résumé and the
+    /// same résumé with fewer lines.
+    #[test]
+    fn the_relevant_project_leads() {
+        let mut r = sample();
+        let projects = Section {
+            id: "projects".into(),
+            kind: SectionKind::Projects,
+            title: "Projects".into(),
+            entries: vec![
+                Entry {
+                    id: "p-game".into(),
+                    title: "Tile-matching game".into(),
+                    bullets: vec![bullet("pb-game", "Built a puzzle game in Unity", &[])],
+                    ..Entry::default()
+                },
+                Entry {
+                    id: "p-infra".into(),
+                    title: "Deploy tooling".into(),
+                    bullets: vec![bullet(
+                        "pb-infra",
+                        "Wrote the on-call rotation tooling and the paging runbook",
+                        &[],
+                    )],
+                    ..Entry::default()
+                },
+            ],
+        };
+        r.sections.push(projects);
+
+        let target = posting("You have run an on-call rotation and written a paging runbook.");
+        let s = tailor(&r, &target, &[], &Variant::default(), &Theme::default());
+        let section = r.sections.iter().find(|s| s.id == "projects").unwrap();
+        let order: Vec<&str> = s.order_for(section).iter().map(|e| e.id.as_str()).collect();
+        assert_eq!(
+            order,
+            vec!["p-infra", "p-game"],
+            "the relevant project did not lead"
+        );
+    }
+
+    /// Work history is the one thing tailoring must not rearrange.
+    #[test]
+    fn experience_keeps_the_order_it_was_written_in() {
+        let mut r = sample();
+        let experience = r
+            .sections
+            .iter_mut()
+            .find(|s| s.kind == SectionKind::Experience)
+            .unwrap();
+        experience.id = "sec".into();
+        experience.entries.push(Entry {
+            id: "e2".into(),
+            org: "Beta".into(),
+            bullets: vec![bullet("b2", "Ran the on-call rotation", &[])],
+            ..Entry::default()
+        });
+
+        let target = posting("You have run an on-call rotation.");
+        let s = tailor(&r, &target, &[], &Variant::default(), &Theme::default());
+        let section = r.sections.iter().find(|s| s.id == "sec").unwrap();
+        let ids: Vec<&str> = s.order_for(section).iter().map(|e| e.id.as_str()).collect();
+        assert_eq!(ids, vec!["e1", "e2"], "a work history was reordered");
+    }
+
+    /// An explicit order is the user's decision and outranks the guess.
+    #[test]
+    fn a_variant_order_beats_the_relevance_guess() {
+        let mut r = sample();
+        r.sections.push(Section {
+            id: "projects".into(),
+            kind: SectionKind::Projects,
+            title: "Projects".into(),
+            entries: vec![
+                Entry {
+                    id: "p-game".into(),
+                    bullets: vec![bullet("pb-game", "Built a puzzle game in Unity", &[])],
+                    ..Entry::default()
+                },
+                Entry {
+                    id: "p-infra".into(),
+                    bullets: vec![bullet(
+                        "pb-infra",
+                        "Wrote the on-call rotation tooling",
+                        &[],
+                    )],
+                    ..Entry::default()
+                },
+            ],
+        });
+        let mut variant = Variant::default();
+        variant
+            .order
+            .insert("projects".into(), vec!["p-game".into(), "p-infra".into()]);
+
+        let target = posting("You have run an on-call rotation.");
+        let s = tailor(&r, &target, &[], &variant, &Theme::default());
+        let section = r.sections.iter().find(|s| s.id == "projects").unwrap();
+        let order: Vec<&str> = s.order_for(section).iter().map(|e| e.id.as_str()).collect();
+        assert_eq!(order, vec!["p-game", "p-infra"]);
+    }
+
+    /// A posting we could not read must leave the document exactly as written.
+    #[test]
+    fn an_unread_posting_shuffles_nothing() {
+        let mut r = sample();
+        r.sections.push(Section {
+            id: "projects".into(),
+            kind: SectionKind::Projects,
+            title: "Projects".into(),
+            entries: vec![
+                Entry {
+                    id: "p-one".into(),
+                    bullets: vec![bullet("pb-one", "Built a puzzle game", &[])],
+                    ..Entry::default()
+                },
+                Entry {
+                    id: "p-two".into(),
+                    bullets: vec![bullet("pb-two", "Wrote deploy tooling", &[])],
+                    ..Entry::default()
+                },
+            ],
+        });
+        let s = tailor(
+            &r,
+            &Target::none(),
+            &[],
+            &Variant::default(),
+            &Theme::default(),
+        );
+        let section = r.sections.iter().find(|s| s.id == "projects").unwrap();
+        let order: Vec<&str> = s.order_for(section).iter().map(|e| e.id.as_str()).collect();
+        assert_eq!(order, vec!["p-one", "p-two"]);
+        assert!(s.focus.is_empty());
+    }
+
+    /// How hard the posting asked has to reach the score, or "nice to have:
+    /// Figma" is worth the same line as "5+ years of Rust".
+    #[test]
+    fn a_must_have_outscores_a_nice_to_have() {
+        let target = Target::new(
+            &[
+                skills::Demand {
+                    skill: "Rust".into(),
+                    weight: 4.5,
+                    emphasis: Emphasis::Must,
+                },
+                skills::Demand {
+                    skill: "Figma".into(),
+                    weight: 0.9,
+                    emphasis: Emphasis::Nice,
+                },
+            ],
+            crate::resume::terms::Focus::empty(),
+        );
+        let none = HashSet::new();
+        let text = "Rebuilt the ingest path end to end";
+        let must = target.relevance(&["Rust".to_string()], text, &none);
+        let nice = target.relevance(&["Figma".to_string()], text, &none);
+        assert!(must > nice, "must {must} did not outscore nice {nice}");
+        assert_eq!(target.skills(), ["Rust".to_string(), "Figma".to_string()]);
+    }
+
+    /// A skill the user has declared is a claim they can defend in the room;
+    /// one that only turned up in the bullet's own wording is a keyword match.
+    #[test]
+    fn a_declared_skill_counts_for_more() {
+        let target = asking(&["Rust"]);
+        let text = "Shipped a Rust service";
+        let declared: HashSet<&str> = ["Rust"].into_iter().collect();
+        assert!(
+            target.relevance(&["Rust".to_string()], text, &declared)
+                > target.relevance(&["Rust".to_string()], text, &HashSet::new())
+        );
     }
 }

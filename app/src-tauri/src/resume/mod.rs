@@ -29,11 +29,12 @@ pub mod layout;
 pub mod model;
 pub mod pdf;
 pub mod tailor;
+pub mod terms;
 pub mod text;
 pub mod theme;
 
 pub use model::Resume;
-pub use tailor::{Selection, Variant};
+pub use tailor::{Selection, Target, Variant};
 pub use theme::Theme;
 
 /// Lay out a résumé exactly as the builder previews it — everything included.
@@ -44,12 +45,12 @@ pub fn preview(resume: &Resume, theme: &Theme) -> layout::LaidOut {
 /// Lay out a résumé tailored to one posting.
 pub fn tailored(
     resume: &Resume,
-    required: &[String],
+    target: &tailor::Target,
     have: &[String],
     variant: &Variant,
     theme: &Theme,
 ) -> (layout::LaidOut, Selection) {
-    let selection = tailor::tailor(resume, required, have, variant, theme);
+    let selection = tailor::tailor(resume, target, have, variant, theme);
     let laid_out = layout::lay_out(resume, &selection, theme);
     (laid_out, selection)
 }

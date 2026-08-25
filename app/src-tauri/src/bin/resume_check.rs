@@ -356,7 +356,7 @@ fn main() {
         .collect();
     let (_, selection) = resume::tailored(
         &resume,
-        &required,
+        &tailor::Target::for_skills(&required),
         &have,
         &tailor::Variant::default(),
         &Theme::default(),

@@ -44,6 +44,16 @@
   const droppedIds = $derived(new Set(view.dropped.map((d) => d.id)));
   const coveredSet = $derived(new Set(view.covered));
   const missing = $derived(view.required.filter((s) => !coveredSet.has(s)));
+  // What the posting called non-negotiable, drawn apart from what it merely
+  // preferred: "covers 8 of 11" is the wrong number to lead with when the
+  // three it does not cover are the three the posting insisted on.
+  const mustSet = $derived(new Set(view.must));
+  const split = $derived(mustSet.size > 0 && mustSet.size < view.required.length);
+  const mustCovered = $derived(view.must.filter((s) => coveredSet.has(s)).length);
+  // Must-haves lead, then the rest in the order Rust sent them.
+  const ordered = $derived(
+    [...view.required].sort((a, b) => Number(mustSet.has(b)) - Number(mustSet.has(a))),
+  );
 
   /** Sections holding something, so an empty one draws no heading here either. */
   const sections = $derived(doc.sections.filter((s) => s.entries.length > 0));
@@ -115,22 +125,42 @@
       </p>
     {:else}
       <p class="mb-2.5 text-sm">
-        <span class="font-bold">{view.covered.length} of {view.required.length}</span>
-        <span class="text-muted"> named on the page below</span>
+        {#if split}
+          <span class="font-bold">{mustCovered} of {view.must.length}</span>
+          <span class="text-muted"> must-haves named on the page below</span>
+          <span class="text-subtle"> · {view.covered.length} of {view.required.length} in all</span>
+        {:else}
+          <span class="font-bold">{view.covered.length} of {view.required.length}</span>
+          <span class="text-muted"> named on the page below</span>
+        {/if}
       </p>
       <div class="flex flex-wrap gap-1.5">
-        {#each view.required as skill (skill)}
+        {#each ordered as skill (skill)}
           {@const covered = coveredSet.has(skill)}
+          {@const optional = split && !mustSet.has(skill)}
           <span
-            class="chip inline-flex items-center gap-1 px-2.5 py-1 {covered
-              ? 'bg-job-soft text-job'
-              : 'border border-line text-subtle'}"
+            title={optional ? "Nice to have" : undefined}
+            class="chip inline-flex items-center gap-1 border px-2.5 py-1 {optional
+              ? 'border-dashed'
+              : 'border-solid'} {covered
+              ? 'border-transparent bg-job-soft text-job'
+              : 'border-line text-subtle'}"
           >
             {#if covered}<Check size={11} strokeWidth={3} />{/if}
             {skill}
           </span>
         {/each}
       </div>
+      {#if split}
+        <p class="mt-2 text-[11px] text-subtle">A dashed chip is one the posting called optional.</p>
+      {/if}
+      {#if view.focus.length > 0}
+        <p class="mt-2.5 text-xs text-muted">
+          It keeps coming back to
+          <span class="font-semibold text-foreground">{view.focus.join(", ")}</span>. Bullets that
+          say the same things are the ones kept first.
+        </p>
+      {/if}
       {#if missing.length > 0}
         <p class="mt-2.5 text-xs text-muted">
           Nothing in your résumé names {missing.length === 1 ? "the last one" : "the greyed ones"}.
@@ -236,6 +266,7 @@
                   {@const state = stateOf(bullet.id)}
                   {@const shown = !entryOff && onPage.has(bullet.id)}
                   {@const why = view.why[bullet.id] ?? []}
+                  {@const echo = view.echo[bullet.id] ?? []}
                   <li
                     class="rounded-lg border p-2 {shown
                       ? 'border-line-soft bg-surface'
@@ -277,8 +308,13 @@
                       </div>
                     </div>
 
-                    {#if why.length > 0}
-                      <div class="mt-1.5 flex flex-wrap gap-1">
+                    {#if why.length > 0 || echo.length > 0}
+                      <!-- Two kinds of evidence, drawn apart. A skill chip
+                           means the posting asked for that by name; a word
+                           chip means the bullet is about the same thing the
+                           posting keeps talking about, which is weaker and
+                           must not read as coverage. -->
+                      <div class="mt-1.5 flex flex-wrap items-center gap-1">
                         {#each why as skill (skill)}
                           <span
                             class="rounded-md bg-job-soft px-1.5 py-0.5 text-[10px] font-semibold text-job"
@@ -286,11 +322,18 @@
                             {skill}
                           </span>
                         {/each}
+                        {#each echo as term (term)}
+                          <span
+                            class="rounded-md border border-dashed border-line px-1.5 py-0.5 text-[10px] font-medium text-subtle"
+                          >
+                            {term}
+                          </span>
+                        {/each}
                       </div>
                     {:else if droppedIds.has(bullet.id)}
                       <p class="mt-1 flex items-center gap-1 text-[11px] text-subtle">
                         <Plus size={10} strokeWidth={3} class="rotate-45" />
-                        Cut for space — names nothing this posting asked for
+                        Cut for space — says nothing this posting asked about
                       </p>
                     {/if}
                   </li>

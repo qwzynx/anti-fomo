@@ -231,6 +231,27 @@ not the requirements alone, because a posting that names its stack once in the
 opening paragraph and never repeats it in a bullet is ordinary. `perks` is
 excluded: a benefits list says what the job pays, not what it asks for.
 
+The read is **line by line**, not over one concatenated blob, because where a
+mention sits is most of what it means. A line under "Preferred qualifications"
+is a different ask from the same words under "Minimum qualifications", and "you
+will learn Kubernetes" is the posting saying it is *not* asking for Kubernetes —
+which the blob read as a requirement like any other, and which is how an
+internship written to be welcoming ended up looking like the hardest one in the
+feed. Each skill comes back with an emphasis — **must have**, **nice to have**,
+or merely mentioned — and a weight built from which section named it, how hard
+that line asked, and how often (with diminishing returns, because saying it nine
+times does not mean it nine times). The detail pane draws a nice-to-have as a
+dashed chip and the coverage meter counts the must-haves; the score weighs
+coverage the same way, so covering the two things a posting insisted on beats
+covering six it merely preferred.
+
+Keyword matching is boundary-aware rather than space-padded. A leading or
+trailing space in a catalog keyword means *word boundary*, so `" rust "` matches
+"(Rust)", "Rust/Go" and "Rust-based" — all of which the literal space missed and
+all of which are how postings really write a stack — while still refusing the
+"rust" inside "trust". `+`, `#` and `&` count as word characters there, which is
+what keeps "C" out of "C++" and "R" out of "R&D".
+
 `cargo run --features dev-tools --bin detail_check` reports routing and live coverage per handler,
 and what enrichment does to skill extraction, against the real cached database.
 
@@ -322,6 +343,7 @@ about each concern:
   model    what a résumé is            (no styling, no layout)
   theme    how it should look          (no content)
   tailor   what belongs on this page   (pure; uses layout to test the fit)
+  terms    what a posting is about     (pure; the words, not the catalog)
   text     how wide a string is        (pure; the font's own advances)
   layout   where every box goes        (pure; emits positioned boxes)
      ├── pdf      boxes → a file, via printpdf
@@ -341,9 +363,24 @@ reproducing CSS line-box maths to work out where a baseline lands.
 The tailoring is the existing skill match pointed at the user's own words. Each
 bullet is read by `skills::from_text`, the same catalog and automaton that reads
 a job description, so matching a bullet to a posting is a set intersection over
-one vocabulary. Rust starts from the *whole* résumé and trims: lay out, and
-while it runs over the page budget drop the least valuable bullet and lay out
-again. Pinned bullets are never trimmed, an explicit exclusion always wins, and
+one vocabulary — weighted by how hard the posting asked, so a bullet covering
+something under "Minimum qualifications" outlives one covering a nice-to-have.
+
+The catalog is about a hundred and fifty named technologies and a posting says
+far more than that, so `terms` is the other half of the match: the words the
+posting leans on, stemmed, bigrammed, stripped of the boilerplate every posting
+shares, weighted by section and by repetition, against the same bag built from
+the bullet. A bullet about an on-call rotation names no catalog skill and is
+exactly the bullet an SRE posting wants kept. The panel shows what it matched
+on — skill chips for a named requirement, dashed word chips for an echo — so
+the weaker evidence never reads as coverage.
+
+Rust starts from the *whole* résumé and trims: lay out, and while it runs over
+the page budget drop the least valuable bullet and lay out again. Sections with
+no chronology to defend — Projects, Leadership, Awards — lead with the entry
+that speaks to the posting; Experience and Education keep the order the user
+wrote them in, because a reordered work history reads as a mistake. Pinned
+bullets are never trimmed, an explicit exclusion or ordering always wins, and
 whatever came off is reported so the UI can show the trim rather than let it
 look like data loss. Nothing is ever reworded — there is no model here and no
 API key, and a feature that silently rewrote somebody's job history would be a
