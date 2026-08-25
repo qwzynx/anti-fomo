@@ -65,7 +65,19 @@ Everything ships from `/app`:
     `resume_variants` are the durable tables and must survive a schema bump, so
     they are created with `IF NOT EXISTS` and never dropped. `clear_data`
     empties the cache and leaves the résumés: a feed can be refetched and a
-    work history cannot.
+    work history cannot. **Deleting rows does not shrink the file.** Freed
+    pages go on a freelist and are reused, so without help the store sits at
+    its own high-water mark forever and the 60-day prune returns nothing to the
+    disk. `open` puts the file in incremental auto-vacuum — converting one that
+    predates that, non-fatally, since the machine where a `VACUUM` cannot run
+    is the full one that most needs the app to still launch — and
+    `incremental_vacuum` runs after the prunes in `persist`. That pragma moves
+    **one page per step**, so it must be stepped to exhaustion; `execute_batch`
+    steps once and reclaims 4 KB while looking like it worked.
+    `pruning_hands_the_pages_back_to_the_disk` asserts on the size of the file
+    and the freelist, which is the only thing that tells the two apart.
+    `journal_size_limit` is the counterpart for the WAL, which otherwise keeps
+    the width of the largest refresh long after that refresh is over.
   - `commands.rs` — the `invoke()` surface the UI calls. **Every command that
     touches the database is `#[tauri::command(async)]`.** A plain
     `#[tauri::command]` on a synchronous function runs on the *main thread*,
@@ -141,6 +153,14 @@ See `app/README.md` for the source list, the command table, and Android setup.
   construct `Intl` formatters at module scope.
 - **Cross-platform care**: `reqwest` uses rustls + webpki-roots (not native-tls),
   and SQLite is bundled, both so the Android NDK targets cross-compile cleanly.
+- **`target/` is not free.** It reached 23 GB once and filled a disk. The dev
+  profile builds dependencies with no debug info at all and this crate with
+  `line-tables-only` — a panic backtrace still names the file and line, and
+  nothing here is debugged through breakpoints in `gtk`. `[lib]` deliberately
+  builds no `staticlib`: only iOS links one, `gen/` holds `android` alone, and
+  the archive nobody opened cost 1.3 GB on the host, 0.6 GB on the Android
+  target and a staging copy of its own size on every link. Put `"staticlib"`
+  back the day an `apple` target appears under `gen/`.
 - **Tailwind 4 is CSS-first** — the semantic design tokens (`bg`, `surface`,
   `line`, `fg`, `muted`, `brand`, and the per-type accents) live in
   `app/src/app.css`, and there is no `tailwind.config.js`. Use the token

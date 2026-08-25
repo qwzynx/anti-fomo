@@ -31,8 +31,86 @@ pub fn open(path: &std::path::Path) -> Result<Connection> {
     conn.pragma_update(None, "cache_size", -32_000)?;
     conn.pragma_update(None, "temp_store", "MEMORY")?;
     let _ = conn.pragma_update(None, "mmap_size", 268_435_456i64);
+    // A WAL is only ever as small as the last checkpoint left it, and SQLite's
+    // default is to reset it in place rather than shorten the file — so it
+    // settles at the high-water mark of the largest write burst and stays
+    // there. That burst is a refresh: 13,000 upserts and the enrichment pass
+    // behind them, which had left a 14 MB journal sitting next to a database
+    // nothing was writing to. The limit is what makes a checkpoint truncate
+    // instead, so the space comes back between refreshes. It is a ceiling on
+    // the file at rest, not a cap on the transaction — a bigger write still
+    // grows the WAL and is simply cut back down afterwards.
+    conn.pragma_update(None, "journal_size_limit", 4_194_304i64)?;
     migrate(&conn)?;
+    enable_incremental_vacuum(&conn);
     Ok(conn)
+}
+
+/// Puts the file into incremental auto-vacuum, converting one that predates
+/// this if that is what it finds.
+///
+/// Deleting rows does not shrink a SQLite file. The pages go on a freelist and
+/// are reused by later inserts, so a store that prunes at 60 days sits forever
+/// at its own high-water mark: the cache had 8 MB of freed pages it was never
+/// going to hand back. `INCREMENTAL` is the mode that lets
+/// [`incremental_vacuum`] return them a bounded number at a time — as opposed
+/// to `FULL`, which does it on every commit and would make each of those
+/// 13,000 upserts pay for the privilege.
+///
+/// The mode is a property of the file, and changing it on a file that already
+/// has one means rewriting the file, which is what the `VACUUM` is for. That
+/// runs once, on the first launch after this shipped, and it is also the pass
+/// that hands back whatever the freelist had accumulated until then.
+///
+/// Deliberately not fatal. A `VACUUM` writes a second copy of the database
+/// before replacing the original, so the one machine where it cannot run is a
+/// machine with no room left — which is exactly the machine that most needs
+/// the app to still open. Failing here would turn a full disk into an app that
+/// will not launch, to save space it can open without.
+fn enable_incremental_vacuum(conn: &Connection) {
+    let mode: i32 = match conn.pragma_query_value(None, "auto_vacuum", |r| r.get(0)) {
+        Ok(mode) => mode,
+        Err(e) => {
+            log::warn!("could not read auto_vacuum: {e}");
+            return;
+        }
+    };
+    if mode == INCREMENTAL_AUTO_VACUUM {
+        return;
+    }
+    if let Err(e) = conn
+        .pragma_update(None, "auto_vacuum", "INCREMENTAL")
+        .and_then(|()| conn.execute_batch("VACUUM"))
+    {
+        log::warn!("could not convert the store to incremental auto-vacuum: {e}");
+    }
+}
+
+/// What `PRAGMA auto_vacuum` reads back as once the file is in incremental
+/// mode. SQLite answers this pragma numerically whatever it was set with.
+const INCREMENTAL_AUTO_VACUUM: i32 = 2;
+
+/// Hands pages freed by a prune back to the filesystem.
+///
+/// Called after the prunes on the refresh path rather than on a timer: that is
+/// the only moment rows leave in bulk, and a refresh is already the slow thing.
+/// A no-op until [`enable_incremental_vacuum`] has run, and harmless when the
+/// freelist is empty.
+///
+/// Stepped to exhaustion, and that is the whole subtlety. `PRAGMA
+/// incremental_vacuum` is not a statement that does its work and returns — it
+/// is a VDBE program that moves **one page per step**, and the argument-less
+/// form means "keep going until the freelist is empty" only if the caller
+/// keeps stepping. `execute_batch` steps once, so the obvious spelling of this
+/// function reclaimed a single 4 KB page per refresh and looked like it
+/// worked. `pruning_hands_the_pages_back_to_the_disk` is what catches that: it
+/// asserts on the size of the file, which is the only thing that can tell the
+/// difference.
+pub fn incremental_vacuum(conn: &Connection) -> Result<()> {
+    let mut stmt = conn.prepare("PRAGMA incremental_vacuum")?;
+    let mut rows = stmt.query([])?;
+    while rows.next()?.is_some() {}
+    Ok(())
 }
 
 /// Rows in the item cache, without materialising them.
@@ -1337,6 +1415,127 @@ mod tests {
 
     fn db_single(conn: &Connection) -> Item {
         load_items(conn).unwrap().into_iter().next().unwrap()
+    }
+
+    // --- storage footprint ---
+    //
+    // These need a real file. Everything above runs in memory, where a page
+    // count is not a thing you can shrink and `VACUUM` has nothing to rewrite.
+
+    /// A path in the temp directory that no other test is using, and the guard
+    /// that removes it and the two files SQLite puts beside it.
+    struct TempDb(std::path::PathBuf);
+
+    impl TempDb {
+        fn new(tag: &str) -> Self {
+            let unique = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            Self(std::env::temp_dir().join(format!("antifomo-{tag}-{unique}.db")))
+        }
+
+        fn size(&self) -> u64 {
+            std::fs::metadata(&self.0).map(|m| m.len()).unwrap_or(0)
+        }
+    }
+
+    impl Drop for TempDb {
+        fn drop(&mut self) {
+            for suffix in ["", "-wal", "-shm"] {
+                let _ = std::fs::remove_file(format!("{}{suffix}", self.0.display()));
+            }
+        }
+    }
+
+    /// Bulk enough to span many pages, and old enough for the 60-day prune.
+    fn stale_items(n: usize) -> Vec<Item> {
+        (0..n)
+            .map(|i| {
+                Item::new(
+                    &format!("Role {i}"),
+                    "S",
+                    ItemType::Internship,
+                    &format!("https://x.test/{i}"),
+                )
+                .with_timestamp(Utc::now() - chrono::Duration::days(90))
+                .with_content("filler ".repeat(200))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_fresh_store_opens_in_incremental_auto_vacuum() {
+        let path = TempDb::new("fresh");
+        let conn = open(&path.0).unwrap();
+
+        let mode: i32 = conn
+            .pragma_query_value(None, "auto_vacuum", |r| r.get(0))
+            .unwrap();
+        assert_eq!(mode, INCREMENTAL_AUTO_VACUUM);
+
+        // Without this the WAL keeps whatever width the largest refresh gave it.
+        let limit: i64 = conn
+            .pragma_query_value(None, "journal_size_limit", |r| r.get(0))
+            .unwrap();
+        assert_eq!(limit, 4_194_304);
+    }
+
+    #[test]
+    fn pruning_hands_the_pages_back_to_the_disk() {
+        let path = TempDb::new("reclaim");
+        let mut conn = open(&path.0).unwrap();
+
+        save_items(&mut conn, &stale_items(2_000)).unwrap();
+        conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)").unwrap();
+        let full = path.size();
+
+        prune_older_than(&conn, 60).unwrap();
+        incremental_vacuum(&conn).unwrap();
+        conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)").unwrap();
+
+        // Nothing may be left on the freelist: a partial reclaim is the exact
+        // failure this test exists for, and it is invisible in the row counts.
+        let freelist: i64 = conn
+            .pragma_query_value(None, "freelist_count", |r| r.get(0))
+            .unwrap();
+        assert_eq!(freelist, 0, "the freelist was not fully returned");
+
+        // The point of the whole exercise: a delete alone leaves the file at
+        // its high-water mark, and this is what makes it actually get smaller.
+        assert!(load_items(&conn).unwrap().is_empty());
+        assert!(
+            path.size() < full / 2,
+            "expected the file to shrink, {full} -> {}",
+            path.size()
+        );
+    }
+
+    #[test]
+    fn an_existing_store_is_converted_without_losing_what_matters() {
+        let path = TempDb::new("convert");
+
+        // A store as it was written before any of this: the default
+        // auto_vacuum of `NONE`, and a résumé in it that must survive.
+        {
+            let conn = Connection::open(&path.0).unwrap();
+            migrate(&conn).unwrap();
+            put(&conn, "r1", "Backend");
+            set_saved(&conn, "https://x.test/keep", true, None).unwrap();
+            let mode: i32 = conn
+                .pragma_query_value(None, "auto_vacuum", |r| r.get(0))
+                .unwrap();
+            assert_eq!(mode, 0, "the fixture is only meaningful unconverted");
+        }
+
+        let conn = open(&path.0).unwrap();
+
+        let mode: i32 = conn
+            .pragma_query_value(None, "auto_vacuum", |r| r.get(0))
+            .unwrap();
+        assert_eq!(mode, INCREMENTAL_AUTO_VACUUM);
+        assert_eq!(load_resume(&conn, "r1").unwrap().unwrap().name, "Backend");
+        assert!(load_states(&conn).unwrap().saved.contains("https://x.test/keep"));
     }
 
     // --- item state ---

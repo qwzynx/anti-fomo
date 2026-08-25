@@ -11,9 +11,19 @@ default-run = "anti-fomo"
 
 # The library is the real entry point: Tauri's mobile targets build a cdylib and
 # call `run()` through `tauri::mobile_entry_point`, never `main.rs`.
+#
+# `staticlib` is deliberately not in this list. Only iOS links one, and nothing
+# here builds for iOS — `gen/` holds `android` alone, and Tauri's iOS target
+# needs Xcode, so it cannot be produced on this machine at all. Nothing else
+# ever reads the archive, but every target still pays to write it: it was
+# 1.3 GB in `target/debug`, another 0.6 GB under
+# `target/aarch64-linux-android/debug`, and rustc stages it through a `tmp.a`
+# of comparable size while linking. Roughly 3 GB of `target/` existed to
+# produce a file no build step opened. Add `"staticlib"` back the day an
+# `apple` target appears under `gen/`.
 [lib]
 name = "anti_fomo_lib"
-crate-type = ["staticlib", "cdylib", "rlib"]
+crate-type = ["cdylib", "rlib"]
 
 # The `*_check` binaries are development tooling, not part of the shipped app,
 # so they are gated behind a feature that is off by default. `tauri build`
@@ -123,11 +133,24 @@ strip = true
 # a bug in the code you are editing rather than in the build you are running.
 [profile.dev]
 opt-level = 1
+# Full DWARF is the largest single thing `target/` holds — bigger than the code
+# it annotates, and copied into every rlib, every staging archive and the final
+# binary. `line-tables-only` keeps the part that is actually read here: a panic
+# backtrace still names the file and line. What it drops is variable and type
+# information, which only a breakpoint debugger consumes, and this app is
+# debugged through `dev_tools` binaries and the log plugin. Set this back to
+# `true` for a session under `rust-gdb` or `lldb`.
+debug = "line-tables-only"
 
 # Dependencies are compiled once and never stepped through: `scraper`,
 # `regex` and SQLite are all worth full optimization even in a debug build.
+# For the same reason they are worth no debug info at all — a backtrace through
+# `gtk` or `zbus` is a frame you read the crate name off, not one you step
+# into. This is where the debug build's size actually was: `libgtk.rlib` alone
+# carried 80 MB of DWARF for code no breakpoint is ever set in.
 [profile.dev.package."*"]
 opt-level = 3
+debug = false
 
 # Where a feed read spends its time, against the real database.
 [[bin]]

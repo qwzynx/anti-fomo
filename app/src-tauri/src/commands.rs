@@ -695,6 +695,12 @@ fn persist(app: &AppHandle, items: Vec<Item>) -> CmdResult<usize> {
     // out go with them. Saved rows are kept regardless.
     db::prune_orphan_states(&conn).map_err(err)?;
     db::prune_orphan_details(&conn).map_err(err)?;
+    // The three prunes above are the only bulk deletes the app does, and a
+    // delete on its own just moves pages onto the freelist — the file stays as
+    // large as it has ever been. This is where the space actually goes back,
+    // and it is deliberately the last thing after them rather than a step of
+    // its own: the pages have to be free before there is anything to return.
+    db::incremental_vacuum(&conn).map_err(err)?;
     db::set_setting(&conn, KEY_LAST_REFRESH, &Utc::now().to_rfc3339()).map_err(err)?;
     drop(conn);
     invalidate(&state);
