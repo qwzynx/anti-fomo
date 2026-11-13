@@ -68,6 +68,18 @@ export interface ScrapedItem {
   /** Every scoring term that fired, for the "why this ranks here" panel. */
   score_breakdown?: ScoreTerm[];
   /**
+   * What the posting is worth regardless of the clock. Only on whole items
+   * (`get_item_detail`): a list row carries the verdict below instead, because the number is
+   * relative to a set the row does not have.
+   */
+  merit?: number | null;
+  /**
+   * A really good posting that closes within a week. Decided by Rust against the whole ranked
+   * set, so a row's copy is as old as the payload it came in; the Today band guards on the
+   * deadline itself for that reason.
+   */
+  last_call?: boolean;
+  /**
    * The posting as the employer wrote it, once the enrichment pass has fetched
    * it. Absent where it could not, which is what makes the detail pane explain
    * itself instead of showing a skills panel — see `hasScrapedPosting` in
@@ -95,9 +107,53 @@ export interface SkillCategory {
   skills: string[];
 }
 
+/** What kind of thing a source collects, as far as scraping goes. Not `item_type`: see Rust's `Category`. */
+export type SourceCategory = "news" | "opportunities" | "events";
+
 export interface SourceHealth {
   name: string;
   count: number;
+  category: SourceCategory;
+  /** Whether the reader's preferences let this source run at all. */
+  enabled: boolean;
+  last_ok_at?: string | null;
+  /** Why the last run failed — or, when `failing` is false, a note the source left about itself. */
+  last_error?: string | null;
+  failing: boolean;
+}
+
+/** What the reader asked to have scraped. Every field defaults to wanted. */
+export interface ScrapePrefs {
+  internships: boolean;
+  jobs: boolean;
+  news: boolean;
+  events: boolean;
+  /** Sources switched off one by one, by name. */
+  disabled_sources: string[];
+}
+
+/**
+ * Where the reader is with the setup form. `needed` is a first launch — nothing is fetched until it
+ * is answered. `offered` is an existing install, which already has a feed and may skip it.
+ */
+export type OnboardingState = "needed" | "offered" | "done";
+
+/** Choices whose spelling Rust owns: they are matched by equality against what it produces. */
+export interface SetupOptions {
+  seniority: string[];
+  regions: string[];
+}
+
+/** One source finishing, emitted as `feed:progress` while a refresh runs. */
+export interface ScrapeProgress {
+  source: string;
+  category: SourceCategory;
+  status: "ok" | "dormant" | "failed";
+  count: number;
+  /** The failure, or the note a dormant source left. */
+  message: string | null;
+  done: number;
+  total: number;
 }
 
 export interface FeedStatus {
@@ -120,7 +176,36 @@ export const getFeed = (major?: string) =>
 export const getInternships = (major?: string) =>
   invoke<ScrapedItem[]>("get_internships", { major: major ?? null });
 
+/**
+ * The really good postings about to close, soonest first, already capped in Rust. Not a slice of
+ * `getFeed`: a strong posting closing tomorrow can easily rank past the feed's 400.
+ */
+export const getLastCall = (major?: string) =>
+  invoke<ScrapedItem[]>("get_last_call", { major: major ?? null });
+
 export const getSaved = () => invoke<ScrapedItem[]>("get_saved");
+
+// --- what to scrape ---
+
+export const getScrapePrefs = () => invoke<ScrapePrefs>("get_scrape_prefs");
+
+/** Stores the preferences and makes the cache agree: what is no longer wanted is deleted. */
+export const setScrapePrefs = (prefs: ScrapePrefs) => invoke<void>("set_scrape_prefs", { prefs });
+
+export const getOnboardingState = () => invoke<OnboardingState>("get_onboarding_state");
+
+export const listSetupOptions = () => invoke<SetupOptions>("list_setup_options");
+
+/** Saves the form's answers and lets scraping begin. The caller starts the scrape itself. */
+export const completeOnboarding = (
+  prefs: ScrapePrefs,
+  interests: string[],
+  homeRegion: string | null,
+  seniority: string[],
+) => invoke<void>("complete_onboarding", { prefs, interests, homeRegion, seniority });
+
+/** Dismisses the form for an existing install. Rust refuses it on a first launch. */
+export const skipOnboarding = () => invoke<void>("skip_onboarding");
 
 /**
  * One posting in full — the fetched description and the score breakdown the

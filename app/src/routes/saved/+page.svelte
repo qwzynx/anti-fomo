@@ -6,6 +6,7 @@
   import ItemRow from "$lib/components/ItemRow.svelte";
   import PageHeader from "$lib/components/PageHeader.svelte";
   import { feed } from "$lib/feed.svelte";
+  import { eventDate } from "$lib/item";
   import { BookOpen, Bookmark, Briefcase, Calendar, type IconComponent } from "$lib/icons";
 
   // Saved reads as three shelves rather than one undifferentiated list: a role
@@ -93,9 +94,12 @@
    */
   function metaFor(item: ScrapedItem): string | undefined {
     if (item.item_type !== "Event") return undefined;
-    const days = Math.round((new Date(item.timestamp).getTime() - Date.now()) / 86400000);
+    // The date the event is *about* — a hackathon's deadline, not the day entries opened.
+    const days = Math.round((new Date(eventDate(item)).getTime() - Date.now()) / 86400000);
+    const when = days === 0 ? "today" : days === 1 ? "tomorrow" : `in ${days} days`;
     if (days < 0) return "Already passed";
-    return days === 0 ? "Today" : days === 1 ? "Tomorrow" : `In ${days} days`;
+    if (item.closes_at) return `Closes ${when}`;
+    return when.charAt(0).toUpperCase() + when.slice(1);
   }
 </script>
 

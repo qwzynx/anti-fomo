@@ -4,6 +4,7 @@ pub mod db;
 pub mod location;
 pub mod models;
 pub mod pay;
+pub mod prefs;
 pub mod rank;
 pub mod resume;
 pub mod scrapers;
@@ -93,10 +94,17 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::get_feed,
             commands::get_internships,
+            commands::get_last_call,
             commands::get_saved,
             commands::get_item_detail,
             commands::feed_status,
             commands::refresh,
+            commands::get_scrape_prefs,
+            commands::set_scrape_prefs,
+            commands::get_onboarding_state,
+            commands::complete_onboarding,
+            commands::skip_onboarding,
+            commands::list_setup_options,
             commands::set_saved,
             commands::set_dismissed,
             commands::mark_seen,

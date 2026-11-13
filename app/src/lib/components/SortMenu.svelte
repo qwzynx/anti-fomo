@@ -6,6 +6,7 @@
     Building2,
     Check,
     Clock,
+    Flame,
     Hourglass,
     Sparkles,
     type IconComponent,
@@ -21,6 +22,8 @@
 
   function iconFor(sort: HubSort): IconComponent {
     switch (sort) {
+      case "Last call":
+        return Flame;
       case "Newest posted":
         return Clock;
       case "Closing soonest":

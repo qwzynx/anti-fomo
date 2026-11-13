@@ -8,7 +8,8 @@
   import PageHeader from "$lib/components/PageHeader.svelte";
   import RowSkeleton from "$lib/components/RowSkeleton.svelte";
   import { feed } from "$lib/feed.svelte";
-  import { BookOpen, Briefcase, Calendar, Inbox, Sparkles } from "$lib/icons";
+  import { BookOpen, Briefcase, Calendar, Flame, Inbox, Sparkles } from "$lib/icons";
+  import { closesInDays, eventDate } from "$lib/item";
 
   // Today, not a feed.
   //
@@ -24,25 +25,47 @@
   const PREVIEW = 3;
   /** How many more each "see all" reveals. Bands never render the whole cache. */
   const STEP = 12;
+  /** The most last calls the band will ever list; Rust sends more than a glance needs. */
+  const LAST_CALL_CAP = 8;
 
   let selected = $state<ScrapedItem | null>(null);
   let readingShown = $state(PREVIEW);
   let eventsShown = $state(PREVIEW);
+  let lastCallShown = $state(PREVIEW);
 
   const roles = $derived(feed.internships);
 
   /** The hero: the best-ranked role you have not opened yet. */
   const hero = $derived(roles.find((i) => !feed.isSeen(i.url)) ?? roles[0] ?? null);
 
-  const restOfRoles = $derived(roles.filter((i) => i.url !== hero?.url).slice(0, PREVIEW));
+  // The hero is the best match and a last call is the most urgent one; they may well be the same
+  // posting, and that is fine. What is not worth doing is listing a role a third time just below.
+  const restOfRoles = $derived.by(() => {
+    const shown = new Set(lastCall.slice(0, lastCallShown).map((i) => i.url));
+    return roles.filter((i) => i.url !== hero?.url && !shown.has(i.url)).slice(0, PREVIEW);
+  });
+
+  /**
+   * Strong postings that are about to close. Rust ranks "about to" against the clock at the last
+   * re-rank, which can be up to an hour old, so a deadline that has since passed is dropped here
+   * rather than shown as a last call it no longer is.
+   */
+  const lastCall = $derived(
+    feed.lastCall
+      .filter((i) => (closesInDays(i) ?? -1) >= 0)
+      .slice(0, LAST_CALL_CAP),
+  );
 
   const reading = $derived(feed.items.filter((i) => i.item_type === "Article"));
 
-  /** Soonest first, and only what has not already happened. */
+  /**
+   * Soonest first, and only what has not already happened — by the date the event is *about*: a
+   * hackathon's deadline, not the day entries opened, which is what its `timestamp` says.
+   */
   const events = $derived(
     feed.items
-      .filter((i) => i.item_type === "Event" && new Date(i.timestamp).getTime() >= Date.now())
-      .sort((a, b) => a.timestamp.localeCompare(b.timestamp)),
+      .filter((i) => i.item_type === "Event" && new Date(eventDate(i)).getTime() >= Date.now())
+      .sort((a, b) => eventDate(a).localeCompare(eventDate(b))),
   );
 
   /** What actually changed, which is the one thing a page called Today owes you. */
@@ -72,12 +95,15 @@
     return shown === PREVIEW ? `See all ${total}` : "Show more";
   }
 
-  /** How long until an event, which is the only thing anyone reads an event for. */
+  /**
+   * How long until an event, which is the only thing anyone reads an event for. Worded as a
+   * deadline when it is one — "Closes in 4 days" — to match what a role's row says.
+   */
   function countdown(item: ScrapedItem): string {
-    const days = Math.round((new Date(item.timestamp).getTime() - Date.now()) / 86400000);
-    if (days <= 0) return "Today";
-    if (days === 1) return "Tomorrow";
-    return `In ${days} days`;
+    const days = Math.round((new Date(eventDate(item)).getTime() - Date.now()) / 86400000);
+    const when = days <= 0 ? "today" : days === 1 ? "tomorrow" : `in ${days} days`;
+    if (item.closes_at) return `Closes ${when}`;
+    return when.charAt(0).toUpperCase() + when.slice(1);
   }
 </script>
 
@@ -131,6 +157,27 @@
             actually care about.
           </span>
         </a>
+      {/if}
+
+      <!-- Above Roles on purpose: it is the one band whose contents expire. A strong match
+           with a deadline this week is the thing this page exists to surface. -->
+      {#if lastCall.length > 0}
+        <Band
+          icon={Flame}
+          label="Last call"
+          accent="text-danger"
+          blurb="strong matches closing within a week"
+          actionLabel={bandAction(lastCallShown, lastCall.length)}
+          onAction={() => (lastCallShown = more(lastCallShown, lastCall.length))}
+        >
+          {#each lastCall.slice(0, lastCallShown) as item (item.url)}
+            <ItemRow
+              {item}
+              meta={item.item_type === "Event" ? countdown(item) : undefined}
+              onOpen={(i) => (selected = i)}
+            />
+          {/each}
+        </Band>
       {/if}
 
       {#if restOfRoles.length > 0}

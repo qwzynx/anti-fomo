@@ -923,13 +923,26 @@ const JOB_BANK_SKIP: &[&str] = &["how to apply", "who can apply", "contact"];
 /// The heading whose body is the closing date rather than a section of prose.
 const JOB_BANK_DEADLINE: &str = "advertised until";
 
+/// The closing date as the page itself marks it up (`<p
+/// property="validThrough">2026-11-19</p>`), wherever it sits. Read first and on
+/// its own because the heading is *not* reliably in a section of its own: on the
+/// current pages "Advertised until" is a sibling inside the "How to apply"
+/// container, which is skipped on purpose, so a deadline found only by walking
+/// the sections is thrown away along with the email address it shares a box
+/// with. That is how every Job Bank posting came back `ok` with no deadline.
+static JOB_BANK_VALID_THROUGH: LazyLock<Selector> =
+    LazyLock::new(|| Selector::parse(r#"[property="validThrough"]"#).unwrap());
+
 /// Job Bank labels its own sections, but as `<h2>`/`<h3>` inside `<section>`
 /// wrappers rather than as one description blob, so the generic split runs per
 /// section with the wrapper's heading already inside it.
 fn parse_job_bank(html: &str) -> JobDetail {
     let doc = Html::parse_document(html);
     let mut out = Sections::default();
-    let mut closes_at = None;
+    let mut closes_at = doc
+        .select(&JOB_BANK_VALID_THROUGH)
+        .next()
+        .and_then(|node| job_bank_deadline(&collapse_ws(&node.text().collect::<String>())));
     let mut salary = None;
     for section in doc.select(&JOB_BANK_BODY) {
         let heading = section
@@ -938,8 +951,11 @@ fn parse_job_bank(html: &str) -> JobDetail {
             .map(|h| collapse_ws(&h.text().collect::<String>()).to_lowercase())
             .unwrap_or_default();
         if heading.starts_with(JOB_BANK_DEADLINE) {
-            let text = collapse_ws(&section.text().collect::<String>());
-            closes_at = job_bank_deadline(&text);
+            // The older shape, with the date in the heading's own section.
+            if closes_at.is_none() {
+                let text = collapse_ws(&section.text().collect::<String>());
+                closes_at = job_bank_deadline(&text);
+            }
             continue;
         }
         if JOB_BANK_SKIP.iter().any(|skip| heading.starts_with(skip)) {
@@ -1350,6 +1366,45 @@ mod tests {
             .unwrap()
             .contains("Free parking available"));
         assert!(!d.responsibilities.as_deref().unwrap().contains("By email"));
+    }
+
+    /// The shape the live pages have: the deadline is a sibling *inside* the
+    /// "How to apply" container, whose section is skipped so that its email
+    /// address stays out of the overview. It used to be skipped with it.
+    #[test]
+    fn job_bank_reads_a_deadline_nested_in_the_how_to_apply_section() {
+        let html = r#"
+            <section><h2>Responsibilities</h2><ul><li>Write software</li></ul></section>
+            <section><h2>How to apply</h2>
+              <p>By email: jobs@example.com</p>
+              <h3>Advertised until</h3>
+              <p property="validThrough">2026-11-19
+                <span id="tp_expiryDate" class="timepickler"></span></p>
+            </section>
+        "#;
+        let d = parse_job_bank(html);
+        assert_eq!(d.closes_at, parse_ymd("2026-11-19"));
+        // Still kept out of the posting's own text.
+        assert!(!d
+            .responsibilities
+            .as_deref()
+            .unwrap()
+            .contains("jobs@example.com"));
+    }
+
+    #[test]
+    fn job_bank_still_reads_a_deadline_in_its_own_section() {
+        let html = r#"
+            <section><h2>Responsibilities</h2><ul><li>Write software</li></ul></section>
+            <section><h3>Advertised until</h3><p>Advertised until: 2026-09-18</p></section>
+        "#;
+        assert_eq!(parse_job_bank(html).closes_at, parse_ymd("2026-09-18"));
+    }
+
+    #[test]
+    fn a_job_bank_posting_with_no_deadline_reports_none() {
+        let html = "<section><h2>Responsibilities</h2><ul><li>Write software</li></ul></section>";
+        assert_eq!(parse_job_bank(html).closes_at, None);
     }
 
     #[test]

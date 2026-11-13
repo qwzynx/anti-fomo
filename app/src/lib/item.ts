@@ -135,6 +135,15 @@ export function monthDay(iso: string): { month: string; day: string } {
 
 // --- deadlines --------------------------------------------------------------
 
+/**
+ * The date an event is *about*: when it closes if it has a deadline (a hackathon's submission
+ * date), otherwise when it starts. `timestamp` alone is wrong for the first kind — Devpost stamps
+ * the day entries *opened*, which is why such an event used to read as already over.
+ */
+export function eventDate(item: ScrapedItem): string {
+  return item.closes_at ?? item.timestamp;
+}
+
 /** Whole days until a posting's own deadline. `null` when it published none. */
 export function closesInDays(item: ScrapedItem): number | null {
   if (!item.closes_at) return null;

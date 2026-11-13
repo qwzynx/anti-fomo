@@ -1,14 +1,16 @@
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, TimeZone, Utc};
 use futures::stream::{self, StreamExt};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::db;
+use crate::location;
 use crate::models::{self, Item, ItemType};
-use crate::rank::{self, personalize, DEFAULT_MAJOR};
+use crate::prefs::{self, ScrapePrefs};
+use crate::rank::{self, personalize_with, DEFAULT_MAJOR};
 use crate::resume::{self, terms};
 use crate::scrapers::{self, details};
 use crate::skills::{self, SkillCategory};
@@ -20,8 +22,6 @@ use crate::AppState;
 const FEED_LIMIT: usize = 400;
 /// Matches the Python pipeline's 10-minute in-memory cache TTL.
 const REFRESH_TTL_SECONDS: i64 = 600;
-/// Items older than this are dropped; job posts and news both go stale fast.
-const RETENTION_DAYS: i64 = 60;
 /// Descriptions fetched per refresh. The first handful of refreshes drain the
 /// backlog of a fresh cache; steady state is the new postings of the day,
 /// which is well under this. Raised from 200 when the direct employer boards
@@ -39,7 +39,27 @@ const DETAIL_CONCURRENCY: usize = 12;
 /// budget because deciding a URL is unservable is free, and clearing those out
 /// is what keeps a source we cannot fetch from blocking the queue.
 const DETAIL_CANDIDATES: usize = DETAIL_BUDGET * 8;
+/// Opportunity rows the cache will hold. Ranking is about 1.2 s per 18,000
+/// items and the hub payload grows with the count, so this is a ceiling on the
+/// *work a read does*, not on what exists. Past it, rows are cut by
+/// [`rank::fit`] — what the scrape alone can say about them — rather than by
+/// age or by whichever source happened to be scraped last.
+const OPPORTUNITY_CEILING: usize = 24_000;
+/// How many last calls `get_last_call` hands back. The band on Today shows a
+/// handful; the rest is there for a "see all", and this keeps the payload small
+/// whatever the cache holds.
+const LAST_CALL_LIMIT: usize = 24;
+/// The ranked cache is also rebuilt when the hour turns. Time-dependent terms —
+/// recency and above all how close a deadline is — are computed against a
+/// clock, and a cache keyed only on data would show Tuesday's "closes in two
+/// days" on Thursday until something else invalidated it.
+const RANK_BUCKET_SECONDS: i64 = 3600;
 
+/// Set once the reader has been shown the setup form and either answered it or
+/// waved it away. Distinct from `db::ONBOARDED_KEY`, which says scraping may
+/// begin: an upgrade is backfilled with that one (it was scraped before there
+/// was a form) and has still never seen this.
+const KEY_ONBOARDING_SEEN: &str = "onboarding_seen_at";
 const KEY_MAJOR: &str = "major";
 const KEY_LAST_REFRESH: &str = "last_refresh";
 const KEY_INTERESTS: &str = "interests";
@@ -78,6 +98,17 @@ pub struct FeedStatus {
 pub struct SourceHealth {
     pub name: String,
     pub count: usize,
+    /// "news" | "opportunities" | "events", so Settings can group the list the
+    /// way the setup form asked the question.
+    pub category: &'static str,
+    /// Whether the reader's preferences let this source run at all.
+    pub enabled: bool,
+    pub last_ok_at: Option<String>,
+    /// Why the last run failed — or, when `failing` is false, what a source
+    /// that ran fine had to say about itself ("repository dormant").
+    pub last_error: Option<String>,
+    /// Whether the last run failed, as opposed to merely having a note.
+    pub failing: bool,
 }
 
 /// One row as a list renders it, borrowed straight out of the ranked cache.
@@ -135,6 +166,11 @@ pub struct ListItem<'a> {
     saved: bool,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     seen: bool,
+    /// A really good posting that closes soon. `merit` itself stays out of the
+    /// row: the verdict is all the list needs, and the number is relative to a
+    /// set the list does not carry.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    last_call: bool,
 }
 
 impl<'a> From<&'a Item> for ListItem<'a> {
@@ -162,6 +198,7 @@ impl<'a> From<&'a Item> for ListItem<'a> {
             company_tier: item.company_tier,
             saved: item.saved,
             seen: item.seen,
+            last_call: item.last_call,
         }
     }
 }
@@ -181,7 +218,33 @@ pub fn as_list<'a>(items: impl IntoIterator<Item = &'a Item>) -> Vec<ListItem<'a
 pub(crate) struct Ranked {
     generation: u64,
     profile: rank::Profile,
+    /// The hour this was ranked in; see [`RANK_BUCKET_SECONDS`].
+    bucket: i64,
+    /// The quality bars measured over `items`. Kept because a single item can
+    /// only be judged against the set it came from — see `item_detail`.
+    bars: rank::Bars,
+    /// The instant the scores were computed against: the start of `bucket`,
+    /// not the moment of the read, so a row and its detail pane agree.
+    now: DateTime<Utc>,
     items: Arc<Vec<Item>>,
+}
+
+/// Which hour a moment falls in.
+pub(crate) fn rank_bucket(at: DateTime<Utc>) -> i64 {
+    at.timestamp().div_euclid(RANK_BUCKET_SECONDS)
+}
+
+fn bucket_start(bucket: i64) -> DateTime<Utc> {
+    Utc.timestamp_opt(bucket * RANK_BUCKET_SECONDS, 0)
+        .single()
+        .unwrap_or_else(Utc::now)
+}
+
+/// What a ranked read returns: the list, and what it was ranked against.
+struct RankedView {
+    items: Arc<Vec<Item>>,
+    bars: rank::Bars,
+    now: DateTime<Utc>,
 }
 
 /// Reads the persisted major, falling back to the default the old backend used
@@ -288,25 +351,45 @@ pub(crate) fn invalidate(state: &AppState) {
     state.generation.fetch_add(1, Ordering::SeqCst);
 }
 
-/// The visible cache, scored and ordered, recomputed only when the data or the
-/// profile has moved under it.
+/// The visible cache, scored and ordered, recomputed when the data or the
+/// profile has moved under it — or the hour has turned. For the list commands.
 fn ranked_items(state: &AppState, major: Option<String>) -> CmdResult<Arc<Vec<Item>>> {
+    Ok(ranked_view(state, major, true)?.items)
+}
+
+/// [`ranked_items`] plus what it was ranked against.
+///
+/// `hourly` says whether a cache from an earlier hour is good enough. The list
+/// commands want the answer that matches the clock; the detail pane and the
+/// enrichment queue do not, and must not pay for it: the first click after the
+/// hour turned would otherwise stall for the whole ranking pass to show a
+/// posting that is already on screen.
+fn ranked_view(state: &AppState, major: Option<String>, hourly: bool) -> CmdResult<RankedView> {
     // Read before taking the cache lock, so a write that lands mid-rank leaves
     // a generation the *next* read will not accept rather than one it will.
     let generation = state.generation.load(Ordering::SeqCst);
     let profile = current_profile(state, major);
+    let bucket = rank_bucket(Utc::now());
 
-    // Held across the ranking pass on purpose: `loadAll()` fires four commands
-    // at once and they now run on separate threads, so without this the feed
-    // and the hub would each start their own identical 1.2 s pass.
+    // Held across the ranking pass on purpose: `loadAll()` fires several
+    // commands at once and they run on separate threads, so without this the
+    // feed and the hub would each start their own identical 1.2 s pass.
     let mut slot = state.ranked.lock().unwrap();
     if let Some(cached) = slot.as_ref() {
-        if cached.generation == generation && cached.profile == profile {
-            return Ok(Arc::clone(&cached.items));
+        if cached.generation == generation
+            && cached.profile == profile
+            && (!hourly || cached.bucket == bucket)
+        {
+            return Ok(RankedView {
+                items: Arc::clone(&cached.items),
+                bars: cached.bars,
+                now: cached.now,
+            });
         }
     }
 
-    let mut items = personalize(visible_items(state)?, &profile);
+    let now = bucket_start(bucket);
+    let (mut items, bars) = personalize_with(visible_items(state)?, &profile, now, None);
     // The fetched posting has done its job — it is what skill extraction read
     // — and holding 28 MB of description text for the lifetime of the process
     // to render none of it is not worth the resident memory. `get_item_detail`
@@ -324,9 +407,12 @@ fn ranked_items(state: &AppState, major: Option<String>) -> CmdResult<Arc<Vec<It
     *slot = Some(Ranked {
         generation,
         profile,
+        bucket,
+        bars,
+        now,
         items: Arc::clone(&items),
     });
-    Ok(items)
+    Ok(RankedView { items, bars, now })
 }
 
 /// A payload already in its final form.
@@ -360,6 +446,33 @@ pub fn get_internships(state: State<'_, AppState>, major: Option<String>) -> Cmd
     .map_err(err)
 }
 
+/// The really good postings that are about to close, soonest first.
+///
+/// Its own command because `get_feed` is the top 400 by score and a last call
+/// is not guaranteed to be in it — a strong posting closing tomorrow is exactly
+/// the kind that sits at 450. The ranker has already decided which rows
+/// qualify ([`Item::last_call`]); this orders them by what the reader needs to
+/// act on, which is the date, and caps the answer in Rust so the payload does
+/// not depend on how big the cache is.
+#[tauri::command(async)]
+pub fn get_last_call(state: State<'_, AppState>, major: Option<String>) -> CmdResult<Payload> {
+    let ranked = ranked_items(&state, major)?;
+    serde_json::value::to_raw_value(&as_list(last_calls(&ranked))).map_err(err)
+}
+
+/// The flagged rows in the order a reader should act on them, capped. Pure, so
+/// the ordering is testable without a running app.
+fn last_calls(items: &[Item]) -> Vec<&Item> {
+    let mut hits: Vec<&Item> = items.iter().filter(|i| i.last_call).collect();
+    hits.sort_by(|a, b| {
+        a.closes_at
+            .cmp(&b.closes_at)
+            .then(b.merit.unwrap_or(0.0).total_cmp(&a.merit.unwrap_or(0.0)))
+    });
+    hits.truncate(LAST_CALL_LIMIT);
+    hits
+}
+
 /// Everything the user starred, newest first. Served from the `item_state`
 /// snapshots, so it works even for listings the cache has since pruned.
 #[tauri::command(async)]
@@ -386,6 +499,10 @@ pub fn get_saved(state: State<'_, AppState>) -> CmdResult<Vec<Item>> {
         item.responsibilities = None;
         item.perks = None;
         item.score_breakdown = Vec::new();
+        // Both were judged against the set at the moment of starring, which is
+        // not the set the reader is looking at now.
+        item.merit = None;
+        item.last_call = false;
     }
     Ok(items)
 }
@@ -412,8 +529,10 @@ fn item_detail(state: &AppState, url: &str) -> CmdResult<Option<Item>> {
     let url = url.to_string();
     // The ranked cache already holds everything but the posting's own text and
     // the breakdown, both of which are stripped when it is built.
-    let ranked = ranked_items(state, None)?;
-    let cached = ranked.iter().find(|i| i.url == url).cloned();
+    // Any age: the pane is showing a row the list already drew, and rebuilding
+    // for the hour boundary here would put the whole ranking pass behind a click.
+    let view = ranked_view(state, None, false)?;
+    let cached = view.items.iter().find(|i| i.url == url).cloned();
 
     let mut items = {
         let conn = state.db.lock().unwrap();
@@ -441,8 +560,12 @@ fn item_detail(state: &AppState, url: &str) -> CmdResult<Option<Item>> {
     // Re-scored for its own sake: the ranked cache drops `score_breakdown`
     // rather than hold 18,240 of them to render at most one, and the pane is
     // the only place the terms behind a position are ever shown.
+    //
+    // Against the set's own bars and clock, not a fresh measure of one item: a
+    // percentile of one is meaningless, and the pane would disagree with the
+    // row it was opened from about whether the posting is a last call.
     let profile = current_profile(state, None);
-    items = personalize(items, &profile);
+    items = personalize_with(items, &profile, view.now, Some(&view.bars)).0;
     Ok(items.pop())
 }
 
@@ -464,16 +587,30 @@ pub fn feed_status(state: State<'_, AppState>) -> CmdResult<FeedStatus> {
 
     // Driven by the scraper registry, not by what happens to be in the cache,
     // so a source that has stopped returning anything shows up as 0 rather
-    // than vanishing from the list. Deduped by name because some sources are
-    // registered as several passes over one site (Job Bank runs two queries)
-    // and the user should see one row per source, not one per request.
-    let mut seen = std::collections::HashSet::new();
-    let sources = scrapers::all_scrapers()
-        .iter()
-        .filter(|s| seen.insert(s.source_name()))
-        .map(|s| SourceHealth {
-            name: s.source_name().to_string(),
-            count: counts.get(s.source_name()).copied().unwrap_or(0),
+    // than vanishing from the list. `sources()` is already one entry per name:
+    // some are registered as several passes over one site.
+    let prefs = current_prefs(&state);
+    let runs: std::collections::HashMap<String, db::SourceRun> = {
+        let conn = state.db.lock().unwrap();
+        db::load_source_runs(&conn)
+            .map_err(err)?
+            .into_iter()
+            .map(|r| (r.source.clone(), r))
+            .collect()
+    };
+    let sources = scrapers::sources()
+        .into_iter()
+        .map(|(category, name)| {
+            let run = runs.get(name);
+            SourceHealth {
+                name: name.to_string(),
+                count: counts.get(name).copied().unwrap_or(0),
+                category: category.as_str(),
+                enabled: prefs.source_enabled(category, name),
+                last_ok_at: run.and_then(|r| r.last_ok_at).map(|d| d.to_rfc3339()),
+                last_error: run.and_then(|r| r.last_error.clone()),
+                failing: run.is_some_and(|r| !r.ok),
+            }
         })
         .collect();
 
@@ -488,13 +625,74 @@ pub fn feed_status(state: State<'_, AppState>) -> CmdResult<FeedStatus> {
     })
 }
 
-/// Scrapes every source and persists the results. Returns the number of items
-/// written, or `None` when the call was skipped as still-fresh.
+/// Clears the single-flight flag and tells the UI, however a refresh ends. A
+/// `?` between taking the flag and releasing it used to leave `refreshing`
+/// true until the app was restarted, which made every later Refresh a no-op.
+struct RefreshGuard(AppHandle);
+
+impl Drop for RefreshGuard {
+    fn drop(&mut self) {
+        let state = self.0.state::<AppState>();
+        state.refreshing.store(false, Ordering::SeqCst);
+        let _ = self.0.emit("feed:refreshing", false);
+    }
+}
+
+/// One source finishing, as the setup form's progress list sees it.
+#[derive(Serialize, Clone)]
+struct Progress {
+    source: &'static str,
+    category: &'static str,
+    /// "ok" | "dormant" | "failed"
+    status: &'static str,
+    count: usize,
+    /// The failure, or the note a dormant source left.
+    message: Option<String>,
+    done: usize,
+    total: usize,
+}
+
+impl Progress {
+    fn of(outcome: &scrapers::SourceOutcome, done: usize, total: usize) -> Progress {
+        let (status, message) = match &outcome.health {
+            scrapers::Health::Ok => ("ok", None),
+            scrapers::Health::Dormant(note) => ("dormant", Some(note.clone())),
+            scrapers::Health::Failed(e) => ("failed", Some(e.clone())),
+        };
+        Progress {
+            source: outcome.source,
+            category: outcome.category.as_str(),
+            status,
+            count: outcome.count,
+            message,
+            done,
+            total,
+        }
+    }
+}
+
+fn onboarded(state: &AppState) -> bool {
+    let conn = state.db.lock().unwrap();
+    db::get_setting(&conn, db::ONBOARDED_KEY)
+        .ok()
+        .flatten()
+        .is_some()
+}
+
+/// Scrapes what the reader asked for and what is due, and persists the
+/// results. Returns the number of items written, or `None` when nothing ran —
+/// because the reader has not been asked yet, because nothing was due, or
+/// because another refresh was already under way.
+///
+/// `force` is the Refresh button: it overrides how recently a source ran, and
+/// nothing else. A source the reader switched off stays off.
 #[tauri::command]
 pub async fn refresh(app: AppHandle, force: bool) -> CmdResult<Option<usize>> {
     let state = app.state::<AppState>();
 
-    if !force && !is_stale(&state) {
+    // The app asks before it fetches. The launch refresh and every button hit
+    // this same gate, so there is no path to a request that skips the question.
+    if !onboarded(&state) {
         return Ok(None);
     }
     // Two windows, or a manual tap landing on top of the launch refresh,
@@ -506,30 +704,63 @@ pub async fn refresh(app: AppHandle, force: bool) -> CmdResult<Option<usize>> {
     {
         return Ok(None);
     }
-    let _ = app.emit("feed:refreshing", true);
+    let _release = RefreshGuard(app.clone());
 
-    let items = scrapers::fetch_all().await;
-    // Writing 18,000 upserts is not something to do on the async runtime's
-    // thread — it would stall every other task on it for the duration.
-    let result = {
-        let app = app.clone();
-        tauri::async_runtime::spawn_blocking(move || persist(&app, items))
-            .await
-            .map_err(err)?
+    let plan = {
+        let prefs = current_prefs(&state);
+        let runs = {
+            let conn = state.db.lock().unwrap();
+            db::load_source_runs(&conn).map_err(err)?
+        };
+        prefs::due(&scrapers::sources(), &runs, &prefs, Utc::now(), force)
     };
 
-    // Announced as soon as the scrape lands rather than after enrichment.
-    // Enrichment is up to 600 HTTP requests and takes seconds; the feed is
-    // already usable the moment `persist` returns, and holding the event back
-    // meant a refresh looked like it had done nothing until the very end.
-    if let Ok(count) = &result {
-        let _ = app.emit("feed:updated", *count);
+    let mut scraped = None;
+    let mut persisted = true;
+    if !plan.is_empty() {
+        let _ = app.emit("feed:refreshing", true);
+
+        let (items, outcomes) = scrapers::fetch_selected(&plan, |outcome, done, total| {
+            let _ = app.emit("feed:progress", Progress::of(outcome, done, total));
+        })
+        .await;
+
+        // The kinds the reader switched off are dropped here, before anything
+        // is stored: a scraper cannot tell an internship from a job until the
+        // title has been read, so the request was made, but the row never
+        // reaches the cache, the ranker or the description budget.
+        let prefs = current_prefs(&state);
+        let items: Vec<Item> = items.into_iter().filter(|i| prefs.admits(i)).collect();
+
+        // Writing 18,000 upserts is not something to do on the async runtime's
+        // thread — it would stall every other task on it for the duration.
+        let result = {
+            let app = app.clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                let state = app.state::<AppState>();
+                persist(state.inner(), items, outcomes)
+            })
+            .await
+            .map_err(err)?
+        };
+
+        // Announced as soon as the scrape lands rather than after enrichment.
+        // Enrichment is up to 600 HTTP requests and takes seconds; the feed is
+        // already usable the moment `persist` returns, and holding the event
+        // back meant a refresh looked like it had done nothing until the end.
+        if let Ok(count) = &result {
+            let _ = app.emit("feed:updated", *count);
+        }
+        persisted = result.is_ok();
+        scraped = Some(result);
     }
 
-    // Only worth doing once there is a cache to enrich, and deliberately
-    // inside the `refreshing` flag so a second refresh cannot start on top of
-    // it. This phase emits its own update when it lands.
-    if result.is_ok() {
+    // Worth doing whenever there is a cache to enrich, *including* when nothing
+    // was due: the backlog is thousands of postings and 600 are fetched a go,
+    // so a launch inside the freshness window is exactly when to make progress
+    // on it. Deliberately inside the `refreshing` flag so a second refresh
+    // cannot start on top of it. This phase emits its own update when it lands.
+    if persisted {
         match enrich_details(&app).await {
             Ok(0) => {}
             Ok(n) => {
@@ -541,9 +772,54 @@ pub async fn refresh(app: AppHandle, force: bool) -> CmdResult<Option<usize>> {
         }
     }
 
-    state.refreshing.store(false, Ordering::SeqCst);
-    let _ = app.emit("feed:refreshing", false);
-    result.map(Some)
+    match scraped {
+        Some(result) => result.map(Some),
+        None => Ok(None),
+    }
+}
+
+/// Which postings to fetch descriptions for, in the order to fetch them: the
+/// not-yet-attempted opportunities, best first.
+///
+/// "Best" is `merit` — what a posting is *worth* — and not where the feed puts
+/// it. Rank order includes recency, and postings are kept for as long as they
+/// are open, so the old but excellent ones would be fetched last; a deadline is
+/// only ever learned by fetching, which makes those the rows a "last call" most
+/// needs read. Postings already closed are skipped: nobody applies to them, and
+/// their description is a request spent on the past.
+///
+/// The result is interleaved by employer, as the feed is, so one Workday
+/// tenant's backlog cannot take the whole budget. `diversify` orders its rounds
+/// by `relevance_score`, so the copies it is handed carry merit there.
+pub fn detail_candidates(
+    items: &[Item],
+    attempted: &std::collections::HashSet<String>,
+    now: DateTime<Utc>,
+) -> Vec<(String, Option<String>)> {
+    let mut pending: Vec<&Item> = items
+        .iter()
+        .filter(|i| i.item_type.is_opportunity() && !attempted.contains(&i.url))
+        .filter(|i| i.closes_at.is_none_or(|c| c >= now))
+        .collect();
+    pending.sort_by(|a, b| {
+        let key = |i: &Item| (i.merit.unwrap_or(0.0), i.relevance_score.unwrap_or(0.0));
+        let (a, b) = (key(a), key(b));
+        b.0.total_cmp(&a.0).then(b.1.total_cmp(&a.1))
+    });
+    // Capped before the clone below, which is the expensive part.
+    pending.truncate(DETAIL_CANDIDATES);
+    let queue: Vec<Item> = pending
+        .into_iter()
+        .map(|i| {
+            let mut copy = i.clone();
+            copy.relevance_score = copy.merit;
+            copy
+        })
+        .collect();
+    rank::diversify(queue)
+        .into_iter()
+        .map(|i| (i.url, i.simplify_id))
+        .collect()
 }
 
 /// Fetches descriptions for postings we have never tried, up to
@@ -575,12 +851,8 @@ async fn enrich_details(app: &AppHandle) -> CmdResult<usize> {
                 let conn = state.db.lock().unwrap();
                 db::urls_with_details(&conn).map_err(err)?
             };
-            Ok(ranked_items(&state, None)?
-                .iter()
-                .filter(|i| i.item_type.is_opportunity() && !attempted.contains(&i.url))
-                .take(DETAIL_CANDIDATES)
-                .map(|i| (i.url.clone(), i.simplify_id.clone()))
-                .collect())
+            let view = ranked_view(&state, None, false)?;
+            Ok(detail_candidates(&view.items, &attempted, Utc::now()))
         })
         .await
         .map_err(err)??
@@ -646,15 +918,57 @@ async fn enrich_details(app: &AppHandle) -> CmdResult<usize> {
 }
 
 /// Split out so the connection lock is never held across an await point.
-fn persist(app: &AppHandle, items: Vec<Item>) -> CmdResult<usize> {
-    let state = app.state::<AppState>();
-    let count = items.len();
-
-    // A scrape that returned nothing is a network failure, not an empty world —
-    // keep the cached items rather than blanking the feed.
-    if count == 0 {
-        return Err("all sources returned no items (offline?)".to_string());
+fn persist(
+    state: &AppState,
+    items: Vec<Item>,
+    outcomes: Vec<scrapers::SourceOutcome>,
+) -> CmdResult<usize> {
+    // Recorded before anything else, and whatever came of the scrape: the
+    // ledger is what stops a source that failed from being skipped as fresh,
+    // and what stops one that worked from being asked again too soon.
+    let now = Utc::now();
+    let runs: Vec<db::SourceRun> = outcomes
+        .iter()
+        .map(|o| {
+            let failed = matches!(o.health, scrapers::Health::Failed(_));
+            db::SourceRun {
+                source: o.source.to_string(),
+                category: o.category.as_str().to_string(),
+                last_run_at: now,
+                ok: !failed,
+                last_ok_at: (!failed).then_some(now),
+                last_count: o.count as i64,
+                last_error: match &o.health {
+                    scrapers::Health::Ok => None,
+                    scrapers::Health::Dormant(note) => Some(note.clone()),
+                    scrapers::Health::Failed(e) => Some(e.clone()),
+                },
+            }
+        })
+        .collect();
+    {
+        let mut conn = state.db.lock().unwrap();
+        db::record_runs(&mut conn, &runs).map_err(err)?;
     }
+
+    // Every source that ran failed: that is the network, not an empty world, so
+    // keep the cached items rather than blanking the feed. (A source that ran
+    // and had nothing to say is not a failure — a reader who wants only
+    // internships can legitimately get no rows back from a run.)
+    if items.is_empty()
+        && !outcomes.is_empty()
+        && outcomes
+            .iter()
+            .all(|o| matches!(o.health, scrapers::Health::Failed(_)))
+    {
+        return Err("every source failed (offline?)".to_string());
+    }
+
+    // The ceiling is applied at ingest rather than in the sweep: every row a
+    // scrape returns shares one `last_seen_at`, so a sweep has nothing to tell
+    // them apart by, and whatever it evicted would be back on the next refresh.
+    let items = rank::cap_opportunities(items, &current_profile(state, None), OPPORTUNITY_CEILING);
+    let count = items.len();
 
     // A re-scrape can change the text behind a URL we have already extracted
     // skills for, so the memo has to go with it.
@@ -685,17 +999,36 @@ fn persist(app: &AppHandle, items: Vec<Item>) -> CmdResult<usize> {
         })
         .collect();
 
+    // Stamped before anything is written and handed to the sweep afterwards:
+    // "not seen by this scrape" is exactly "stamped earlier than this".
+    let run_start = Utc::now();
+    let alive = scrapers::alive_scopes(&items);
+
     let mut conn = state.db.lock().unwrap();
-    db::save_items(&mut conn, &items).map_err(err)?;
+    db::save_items_at(&mut conn, &items, run_start).map_err(err)?;
     if !seeded.is_empty() {
         db::save_details(&mut conn, &seeded).map_err(err)?;
     }
-    db::prune_older_than(&conn, RETENTION_DAYS).map_err(err)?;
-    // Runs after the prune so seen/dismissed rows for listings that have aged
-    // out go with them. Saved rows are kept regardless.
+    // Postings leave when they stop being offered, not when they get old: see
+    // `db::sweep`. This used to be a blanket 60 days on `timestamp`, which
+    // deleted the oldest postings still open and, for Devpost, a hackathon
+    // the day it was saved. Run even when this scrape returned no rows: what
+    // closes, ends or ages out does so by the date, not by what was fetched.
+    let swept = db::sweep(
+        &mut conn,
+        Utc::now(),
+        run_start,
+        &alive,
+        scrapers::START_DATED,
+        &db::Retention::default(),
+    )
+    .map_err(err)?;
+    log::info!("sweep: {swept:?}");
+    // Runs after the sweep so seen/dismissed rows for listings that have gone
+    // go with them. Saved rows are kept regardless.
     db::prune_orphan_states(&conn).map_err(err)?;
     db::prune_orphan_details(&conn).map_err(err)?;
-    // The three prunes above are the only bulk deletes the app does, and a
+    // The sweep and the two prunes above are the only bulk deletes the app does, and a
     // delete on its own just moves pages onto the freelist — the file stays as
     // large as it has ever been. This is where the space actually goes back,
     // and it is deliberately the last thing after them rather than a step of
@@ -703,7 +1036,7 @@ fn persist(app: &AppHandle, items: Vec<Item>) -> CmdResult<usize> {
     db::incremental_vacuum(&conn).map_err(err)?;
     db::set_setting(&conn, KEY_LAST_REFRESH, &Utc::now().to_rfc3339()).map_err(err)?;
     drop(conn);
-    invalidate(&state);
+    invalidate(state);
     Ok(count)
 }
 
@@ -855,6 +1188,188 @@ pub fn set_setting(state: State<'_, AppState>, key: String, value: String) -> Cm
 pub fn list_sources(state: State<'_, AppState>) -> CmdResult<Vec<String>> {
     let conn = state.db.lock().unwrap();
     db::distinct_sources(&conn).map_err(err)
+}
+
+// --- what to scrape ---------------------------------------------------------
+
+fn current_prefs(state: &AppState) -> ScrapePrefs {
+    json_setting(state, prefs::KEY)
+}
+
+/// The choices the setup form offers that Rust owns the spelling of. Seniority
+/// bands and region tags are matched by equality against what the classifier
+/// and the location tagger produce, so a copy typed into the UI would fail by
+/// matching nothing; the interest list is served the same way by
+/// `list_interests`.
+#[derive(Serialize)]
+pub struct SetupOptions {
+    seniority: Vec<&'static str>,
+    regions: Vec<&'static str>,
+}
+
+#[tauri::command]
+pub fn list_setup_options() -> SetupOptions {
+    SetupOptions {
+        seniority: rank::seniority_levels(),
+        regions: location::region_tags(),
+    }
+}
+
+#[tauri::command(async)]
+pub fn get_scrape_prefs(state: State<'_, AppState>) -> CmdResult<ScrapePrefs> {
+    Ok(current_prefs(&state))
+}
+
+/// Stores new preferences and makes the cache and the schedule agree with them.
+///
+/// What is no longer wanted is deleted: the sweep never visits a source that is
+/// not being scraped, so a category switched off would otherwise sit in the feed
+/// forever, frozen at the moment it was disabled. What *newly* became wanted is
+/// made due by forgetting its last run, so the next refresh fetches exactly
+/// that and nothing else.
+fn apply_prefs(state: &AppState, new: &ScrapePrefs) -> CmdResult<()> {
+    let old = current_prefs(state);
+    let sources = scrapers::sources();
+
+    {
+        let conn = state.db.lock().unwrap();
+        db::set_setting(&conn, prefs::KEY, &serde_json::to_string(new).map_err(err)?)
+            .map_err(err)?;
+        db::purge_unwanted(&conn, new.wanted(), &new.disabled_sources).map_err(err)?;
+
+        // A source with no ledger row has never run, and so is due. Off ones go
+        // too, so that switching one back on starts from a clean slate.
+        let mut forget: Vec<String> = sources
+            .iter()
+            .filter(|(category, name)| !new.source_enabled(*category, name))
+            .map(|(_, name)| name.to_string())
+            .collect();
+        forget.extend(
+            prefs::made_due(&old, new, &sources)
+                .into_iter()
+                .map(String::from),
+        );
+        db::forget_source_runs(&conn, &forget).map_err(err)?;
+
+        db::prune_orphan_states(&conn).map_err(err)?;
+        db::prune_orphan_details(&conn).map_err(err)?;
+        db::incremental_vacuum(&conn).map_err(err)?;
+    }
+    invalidate(state);
+    Ok(())
+}
+
+#[tauri::command(async)]
+pub fn set_scrape_prefs(state: State<'_, AppState>, prefs: ScrapePrefs) -> CmdResult<()> {
+    apply_prefs(&state, &prefs)
+}
+
+/// Where the reader is with the setup form: `"needed"` before anything has been
+/// fetched (a first launch), `"offered"` for an existing install that has not
+/// seen it yet — its feed is already there, so the form may be skipped — and
+/// `"done"` after.
+#[tauri::command(async)]
+pub fn get_onboarding_state(state: State<'_, AppState>) -> CmdResult<&'static str> {
+    onboarding_state(&state)
+}
+
+fn onboarding_state(state: &AppState) -> CmdResult<&'static str> {
+    let conn = state.db.lock().unwrap();
+    let has = |key: &str| {
+        db::get_setting(&conn, key)
+            .map(|v| v.is_some())
+            .map_err(err)
+    };
+    Ok(match (has(db::ONBOARDED_KEY)?, has(KEY_ONBOARDING_SEEN)?) {
+        (false, _) => "needed",
+        (true, false) => "offered",
+        (true, true) => "done",
+    })
+}
+
+/// Saves the answers to the setup form and lets scraping begin.
+///
+/// Everything is written before `onboarded_at`, and `onboarded_at` is written
+/// *now* rather than when the first scrape finishes: if the app is closed
+/// halfway through, the next launch should carry on scraping what was asked for
+/// instead of asking again. The run ledger is empty, so every wanted source is
+/// due. The caller starts the scrape itself, so it can follow the progress
+/// events from the first one.
+///
+/// Anything the app does not recognise is dropped rather than stored: an
+/// interest, band or region it cannot match would be a preference that silently
+/// does nothing.
+#[tauri::command(async)]
+pub fn complete_onboarding(
+    state: State<'_, AppState>,
+    prefs: ScrapePrefs,
+    interests: Vec<String>,
+    home_region: Option<String>,
+    seniority: Vec<String>,
+) -> CmdResult<()> {
+    finish_onboarding(&state, &prefs, interests, home_region, seniority)
+}
+
+fn finish_onboarding(
+    state: &AppState,
+    prefs: &ScrapePrefs,
+    interests: Vec<String>,
+    home_region: Option<String>,
+    seniority: Vec<String>,
+) -> CmdResult<()> {
+    let known = rank::list_interests();
+    let interests: Vec<String> = interests
+        .into_iter()
+        .filter(|i| known.contains(i))
+        .collect();
+    let levels = rank::seniority_levels();
+    let seniority: Vec<String> = seniority
+        .into_iter()
+        .filter(|l| levels.contains(&l.as_str()))
+        .collect();
+    let regions = location::region_tags();
+    let home = home_region
+        .filter(|r| regions.contains(&r.as_str()))
+        .unwrap_or_default();
+
+    apply_prefs(state, prefs)?;
+    {
+        let conn = state.db.lock().unwrap();
+        let json = |v: &Vec<String>| serde_json::to_string(v).map_err(err);
+        db::set_setting(&conn, KEY_INTERESTS, &json(&interests)?).map_err(err)?;
+        db::set_setting(&conn, KEY_TARGET_SENIORITY, &json(&seniority)?).map_err(err)?;
+        // Empty is how "no home region" is stored; `current_profile` reads it as none.
+        db::set_setting(&conn, KEY_HOME_REGION, &home).map_err(err)?;
+
+        let now = Utc::now().to_rfc3339();
+        if db::get_setting(&conn, db::ONBOARDED_KEY)
+            .map_err(err)?
+            .is_none()
+        {
+            db::set_setting(&conn, db::ONBOARDED_KEY, &now).map_err(err)?;
+        }
+        db::set_setting(&conn, KEY_ONBOARDING_SEEN, &now).map_err(err)?;
+    }
+    invalidate(state);
+    Ok(())
+}
+
+/// Dismisses the form for an existing install. Refused on a first launch,
+/// where nothing has been asked and there is nothing to skip to.
+#[tauri::command(async)]
+pub fn skip_onboarding(state: State<'_, AppState>) -> CmdResult<()> {
+    dismiss_onboarding(&state)
+}
+
+fn dismiss_onboarding(state: &AppState) -> CmdResult<()> {
+    let conn = state.db.lock().unwrap();
+    if db::get_setting(&conn, db::ONBOARDED_KEY)
+        .map_err(err)?
+        .is_none()
+    {
+        return Err("setup has not been completed yet".to_string());
+    }
+    db::set_setting(&conn, KEY_ONBOARDING_SEEN, &Utc::now().to_rfc3339()).map_err(err)
 }
 
 // --- résumés -----------------------------------------------------------
@@ -1276,4 +1791,571 @@ pub struct ResumeThemeOption {
     id: resume::theme::ThemeId,
     label: String,
     theme: resume::Theme,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Duration;
+
+    #[test]
+    fn the_ranked_cache_turns_over_on_the_hour() {
+        let at = |h, m, sec| Utc.with_ymd_and_hms(2026, 11, 12, h, m, sec).unwrap();
+        assert_eq!(rank_bucket(at(14, 0, 0)), rank_bucket(at(14, 59, 59)));
+        assert_ne!(rank_bucket(at(14, 59, 59)), rank_bucket(at(15, 0, 0)));
+        assert_eq!(bucket_start(rank_bucket(at(14, 37, 12))), at(14, 0, 0));
+    }
+
+    fn flagged(title: &str, in_days: i64, merit: f64) -> Item {
+        let mut item = Item::new(title, "S", ItemType::Job, format!("https://x.test/{title}"));
+        item.closes_at = Some(Utc::now() + Duration::days(in_days));
+        item.merit = Some(merit);
+        item.last_call = true;
+        item
+    }
+
+    #[test]
+    fn last_calls_are_soonest_first_then_best_and_skip_the_unflagged() {
+        let mut unflagged = flagged("lc-unflagged", 1, 99.0);
+        unflagged.last_call = false;
+        let items = vec![
+            flagged("lc-late", 6, 20.0),
+            unflagged,
+            flagged("lc-soon-weaker", 1, 14.0),
+            flagged("lc-soon-better", 1, 18.0),
+        ];
+        // `1 day` is computed per call, so pin the two that must tie.
+        let mut items = items;
+        items[3].closes_at = items[2].closes_at;
+
+        let titles: Vec<&str> = last_calls(&items)
+            .iter()
+            .map(|i| i.title.as_str())
+            .collect();
+        assert_eq!(titles, ["lc-soon-better", "lc-soon-weaker", "lc-late"]);
+    }
+
+    #[test]
+    fn the_last_call_list_is_capped_in_rust() {
+        let items: Vec<Item> = (0..LAST_CALL_LIMIT + 10)
+            .map(|i| flagged(&format!("lc-{i}"), 2, 15.0))
+            .collect();
+        assert_eq!(last_calls(&items).len(), LAST_CALL_LIMIT);
+    }
+
+    // --- the persist and onboarding wiring, against a real store ---
+    //
+    // `persist` is where the sweep, the run ledger and the ceiling meet, and a
+    // mistake there is silent: a sweep fed the wrong scopes deletes a board's
+    // postings without an error. These run it over a real database file.
+
+    use crate::scrapers::{Category, Health, SourceOutcome};
+    use std::sync::atomic::{AtomicBool, AtomicU64};
+    use std::sync::Mutex;
+
+    struct TestState {
+        state: AppState,
+        path: std::path::PathBuf,
+        /// Leave the file behind, for a test whose output is the database.
+        keep: bool,
+    }
+
+    impl Drop for TestState {
+        fn drop(&mut self) {
+            if self.keep {
+                return;
+            }
+            for suffix in ["", "-wal", "-shm"] {
+                let _ = std::fs::remove_file(format!("{}{suffix}", self.path.display()));
+            }
+        }
+    }
+
+    fn test_state() -> TestState {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        test_state_at(
+            std::env::temp_dir().join(format!("antifomo-cmd-{unique}.db")),
+            false,
+        )
+    }
+
+    fn test_state_at(path: std::path::PathBuf, keep: bool) -> TestState {
+        let conn = db::open(&path).unwrap();
+        TestState {
+            state: AppState {
+                db: Mutex::new(conn),
+                refreshing: AtomicBool::new(false),
+                generation: AtomicU64::new(0),
+                ranked: Mutex::new(None),
+            },
+            path,
+            keep,
+        }
+    }
+
+    fn outcome(
+        source: &'static str,
+        category: Category,
+        count: usize,
+        health: Health,
+    ) -> SourceOutcome {
+        SourceOutcome {
+            source,
+            category,
+            count,
+            health,
+        }
+    }
+
+    fn posting(title: &str, company: &str) -> Item {
+        Item::new(
+            title,
+            "Greenhouse",
+            ItemType::Job,
+            format!("https://x.test/{title}"),
+        )
+        .with_company(company)
+    }
+
+    fn titles(state: &AppState) -> Vec<String> {
+        let conn = state.db.lock().unwrap();
+        let mut all: Vec<String> = db::load_items(&conn)
+            .unwrap()
+            .into_iter()
+            .map(|i| i.title)
+            .collect();
+        all.sort();
+        all
+    }
+
+    #[test]
+    fn a_scrape_records_what_became_of_every_source_it_ran() {
+        let t = test_state();
+        let outcomes = vec![
+            outcome("Greenhouse", Category::Opportunities, 2, Health::Ok),
+            outcome(
+                "Pitt CSC Repo",
+                Category::Opportunities,
+                0,
+                Health::Dormant("repository dormant".into()),
+            ),
+            outcome(
+                "Lever",
+                Category::Opportunities,
+                0,
+                Health::Failed("timed out".into()),
+            ),
+        ];
+        persist(
+            &t.state,
+            vec![posting("a", "Acme"), posting("b", "Acme")],
+            outcomes,
+        )
+        .unwrap();
+
+        let conn = t.state.db.lock().unwrap();
+        let runs: std::collections::HashMap<_, _> = db::load_source_runs(&conn)
+            .unwrap()
+            .into_iter()
+            .map(|r| (r.source.clone(), r))
+            .collect();
+        assert!(runs["Greenhouse"].ok && runs["Greenhouse"].last_error.is_none());
+        assert_eq!(runs["Greenhouse"].last_count, 2);
+        // A dormant source worked: it is on the long schedule, with a note.
+        assert!(runs["Pitt CSC Repo"].ok);
+        assert_eq!(
+            runs["Pitt CSC Repo"].last_error.as_deref(),
+            Some("repository dormant")
+        );
+        // A failed one is not, and has never succeeded.
+        assert!(!runs["Lever"].ok && runs["Lever"].last_ok_at.is_none());
+    }
+
+    #[test]
+    fn every_source_failing_keeps_the_cache_and_still_records_why() {
+        let t = test_state();
+        persist(
+            &t.state,
+            vec![posting("keep", "Acme")],
+            vec![outcome(
+                "Greenhouse",
+                Category::Opportunities,
+                1,
+                Health::Ok,
+            )],
+        )
+        .unwrap();
+
+        let result = persist(
+            &t.state,
+            Vec::new(),
+            vec![outcome(
+                "Greenhouse",
+                Category::Opportunities,
+                0,
+                Health::Failed("offline".into()),
+            )],
+        );
+        assert!(
+            result.is_err(),
+            "an all-failed run is the network, not an empty world"
+        );
+        assert_eq!(titles(&t.state), ["keep"]);
+
+        let conn = t.state.db.lock().unwrap();
+        let run = &db::load_source_runs(&conn).unwrap()[0];
+        assert!(
+            !run.ok,
+            "the failure has to reach the ledger so it is retried soon"
+        );
+    }
+
+    #[test]
+    fn a_run_that_worked_but_returned_nothing_wanted_is_not_an_error() {
+        let t = test_state();
+        let result = persist(
+            &t.state,
+            Vec::new(),
+            vec![outcome(
+                "Greenhouse",
+                Category::Opportunities,
+                40,
+                Health::Ok,
+            )],
+        );
+        assert_eq!(result, Ok(0));
+    }
+
+    /// The whole point of scoping the sweep to employers: Acme's board failed,
+    /// so nothing in this scrape speaks for Acme, and its postings must survive
+    /// a scrape that Other's board answered.
+    #[test]
+    fn persist_charges_misses_only_to_employers_whose_board_answered() {
+        let t = test_state();
+        let board = [outcome(
+            "Greenhouse",
+            Category::Opportunities,
+            3,
+            Health::Ok,
+        )];
+        persist(
+            &t.state,
+            vec![
+                posting("acme-a", "Acme"),
+                posting("other-b", "Other"),
+                posting("other-c", "Other"),
+            ],
+            board.to_vec(),
+        )
+        .unwrap();
+
+        // Three days on, two misses already banked for everything.
+        {
+            let conn = t.state.db.lock().unwrap();
+            conn.execute(
+                "UPDATE items SET last_seen_at = ?1, missed = 2",
+                rusqlite::params![(Utc::now() - chrono::Duration::days(3)).to_rfc3339()],
+            )
+            .unwrap();
+        }
+
+        // Acme's board failed this time; Other answered, without `other-c`.
+        persist(&t.state, vec![posting("other-b", "Other")], board.to_vec()).unwrap();
+
+        assert_eq!(
+            titles(&t.state),
+            ["acme-a", "other-b"],
+            "Other's missing posting goes; Acme's silent board is not held against it"
+        );
+    }
+
+    // --- onboarding ---
+
+    #[test]
+    fn a_first_launch_is_asked_before_anything_is_fetched() {
+        let t = test_state();
+        assert_eq!(onboarding_state(&t.state).unwrap(), "needed");
+        assert!(!onboarded(&t.state), "refresh() must refuse to run");
+        assert!(
+            dismiss_onboarding(&t.state).is_err(),
+            "there is nothing to skip to yet"
+        );
+    }
+
+    #[test]
+    fn answering_the_form_saves_the_answers_and_lets_scraping_begin() {
+        let t = test_state();
+        let prefs = ScrapePrefs {
+            events: false,
+            ..ScrapePrefs::default()
+        };
+        finish_onboarding(
+            &t.state,
+            &prefs,
+            vec!["AI/ML".into(), "Not An Interest".into()],
+            Some("Toronto".into()),
+            vec!["Intern".into(), "Wizard".into()],
+        )
+        .unwrap();
+
+        assert_eq!(onboarding_state(&t.state).unwrap(), "done");
+        assert!(onboarded(&t.state));
+        assert_eq!(current_prefs(&t.state), prefs);
+        assert_eq!(
+            current_interests(&t.state),
+            ["AI/ML"],
+            "unknown interests are dropped"
+        );
+        let profile = current_profile(&t.state, None);
+        assert_eq!(profile.target_seniority, ["Intern"]);
+        assert_eq!(profile.home_region.as_deref(), Some("Toronto"));
+    }
+
+    #[test]
+    fn a_region_the_tagger_never_emits_is_not_stored() {
+        let t = test_state();
+        finish_onboarding(
+            &t.state,
+            &ScrapePrefs::default(),
+            vec![],
+            Some("Atlantis".into()),
+            vec![],
+        )
+        .unwrap();
+        assert_eq!(current_profile(&t.state, None).home_region, None);
+    }
+
+    /// An existing install was scraped before there was a form: it keeps its
+    /// feed, is offered the form, and may dismiss it.
+    #[test]
+    fn an_upgrade_is_offered_the_form_and_may_skip_it() {
+        let t = test_state();
+        {
+            let conn = t.state.db.lock().unwrap();
+            db::set_setting(&conn, db::ONBOARDED_KEY, "2026-01-01T00:00:00+00:00").unwrap();
+        }
+        assert_eq!(onboarding_state(&t.state).unwrap(), "offered");
+        assert!(onboarded(&t.state), "its launch refresh keeps running");
+        dismiss_onboarding(&t.state).unwrap();
+        assert_eq!(onboarding_state(&t.state).unwrap(), "done");
+    }
+
+    // --- changing your mind ---
+
+    #[test]
+    fn switching_a_kind_off_removes_its_rows_and_switching_it_on_makes_it_due() {
+        let t = test_state();
+        finish_onboarding(&t.state, &ScrapePrefs::default(), vec![], None, vec![]).unwrap();
+
+        let mut intern = posting("intern", "Acme");
+        intern.seniority = Some("Intern".into());
+        let rows = vec![intern, posting("role", "Acme")];
+        let ran = |source: &'static str| outcome(source, Category::Opportunities, 2, Health::Ok);
+        persist(&t.state, rows, vec![ran("Greenhouse"), ran("Simplify")]).unwrap();
+        assert_eq!(titles(&t.state), ["intern", "role"]);
+
+        // Off: the job goes, the internship stays, and nothing is made due.
+        let internships_only = ScrapePrefs {
+            jobs: false,
+            ..ScrapePrefs::default()
+        };
+        apply_prefs(&t.state, &internships_only).unwrap();
+        assert_eq!(titles(&t.state), ["intern"]);
+        let runs = |state: &AppState| {
+            db::load_source_runs(&state.db.lock().unwrap())
+                .unwrap()
+                .len()
+        };
+        assert_eq!(
+            runs(&t.state),
+            2,
+            "narrowing what is wanted must not trigger a refetch"
+        );
+
+        // On again: the opportunity sources were running all along, but the
+        // jobs were dropped at ingest, so they have to be fetched again.
+        apply_prefs(&t.state, &ScrapePrefs::default()).unwrap();
+        assert_eq!(runs(&t.state), 0, "Greenhouse and Simplify are due again");
+    }
+
+    #[test]
+    fn switching_a_source_off_removes_its_rows_and_its_ledger_entry() {
+        let t = test_state();
+        finish_onboarding(&t.state, &ScrapePrefs::default(), vec![], None, vec![]).unwrap();
+        persist(
+            &t.state,
+            vec![posting("gh", "Acme")],
+            vec![outcome(
+                "Greenhouse",
+                Category::Opportunities,
+                1,
+                Health::Ok,
+            )],
+        )
+        .unwrap();
+
+        let without = ScrapePrefs {
+            disabled_sources: vec!["Greenhouse".into()],
+            ..ScrapePrefs::default()
+        };
+        apply_prefs(&t.state, &without).unwrap();
+
+        assert!(titles(&t.state).is_empty());
+        assert!(db::load_source_runs(&t.state.db.lock().unwrap())
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn the_setup_options_are_the_strings_rust_matches_on() {
+        let options = list_setup_options();
+        assert_eq!(
+            options.seniority,
+            ["Intern", "New grad", "Junior", "Senior", "Lead"]
+        );
+        assert!(options.regions.contains(&"Toronto") && options.regions.contains(&"Canada"));
+        assert!(!options.regions.contains(&"Global / Multi-region"));
+    }
+
+    /// The whole pipeline over the real sources, into a real store. Not run by
+    /// default because it touches the network:
+    ///
+    /// ```text
+    /// cargo test live_pipeline -- --ignored --nocapture
+    /// ```
+    ///
+    /// `LIVE_SOURCES=all` runs every source rather than five, and `LIVE_DB=path`
+    /// writes the store there and keeps it — which is how a database the size of
+    /// a real cache is made for `perf_check`.
+    ///
+    /// It asserts what this change is *for* rather than counts, which drift with
+    /// the live data: a hackathon that opened long ago is still there, an
+    /// abandoned repository is reported rather than ingested, running the same
+    /// scrape twice loses nothing, and what the reader switched off never
+    /// arrives.
+    #[test]
+    #[ignore = "hits the network"]
+    fn live_pipeline_keeps_what_is_open_and_reports_what_is_dormant() {
+        let t = match std::env::var_os("LIVE_DB") {
+            Some(path) => test_state_at(path.into(), true),
+            None => test_state(),
+        };
+        let everything = std::env::var("LIVE_SOURCES").as_deref() == Ok("all");
+        let wanted = ScrapePrefs {
+            news: everything,
+            ..ScrapePrefs::default()
+        };
+        finish_onboarding(
+            &t.state,
+            &wanted,
+            vec!["AI/ML".into(), "Backend".into()],
+            Some("Toronto".into()),
+            vec!["Intern".into(), "New grad".into()],
+        )
+        .unwrap();
+
+        let ran = ["Simplify", "Pitt CSC Repo", "Devpost", "Luma", "Greenhouse"];
+        let plan: Vec<&'static str> =
+            prefs::due(&scrapers::sources(), &[], &wanted, Utc::now(), false)
+                .into_iter()
+                .filter(|name| everything || ran.contains(name))
+                .collect();
+        assert!(
+            everything || !plan.contains(&"Hacker News"),
+            "news was switched off"
+        );
+
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let (items, outcomes) =
+            runtime.block_on(scrapers::fetch_selected(&plan, |o, done, total| {
+                println!(
+                    "  {done}/{total} {:<20} {:>5} rows  {:?}",
+                    o.source, o.count, o.health
+                );
+            }));
+        let items: Vec<Item> = items.into_iter().filter(|i| wanted.admits(i)).collect();
+        assert!(everything || items.iter().all(|i| i.item_type != ItemType::Article));
+
+        persist(&t.state, items.clone(), outcomes).unwrap();
+        let first = titles(&t.state).len();
+        // The same scrape again: nothing was removed from the source, so
+        // nothing may be removed from the store.
+        persist(&t.state, items, Vec::new()).unwrap();
+        assert_eq!(titles(&t.state).len(), first, "a repeat scrape lost rows");
+
+        let runs = db::load_source_runs(&t.state.db.lock().unwrap()).unwrap();
+        let pitt = runs
+            .iter()
+            .find(|r| r.source == "Pitt CSC Repo")
+            .expect("ran");
+        assert!(pitt.ok, "a dormant repository is not a failure");
+        assert!(pitt
+            .last_error
+            .as_deref()
+            .is_some_and(|n| n.contains("dormant")));
+
+        let view = ranked_view(&t.state, None, true).unwrap();
+        let kept = |kind: ItemType| view.items.iter().filter(|i| i.item_type == kind).count();
+        let devpost: Vec<&Item> = view
+            .items
+            .iter()
+            .filter(|i| i.source_platform == "Devpost")
+            .collect();
+        println!(
+            "  kept {first} rows: {} internships, {} jobs, {} events ({} Devpost)",
+            kept(ItemType::Internship),
+            kept(ItemType::Job),
+            kept(ItemType::Event),
+            devpost.len()
+        );
+        assert!(!devpost.is_empty(), "Devpost vanished");
+        // The bug this replaces: Devpost stamps the day entries *opened*, which
+        // the old date prune read as "ninety days old, delete".
+        assert!(
+            devpost
+                .iter()
+                .any(|d| d.timestamp < Utc::now() - chrono::Duration::days(30)),
+            "expected an open hackathon whose entry period began long ago"
+        );
+        assert!(
+            view.items
+                .iter()
+                .all(|i| i.source_platform != "Pitt CSC Repo"),
+            "a dormant repository was ingested"
+        );
+        println!(
+            "  bars: roles {:.1}..{:.1}  events {:.1}..{:.1}",
+            view.bars.opportunity.lo,
+            view.bars.opportunity.hi,
+            view.bars.event.lo,
+            view.bars.event.hi
+        );
+        let flagged: Vec<&Item> = view.items.iter().filter(|i| i.last_call).collect();
+        let roles: Vec<&Item> = flagged
+            .iter()
+            .copied()
+            .filter(|i| i.item_type.is_opportunity())
+            .collect();
+        println!(
+            "  last calls flagged: {} ({} roles, {} events)",
+            flagged.len(),
+            roles.len(),
+            flagged.len() - roles.len()
+        );
+        for item in last_calls(&view.items).into_iter().take(10) {
+            println!(
+                "  band: {:<9} {:<46} {:<16} merit {:>4.1} closes {}",
+                format!("{:?}", item.item_type),
+                item.title.chars().take(46).collect::<String>(),
+                item.company.as_deref().unwrap_or("-"),
+                item.merit.unwrap_or(0.0),
+                item.closes_at
+                    .map(|d| d.format("%b %d").to_string())
+                    .unwrap_or_default()
+            );
+        }
+    }
 }

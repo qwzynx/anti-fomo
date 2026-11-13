@@ -3,6 +3,7 @@
   import type { ScrapedItem } from "$lib/api";
   import BottomNav from "$lib/components/BottomNav.svelte";
   import ItemModal from "$lib/components/ItemModal.svelte";
+  import Onboarding from "$lib/components/Onboarding.svelte";
   import SearchPalette from "$lib/components/SearchPalette.svelte";
   import SkillsWizard from "$lib/components/SkillsWizard.svelte";
   import TopBar from "$lib/components/TopBar.svelte";
@@ -16,6 +17,18 @@
   /** What the palette opened, mounted here so search works from any page. */
   let found = $state<ScrapedItem | null>(null);
 
+  /**
+   * The setup form is up: a first launch (nothing is fetched until it is
+   * answered), an existing install being offered it once, or Settings having
+   * raised it again. `unknown` is none of these, so a returning reader never
+   * sees it flash before Rust has said which they are.
+   */
+  const setup = $derived(
+    feed.onboarding === "needed" ||
+      feed.onboarding === "offered" ||
+      (feed.setupOpen && feed.onboarding === "done"),
+  );
+
   $effect(() => {
     feed.init();
     return theme.watchSystem();
@@ -23,6 +36,8 @@
 
   /** ⌘K / Ctrl-K anywhere. Ignored while typing, so it cannot eat a keystroke. */
   function onKeydown(e: KeyboardEvent) {
+    // Search sits outside the inert shell, so the shortcut has to be refused here too.
+    if (setup) return;
     if (e.key.toLowerCase() !== "k" || !(e.metaKey || e.ctrlKey)) return;
     const el = e.target as HTMLElement | null;
     if (el?.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(el?.tagName ?? "")) return;
@@ -43,7 +58,9 @@
   page carries its own title row — so the two navigations are never on screen
   together and the content column is never squeezed by a rail.
 -->
-<div class="flex min-h-screen flex-col bg-background font-sans text-foreground">
+<!-- `inert` while the form is up: it covers the screen, and without this Tab would
+     walk straight through it into a page that is not there yet. -->
+<div class="flex min-h-screen flex-col bg-background font-sans text-foreground" inert={setup}>
   <TopBar />
 
   {#if feed.error}
@@ -68,10 +85,18 @@
   <div class="safe-bottom h-16 md:hidden" aria-hidden="true"></div>
 </div>
 
-<BottomNav />
+<!-- Fixed-position, so wrapping it changes nothing about layout; it only lets the form's
+     `inert` reach the tab bar, which lives outside the shell. -->
+<div inert={setup}>
+  <BottomNav />
+</div>
 
 <!-- Mounted once here rather than per page: search, the settings button, the
      Today nudge and any job detail all open the same things through the store. -->
 <SearchPalette onOpen={(item) => (found = item)} />
 <ItemModal item={found} onClose={() => (found = null)} />
 <SkillsWizard />
+
+{#if setup}
+  <Onboarding />
+{/if}

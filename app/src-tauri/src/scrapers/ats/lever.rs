@@ -18,7 +18,7 @@ use serde::Deserialize;
 
 use super::super::employers::{Board, Employer};
 use super::super::sections::{self, Section, Sections};
-use super::{fan_out, seed_detail};
+use super::{fan_out, keep_best, seed_detail};
 use crate::models::{Item, ItemType};
 use crate::pay;
 use crate::scrapers::{details, Scraper};
@@ -106,12 +106,12 @@ async fn fetch_board(employer: &'static Employer, client: reqwest::Client) -> Re
         .json()
         .await?;
 
-    Ok(postings
+    let items = postings
         .into_iter()
         .filter(|p| !p.hosted_url.is_empty() && !p.text.trim().is_empty())
-        .take(MAX_PER_EMPLOYER)
         .map(|posting| to_item(employer.name, posting))
-        .collect())
+        .collect();
+    Ok(keep_best(items, MAX_PER_EMPLOYER))
 }
 
 fn to_item(company: &str, posting: Posting) -> Item {

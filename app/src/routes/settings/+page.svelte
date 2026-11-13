@@ -4,16 +4,22 @@
   import { feed } from "$lib/feed.svelte";
   import { DISCIPLINES } from "$lib/filters";
   import {
+    Briefcase,
+    Calendar,
     Check,
+    GraduationCap,
     Monitor,
     Moon,
+    Newspaper,
     RefreshCw,
     RotateCcw,
     Sparkles,
     Sun,
     Trash2,
     skillCategoryIcon,
+    type IconComponent,
   } from "$lib/icons";
+  import type { ScrapePrefs, SourceCategory } from "$lib/api";
   import { groupByCategory } from "$lib/skills";
   import { theme, type Theme } from "$lib/theme.svelte";
 
@@ -49,7 +55,44 @@
 
   const skillGroups = $derived(groupByCategory(feed.skills, feed.skillCatalog));
   const sources = $derived(feed.status?.sources ?? []);
-  const quiet = $derived(sources.filter((s) => s.count === 0).length);
+  // A source the reader switched off is not "quiet": it was never asked.
+  const quiet = $derived(sources.filter((s) => s.enabled && s.count === 0).length);
+
+  // What the reader can ask to have collected. The same four the setup form
+  // asks, in the same words, so the two cannot disagree about what a kind is.
+  const KINDS: { key: keyof Omit<ScrapePrefs, "disabled_sources">; label: string; icon: IconComponent }[] = [
+    { key: "internships", label: "Internships", icon: GraduationCap },
+    { key: "jobs", label: "Jobs", icon: Briefcase },
+    { key: "news", label: "News", icon: Newspaper },
+    { key: "events", label: "Events", icon: Calendar },
+  ];
+  const GROUPS: { key: SourceCategory; label: string }[] = [
+    { key: "opportunities", label: "Roles" },
+    { key: "news", label: "News" },
+    { key: "events", label: "Events" },
+  ];
+
+  const grouped = $derived(
+    GROUPS.map((g) => ({ ...g, sources: sources.filter((s) => s.category === g.key) })).filter(
+      (g) => g.sources.length > 0,
+    ),
+  );
+
+  /** Whether anything in a category is wanted at all: roles need either kind. */
+  function categoryOn(category: SourceCategory): boolean {
+    const p = feed.prefs;
+    if (category === "opportunities") return p.internships || p.jobs;
+    return category === "news" ? p.news : p.events;
+  }
+
+  function setKind(key: (typeof KINDS)[number]["key"], on: boolean) {
+    void feed.setPrefs({ ...feed.prefs, [key]: on });
+  }
+
+  function setSource(name: string, on: boolean) {
+    const rest = feed.prefs.disabled_sources.filter((s) => s !== name);
+    void feed.setPrefs({ ...feed.prefs, disabled_sources: on ? rest : [...rest, name] });
+  }
 </script>
 
 <!-- Reached from the top bar's tool cluster at md: and up, and from the fourth
@@ -184,7 +227,7 @@
   <section class="card mb-5 p-5">
     <div class="mb-4 flex items-start justify-between gap-4">
       <div>
-        <h3 class="mb-1 text-lg font-bold">Sources</h3>
+        <h3 class="mb-1 text-lg font-bold">What to scrape</h3>
         <p class="text-sm text-muted">
           {feed.status?.item_count ?? 0} items cached · last refreshed
           {feed.status?.last_refresh ? timeAgo(feed.status.last_refresh) : "never"}
@@ -203,28 +246,107 @@
       </button>
     </div>
 
-    {#if sources.length > 0}
-      <ul class="flex flex-col divide-y divide-line-soft">
-        {#each sources as source (source.name)}
-          <li class="flex items-center justify-between py-2 text-sm">
-            <span class="flex items-center gap-2 font-medium">
-              <!-- A registered source contributing nothing is the signal that a
-                   scraper has broken; it stays listed rather than disappearing. -->
-              <span
-                class="h-1.5 w-1.5 rounded-full {source.count > 0 ? 'bg-job' : 'bg-star'}"
-                aria-hidden="true"
-              ></span>
-              {source.name}
-            </span>
-            <span class="text-subtle">
-              {source.count > 0 ? `${source.count} items` : "nothing returned"}
-            </span>
-          </li>
-        {/each}
-      </ul>
+    <p class="mb-2 text-xs font-bold tracking-wide text-subtle uppercase">Collect</p>
+    <div class="mb-2 flex flex-wrap gap-2">
+      {#each KINDS as kind (kind.key)}
+        {@const on = feed.prefs[kind.key]}
+        {@const Icon = kind.icon}
+        <button
+          type="button"
+          aria-pressed={on}
+          onclick={() => setKind(kind.key, !on)}
+          class="chip inline-flex items-center gap-1.5 px-4 py-2 text-sm {on
+            ? 'bg-brand text-brand-fg'
+            : 'border border-line text-muted hover:border-brand'}"
+        >
+          <Icon size={14} />
+          {kind.label}
+        </button>
+      {/each}
+    </div>
+    <p class="mb-5 text-xs text-subtle">
+      Switching one off deletes what it collected and stops contacting its sources. Switching one on
+      fetches just that.
+    </p>
+
+    {#if grouped.length > 0}
+      {#each grouped as group (group.key)}
+        {@const groupOn = categoryOn(group.key)}
+        <p class="mb-1 text-xs font-bold tracking-wide text-subtle uppercase">{group.label}</p>
+        <ul class="mb-4 flex flex-col divide-y divide-line-soft last:mb-0">
+          {#each group.sources as source (source.name)}
+            {@const on = !feed.prefs.disabled_sources.includes(source.name)}
+            <li class="flex items-center justify-between gap-3 py-2 text-sm">
+              <span class="flex min-w-0 items-center gap-2 font-medium">
+                <!-- A source contributing nothing is the signal that a scraper has broken;
+                     it stays listed rather than disappearing. -->
+                <span
+                  class="h-1.5 w-1.5 shrink-0 rounded-full {!source.enabled
+                    ? 'bg-line'
+                    : source.failing || source.count === 0
+                      ? 'bg-star'
+                      : 'bg-job'}"
+                  aria-hidden="true"
+                ></span>
+                <span class="truncate {source.enabled ? '' : 'text-subtle'}">{source.name}</span>
+              </span>
+              <span class="flex shrink-0 items-center gap-3">
+                <span
+                  class="max-w-[14rem] truncate text-right text-xs {source.failing
+                    ? 'text-star'
+                    : 'text-subtle'}"
+                  title={source.last_error ?? undefined}
+                >
+                  {#if !source.enabled}
+                    off
+                  {:else if source.failing}
+                    didn't answer — will retry
+                  {:else if source.last_error && source.count === 0}
+                    no longer updated
+                  {:else if source.count > 0}
+                    {source.count.toLocaleString()} items
+                  {:else}
+                    nothing returned
+                  {/if}
+                </span>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={on && groupOn}
+                  aria-label="Collect from {source.name}"
+                  disabled={!groupOn}
+                  onclick={() => setSource(source.name, !on)}
+                  class="relative h-5 w-9 shrink-0 rounded-full transition-colors disabled:opacity-40 {on &&
+                  groupOn
+                    ? 'bg-brand'
+                    : 'bg-line'}"
+                >
+                  <span
+                    class="absolute top-0.5 left-0.5 h-4 w-4 rounded-full bg-surface shadow transition-transform {on &&
+                    groupOn
+                      ? 'translate-x-4'
+                      : ''}"
+                  ></span>
+                </button>
+              </span>
+            </li>
+          {/each}
+        </ul>
+      {/each}
     {:else}
       <p class="text-sm text-muted">Nothing cached yet.</p>
     {/if}
+
+    <div class="mt-4 border-t border-line-soft pt-4">
+      <button
+        type="button"
+        onclick={() => feed.openSetup()}
+        class="inline-flex items-center gap-1.5 rounded-xl border border-line px-4 py-2 text-sm font-semibold text-muted transition-colors hover:border-brand hover:text-foreground"
+      >
+        <Sparkles size={14} />
+        Run setup again
+      </button>
+    </div>
   </section>
 
   {#if (feed.status?.dismissed_count ?? 0) > 0}

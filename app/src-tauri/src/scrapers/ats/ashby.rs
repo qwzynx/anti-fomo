@@ -13,7 +13,7 @@ use serde::Deserialize;
 
 use super::super::employers::{Board, Employer};
 use super::super::sections;
-use super::{fan_out, seed_detail};
+use super::{fan_out, keep_best, seed_detail};
 use crate::models::{Item, ItemType};
 use crate::pay;
 use crate::scrapers::{details, Scraper};
@@ -104,16 +104,16 @@ async fn fetch_board(employer: &'static Employer, client: reqwest::Client) -> Re
         .json()
         .await?;
 
-    Ok(board
+    let items = board
         .jobs
         .into_iter()
         // `isListed: false` is a posting the employer has taken off its own
         // board. Ranking it would be worse than not having it.
         .filter(|j| j.is_listed.unwrap_or(true))
         .filter(|j| !j.job_url.is_empty() && !j.title.trim().is_empty())
-        .take(MAX_PER_EMPLOYER)
         .map(|job| to_item(employer.name, job))
-        .collect())
+        .collect();
+    Ok(keep_best(items, MAX_PER_EMPLOYER))
 }
 
 fn to_item(company: &str, job: Job) -> Item {

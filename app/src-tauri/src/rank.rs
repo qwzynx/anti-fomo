@@ -289,11 +289,20 @@ const RECENCY_HALF_LIFE_HOURS: f64 = 48.0;
 const PAY_FLOOR: f64 = 60_000.0;
 const PAY_CEILING: f64 = 200_000.0;
 
-/// Where the urgency term peaks. Sooner than this and there may not be time to
-/// write an application; later and it is not yet urgent.
-const URGENCY_PEAK_DAYS: f64 = 6.0;
-/// How fast urgency falls away either side of the peak.
-const URGENCY_SPREAD_DAYS: f64 = 10.0;
+/// A deadline this close is at full urgency, and stays there until it passes.
+/// The term used to *fall* inside six days on the theory that there might not
+/// be time to apply, which ranked the posting you will lose tomorrow below the
+/// one you can still lose next week. Whether there is time is the reader's call;
+/// the feed's job is to say it is about to close.
+const URGENCY_FULL_DAYS: f64 = 3.0;
+/// Beyond [`URGENCY_FULL_DAYS`], urgency halves every this many days.
+const URGENCY_HALF_LIFE_DAYS: f64 = 7.0;
+/// Past this a deadline is not news. A hard edge on a curve that is already
+/// under two per cent here, so nothing jumps when it is crossed.
+const URGENCY_HORIZON_DAYS: f64 = 45.0;
+/// A good posting closing within this many days is a "last call". Wide enough
+/// to act on, narrow enough that the band stays short.
+pub const LAST_CALL_DAYS: f64 = 7.0;
 /// What a closed posting scores. Large enough to sink it under everything
 /// else without being infinite, so "show expired" still lists them in a
 /// sensible order rather than an arbitrary one.
@@ -325,7 +334,8 @@ pub struct Weights {
     pub prestige: f64,
     /// Full value of the pay term, at or above [`PAY_CEILING`].
     pub pay: f64,
-    /// Full value of the deadline term, at the urgency peak.
+    /// Full value of the deadline term: a posting at the top of the quality
+    /// ramp ([`Bar`]) with a deadline inside [`URGENCY_FULL_DAYS`].
     pub urgency: f64,
     /// Full value of the seniority term, for a role at the user's level.
     pub seniority: f64,
@@ -346,7 +356,7 @@ impl Default for Weights {
             recency: 6.0,
             prestige: 8.0,
             pay: 4.0,
-            urgency: 5.0,
+            urgency: 8.0,
             seniority: 6.0,
             location: 3.0,
             seen_penalty: 3.0,
@@ -437,6 +447,14 @@ const SENIORITY: &[(&str, &[&str])] = &[
 
 /// Reads the level off a job title. `None` where the title says nothing —
 /// which is most of them, and is a different answer from "mid-level".
+/// The seniority bands in the order a reader would list them, for the setup
+/// form. [`SENIORITY`] is ordered by *match precedence* — a title naming
+/// several resolves to the first — which is the wrong order to show a person,
+/// so the display order is stated here and pinned against the table by a test.
+pub fn seniority_levels() -> Vec<&'static str> {
+    vec!["Intern", "New grad", "Junior", "Senior", "Lead"]
+}
+
 pub fn classify_seniority(title: &str) -> Option<String> {
     let text = format!(" {} ", title.to_lowercase());
     SENIORITY
@@ -490,12 +508,14 @@ fn recency_score_weighted(timestamp: DateTime<Utc>, now: DateTime<Utc>, weight: 
     weight * 0.5_f64.powf(hours / RECENCY_HALF_LIFE_HOURS)
 }
 
-/// The deadline term, in -1.0..=1.0 before weighting.
+/// How pressing a deadline is, in -1.0..=1.0 before weighting and before
+/// quality is taken into account.
 ///
 /// Something already closed is worth less than something with no deadline at
-/// all, which is the whole point of tracking the date. Between those, urgency
-/// rises as the deadline approaches and falls again once it is so close that
-/// there is no time to apply.
+/// all, which is the whole point of tracking the date. Otherwise urgency only
+/// ever rises as the date nears: full strength for the last
+/// [`URGENCY_FULL_DAYS`], then halving every [`URGENCY_HALF_LIFE_DAYS`] going
+/// the other way, and nothing past [`URGENCY_HORIZON_DAYS`].
 pub fn urgency_score(closes_at: Option<DateTime<Utc>>, now: DateTime<Utc>) -> f64 {
     let Some(closes) = closes_at else {
         return 0.0;
@@ -504,8 +524,13 @@ pub fn urgency_score(closes_at: Option<DateTime<Utc>>, now: DateTime<Utc>) -> f6
     if days < 0.0 {
         return -1.0;
     }
-    let distance = (days - URGENCY_PEAK_DAYS) / URGENCY_SPREAD_DAYS;
-    (-distance * distance).exp()
+    if days <= URGENCY_FULL_DAYS {
+        return 1.0;
+    }
+    if days > URGENCY_HORIZON_DAYS {
+        return 0.0;
+    }
+    0.5_f64.powf((days - URGENCY_FULL_DAYS) / URGENCY_HALF_LIFE_DAYS)
 }
 
 /// The pay term, in 0.0..=1.0. Undisclosed pay contributes nothing and is
@@ -524,6 +549,271 @@ pub fn pay_score(item: &Item) -> f64 {
     ((annual - PAY_FLOOR) / (PAY_CEILING - PAY_FLOOR)).clamp(0.0, 1.0)
 }
 
+/// Where "really good" starts, for one kind of item.
+///
+/// Quality is judged against the rest of what is being ranked rather than on
+/// an absolute scale, because the scale moves: a reader who has told the app
+/// nothing sees a flat field where three thousand postings tie, and one who has
+/// picked interests and a level sees real spread. Below `lo` a deadline earns
+/// nothing; at `hi` and above it earns all of it; between is a straight ramp.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Bar {
+    pub lo: f64,
+    pub hi: f64,
+}
+
+impl Bar {
+    fn new(lo: f64, hi: f64) -> Bar {
+        // A ramp with no width would divide by zero, and a field where every
+        // item ties is exactly when percentiles collapse onto one number.
+        Bar {
+            lo,
+            hi: hi.max(lo + MIN_RAMP),
+        }
+    }
+
+    /// How far up the ramp a merit score is, 0.0..=1.0.
+    pub fn gate(&self, merit: f64) -> f64 {
+        ((merit - self.lo) / (self.hi - self.lo)).clamp(0.0, 1.0)
+    }
+
+    /// Whether a merit score is good enough to call a closing posting a last call.
+    pub fn clears(&self, merit: f64) -> bool {
+        merit >= self.hi
+    }
+}
+
+/// The bars for opportunities and for events, measured together because the
+/// two score on different scales (an event never earns skills, pay or a tier).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Bars {
+    pub opportunity: Bar,
+    pub event: Bar,
+}
+
+/// Floors under the measured bars. Without them an empty profile — where the
+/// median is simply whatever the baseline terms add up to — would call every
+/// posting good, and a feed of mostly-events ties at 4.0 and would too.
+///
+/// The event floor is high on purpose. An event scores 4 for being one and 4 per
+/// matched interest (to 8), so a single interest takes it to 8 — and a hackathon
+/// that mentions "AI" is the norm, not a standout. Measured on the live feed, a
+/// floor of 7 flagged dozens of hackathons as last calls and, sorted by date,
+/// crowded every role out of the band. At 12 it takes two interests, or one
+/// plus the reader's field, for an event to count as really good.
+const OPPORTUNITY_FLOOR: (f64, f64) = (9.0, 13.0);
+const EVENT_FLOOR: (f64, f64) = (6.0, 12.0);
+/// The narrowest ramp [`Bar::new`] will build.
+const MIN_RAMP: f64 = 1.0;
+
+impl Bars {
+    /// Measures the bars from items that have already been through pass one,
+    /// so each carries its `merit`: the median is where the ramp starts and the
+    /// top decile is where it tops out and a deadline counts as a last call.
+    ///
+    /// The decile rather than the quartile was settled on measurement. With a
+    /// reader who has answered the setup form, a quarter of the roles clear the
+    /// upper-quartile bar and deadlines skew towards exactly the student
+    /// postings such a reader wants — 26 of the 44 closing within a week were
+    /// "last calls", which is a list, not a call. The top tenth leaves the band
+    /// short enough to act on.
+    pub fn measure(items: &[Item]) -> Bars {
+        let mut opportunities = Vec::new();
+        let mut events = Vec::new();
+        for item in items {
+            let Some(merit) = item.merit else { continue };
+            if item.item_type.is_opportunity() {
+                opportunities.push(merit);
+            } else if item.item_type == ItemType::Event {
+                events.push(merit);
+            }
+        }
+        Bars {
+            opportunity: measured_bar(opportunities, OPPORTUNITY_FLOOR),
+            event: measured_bar(events, EVENT_FLOOR),
+        }
+    }
+
+    fn for_type(&self, item_type: ItemType) -> &Bar {
+        if item_type == ItemType::Event {
+            &self.event
+        } else {
+            &self.opportunity
+        }
+    }
+}
+
+fn measured_bar(mut merits: Vec<f64>, (floor_lo, floor_hi): (f64, f64)) -> Bar {
+    if merits.is_empty() {
+        return Bar::new(floor_lo, floor_hi);
+    }
+    merits.sort_by(f64::total_cmp);
+    let at = |p: f64| merits[((merits.len() - 1) as f64 * p).round() as usize];
+    Bar::new(at(0.5).max(floor_lo), at(0.9).max(floor_hi))
+}
+
+/// Running total for one item. `merit` is what the item is *worth*; `score` is
+/// that plus what the clock says about it, and only `score` decides order.
+/// Keeping them apart is what lets a deadline be weighed against quality
+/// instead of added to it.
+struct Acc {
+    /// Whether to keep the per-term breakdown. A caller that wants only the
+    /// number ([`fit`]) skips building the labels.
+    keep: bool,
+    score: f64,
+    merit: f64,
+    breakdown: Vec<ScoreTerm>,
+}
+
+impl Acc {
+    fn new(keep: bool) -> Acc {
+        Acc {
+            keep,
+            score: 0.0,
+            merit: 0.0,
+            breakdown: Vec::new(),
+        }
+    }
+
+    /// A term about the posting itself.
+    fn merit(&mut self, label: impl FnOnce() -> String, points: f64) {
+        if points.abs() > f64::EPSILON {
+            self.score += points;
+            self.merit += points;
+            self.push(label, points);
+        }
+    }
+
+    /// A term about when — recency, a deadline, having already looked.
+    fn time(&mut self, label: impl FnOnce() -> String, points: f64) {
+        if points.abs() > f64::EPSILON {
+            self.score += points;
+            self.push(label, points);
+        }
+    }
+
+    fn push(&mut self, label: impl FnOnce() -> String, points: f64) {
+        if self.keep {
+            self.breakdown.push(ScoreTerm::new(label(), points));
+        }
+    }
+}
+
+/// The merit terms that need nothing fetched: field, kind, interests read from
+/// the title and snippet, employer tier, level and place. Shared by the full
+/// score and by [`fit`], so the cheap estimate used to trim a cache cannot
+/// drift away from the number the feed is ordered by.
+///
+/// Returns what the caller records on the item: the interests that fired and
+/// the employer's tier.
+fn cheap_terms(item: &Item, profile: &Profile, acc: &mut Acc) -> (Vec<String>, Option<u8>) {
+    let w = &profile.weights;
+
+    // 1. Major match
+    if item.discipline.as_deref() == Some(profile.major.as_str()) {
+        acc.merit(|| "Your field".into(), w.major);
+    }
+
+    // 2. Item type weight
+    if item.item_type.is_opportunity() {
+        acc.merit(|| "Opportunity".into(), 5.0);
+    } else if item.item_type == ItemType::Event {
+        acc.merit(|| "Event".into(), 4.0);
+    }
+
+    // 3. Interest match
+    let matched = match_interests(item, &profile.interests);
+    if !matched.is_empty() {
+        let points = (matched.len() as f64 * w.interest).min(w.interest_cap);
+        acc.merit(|| format!("Interests: {}", matched.join(", ")), points);
+    }
+
+    // 4. Company prestige. Derived on read rather than stored, so a tier the
+    // user overrides in Settings takes effect without a refresh.
+    let mut tier = None;
+    if let Some(company) = item.company.as_deref() {
+        tier = companies::tier(company, &profile.company_tiers);
+        acc.merit(
+            || {
+                format!(
+                    "{company} (tier {})",
+                    tier.map(|t| t.to_string()).unwrap_or_else(|| "—".into())
+                )
+            },
+            w.prestige * companies::tier_value(tier),
+        );
+    }
+
+    // 5. Seniority fit
+    if item.item_type.is_opportunity() {
+        let fit = seniority_fit(item, &profile.target_seniority);
+        acc.merit(
+            || match item.seniority.as_deref() {
+                Some(level) if fit >= 0.0 => format!("{level} role"),
+                Some(level) => format!("{level} role — not your level"),
+                None => "Level".to_string(),
+            },
+            w.seniority * fit,
+        );
+    }
+
+    // 6. Location fit
+    if let Some(home) = profile.home_region.as_deref() {
+        if item.location_tags.iter().any(|t| t == home) {
+            acc.merit(|| format!("In {home}"), w.location);
+        }
+    }
+
+    (matched, tier)
+}
+
+/// What a posting is worth from what the scrape alone says about it — no
+/// description, no skills, no pay, no clock. Used where a cache has to be cut
+/// to size before any of that has been fetched, and so cannot ask the ranker.
+pub fn fit(item: &Item, profile: &Profile) -> f64 {
+    let mut acc = Acc::new(false);
+    cheap_terms(item, profile, &mut acc);
+    acc.merit
+}
+
+/// Cuts the opportunities in `items` down to `cap`, keeping the best by
+/// [`fit`]. Everything that is not an opportunity passes through untouched, and
+/// the survivors keep their relative order. Ties go to the newer posting.
+///
+/// This is the cache's ceiling, and it exists so that "keep everything that is
+/// still open" cannot grow without bound. It is deliberately not an age cut: a
+/// posting is not worse for being old, only for being a worse fit.
+pub fn cap_opportunities(items: Vec<Item>, profile: &Profile, cap: usize) -> Vec<Item> {
+    let opportunities = items
+        .iter()
+        .filter(|i| i.item_type.is_opportunity())
+        .count();
+    if opportunities <= cap {
+        return items;
+    }
+
+    // Scored once per row; the sort would otherwise repeat it per comparison.
+    let mut scored: Vec<(usize, f64)> = items
+        .iter()
+        .enumerate()
+        .filter(|(_, i)| i.item_type.is_opportunity())
+        .map(|(at, i)| (at, fit(i, profile)))
+        .collect();
+    scored.sort_by(|a, b| {
+        b.1.total_cmp(&a.1)
+            .then(items[b.0].timestamp.cmp(&items[a.0].timestamp))
+    });
+    let keep: std::collections::HashSet<usize> =
+        scored.into_iter().take(cap).map(|(at, _)| at).collect();
+
+    items
+        .into_iter()
+        .enumerate()
+        .filter(|(at, i)| !i.item_type.is_opportunity() || keep.contains(at))
+        .map(|(_, i)| i)
+        .collect()
+}
+
 /// Scores every item against the reader's profile, sorts by score, then
 /// applies the per-source diversification pass. Also records which interests
 /// fired, which skills the posting wants, and what every term contributed, so
@@ -534,45 +824,37 @@ pub fn personalize(items: Vec<Item>, profile: &Profile) -> Vec<Item> {
 
 /// [`personalize`] with an injectable clock, so the time-dependent terms are
 /// testable.
-pub fn personalize_at(mut items: Vec<Item>, profile: &Profile, now: DateTime<Utc>) -> Vec<Item> {
+pub fn personalize_at(items: Vec<Item>, profile: &Profile, now: DateTime<Utc>) -> Vec<Item> {
+    personalize_with(items, profile, now, None).0
+}
+
+/// The scorer proper. Two passes, because a deadline is worth more on a good
+/// posting than on a poor one and "good" is relative to everything else:
+///
+/// 1. Every item gets its `merit` and its time-dependent terms.
+/// 2. With the whole set's [`Bars`] known, an item with a deadline gains the
+///    urgency term scaled by how far its merit is up the ramp, and is flagged
+///    `last_call` if it clears the bar with the deadline inside a week.
+///
+/// `bars` is `None` when ranking a whole set, which measures its own. Pass the
+/// set's bars back in to score a single item (the detail pane's rescore): a
+/// percentile over one item means nothing, and it would disagree with the list.
+pub fn personalize_with(
+    mut items: Vec<Item>,
+    profile: &Profile,
+    now: DateTime<Utc>,
+    bars: Option<&Bars>,
+) -> (Vec<Item>, Bars) {
     let w = &profile.weights;
 
     for item in &mut items {
-        let mut score = 0.0;
-        let mut breakdown: Vec<ScoreTerm> = Vec::new();
-        let add = |label: &str, points: f64, score: &mut f64, breakdown: &mut Vec<ScoreTerm>| {
-            if points.abs() > f64::EPSILON {
-                *score += points;
-                breakdown.push(ScoreTerm::new(label, points));
-            }
-        };
+        let mut acc = Acc::new(true);
 
-        // 1. Major match
-        if item.discipline.as_deref() == Some(profile.major.as_str()) {
-            add("Your field", w.major, &mut score, &mut breakdown);
-        }
-
-        // 2. Item type weight
-        if item.item_type.is_opportunity() {
-            add("Opportunity", 5.0, &mut score, &mut breakdown);
-        } else if item.item_type == ItemType::Event {
-            add("Event", 4.0, &mut score, &mut breakdown);
-        }
-
-        // 3. Interest match
-        let matched = match_interests(item, &profile.interests);
-        if !matched.is_empty() {
-            let points = (matched.len() as f64 * w.interest).min(w.interest_cap);
-            add(
-                &format!("Interests: {}", matched.join(", ")),
-                points,
-                &mut score,
-                &mut breakdown,
-            );
-        }
+        let (matched, tier) = cheap_terms(item, profile, &mut acc);
         item.matched_interests = matched;
+        item.company_tier = tier;
 
-        // 4. Skill coverage. Opportunities only: extraction is the expensive
+        // Skill coverage. Opportunities only: extraction is the expensive
         // part of scoring, and "skills this posting asks for" is meaningless
         // for an article that merely mentions a technology.
         if item.item_type.is_opportunity() {
@@ -601,11 +883,9 @@ pub fn personalize_at(mut items: Vec<Item>, profile: &Profile, now: DateTime<Utc
                     true => (met / total) as f64,
                     false => 0.0,
                 };
-                add(
-                    &format!("Skills you have ({}/{})", matched.len(), demand.len()),
+                acc.merit(
+                    || format!("Skills you have ({}/{})", matched.len(), demand.len()),
                     w.skill * coverage,
-                    &mut score,
-                    &mut breakdown,
                 );
             }
 
@@ -618,83 +898,64 @@ pub fn personalize_at(mut items: Vec<Item>, profile: &Profile, now: DateTime<Utc
             item.required_skills = demand.into_iter().map(|d| d.skill).collect();
         }
 
-        // 5. Recency
-        add(
-            "Recent",
+        // Published pay
+        if item.item_type.is_opportunity() {
+            acc.merit(|| "Pay".into(), w.pay * pay_score(item));
+        }
+
+        // Recency
+        acc.time(
+            || "Recent".into(),
             recency_score_weighted(item.timestamp, now, w.recency),
-            &mut score,
-            &mut breakdown,
         );
 
-        // 6. Company prestige. Derived on read rather than stored, so a tier
-        // the user overrides in Settings takes effect without a refresh.
-        if let Some(company) = item.company.as_deref() {
-            let tier = companies::tier(company, &profile.company_tiers);
-            item.company_tier = tier;
-            add(
-                &format!(
-                    "{company} (tier {})",
-                    tier.map(|t| t.to_string()).unwrap_or_else(|| "—".into())
-                ),
-                w.prestige * companies::tier_value(tier),
-                &mut score,
-                &mut breakdown,
-            );
+        // A closed deadline is floored rather than dropped: the reader can
+        // still ask to see these, and when they do the order should mean
+        // something. An *open* one waits for pass two.
+        if item.closes_at.is_some()
+            && (item.item_type.is_opportunity() || item.item_type == ItemType::Event)
+            && urgency_score(item.closes_at, now) < 0.0
+        {
+            acc.time(|| "Closed".into(), -CLOSED_PENALTY);
         }
 
-        // 7. Published pay
-        if item.item_type.is_opportunity() {
-            add("Pay", w.pay * pay_score(item), &mut score, &mut breakdown);
-        }
-
-        // 8. Deadline. Closed postings are floored rather than dropped: the
-        // reader can still ask to see them, and when they do the order should
-        // mean something.
-        if item.item_type.is_opportunity() {
-            let urgency = urgency_score(item.closes_at, now);
-            if urgency < 0.0 {
-                add("Closed", -CLOSED_PENALTY, &mut score, &mut breakdown);
-            } else {
-                add(
-                    "Closing soon",
-                    w.urgency * urgency,
-                    &mut score,
-                    &mut breakdown,
-                );
-            }
-        }
-
-        // 9. Seniority fit
-        if item.item_type.is_opportunity() {
-            let fit = seniority_fit(item, &profile.target_seniority);
-            let label = match item.seniority.as_deref() {
-                Some(level) if fit >= 0.0 => format!("{level} role"),
-                Some(level) => format!("{level} role — not your level"),
-                None => "Level".to_string(),
-            };
-            add(&label, w.seniority * fit, &mut score, &mut breakdown);
-        }
-
-        // 10. Location fit
-        if let Some(home) = profile.home_region.as_deref() {
-            if item.location_tags.iter().any(|t| t == home) {
-                add(
-                    &format!("In {home}"),
-                    w.location,
-                    &mut score,
-                    &mut breakdown,
-                );
-            }
-        }
-
-        // 11. Already-read items sink, so the feed keeps moving.
+        // Already-read items sink, so the feed keeps moving.
         if item.seen {
-            add("Already seen", -w.seen_penalty, &mut score, &mut breakdown);
+            acc.time(|| "Already seen".into(), -w.seen_penalty);
         }
 
-        breakdown.sort_by(|a, b| b.points.total_cmp(&a.points));
-        item.score_breakdown = breakdown;
-        item.relevance_score = Some(score);
+        acc.breakdown.sort_by(|a, b| b.points.total_cmp(&a.points));
+        item.merit = Some(acc.merit);
+        item.last_call = false;
+        item.score_breakdown = acc.breakdown;
+        item.relevance_score = Some(acc.score);
+    }
+
+    let bars = bars.copied().unwrap_or_else(|| Bars::measure(&items));
+
+    for item in &mut items {
+        let eligible = item.item_type.is_opportunity() || item.item_type == ItemType::Event;
+        let Some(closes) = item.closes_at.filter(|_| eligible) else {
+            continue;
+        };
+        let urgency = urgency_score(Some(closes), now);
+        if urgency < 0.0 {
+            continue; // closed, and already floored in pass one
+        }
+
+        let merit = item.merit.unwrap_or(0.0);
+        let bar = bars.for_type(item.item_type);
+        let points = w.urgency * urgency * bar.gate(merit);
+        if points.abs() > f64::EPSILON {
+            item.relevance_score = Some(item.relevance_score.unwrap_or(0.0) + points);
+            item.score_breakdown
+                .push(ScoreTerm::new("Closing soon", points));
+            item.score_breakdown
+                .sort_by(|a, b| b.points.total_cmp(&a.points));
+        }
+
+        let days = (closes - now).num_minutes() as f64 / (60.0 * 24.0);
+        item.last_call = bar.clears(merit) && days <= LAST_CALL_DAYS;
     }
 
     // Stable sort, matching Python's `sorted`: ties keep scraper order.
@@ -704,7 +965,7 @@ pub fn personalize_at(mut items: Vec<Item>, profile: &Profile, now: DateTime<Utc
             .total_cmp(&a.relevance_score.unwrap_or(0.0))
     });
 
-    diversify(items)
+    (diversify(items), bars)
 }
 
 /// Interleaves the scored items so consecutive entries come from different
@@ -718,7 +979,7 @@ pub fn personalize_at(mut items: Vec<Item>, profile: &Profile, now: DateTime<Utc
 /// Each pass takes the best remaining item from every source in turn, with
 /// sources ordered by the score of the item they are offering. Quality still
 /// decides position within a pass; breadth is guaranteed across it.
-fn diversify(items: Vec<Item>) -> Vec<Item> {
+pub(crate) fn diversify(items: Vec<Item>) -> Vec<Item> {
     // Preserves score order inside each bucket, and first-seen order across
     // them, so the result is deterministic.
     let mut order: Vec<String> = Vec::new();
@@ -1123,5 +1384,354 @@ mod tests {
 
         let ranked = personalize_at(vec![read, unread], &profile(DEFAULT_MAJOR, &[], &[]), now);
         assert_eq!(ranked[0].title, "unread");
+    }
+
+    // --- a deadline, weighed against how good the posting is ---
+    //
+    // The ramp is pinned (5 → 13 for roles, 4 → 8 for events) so each case
+    // reads as arithmetic: a posting at merit 9 is halfway up and earns half
+    // the deadline boost. Interest keywords are the lever for merit — "pytorch"
+    // fires AI/ML and "react" fires Frontend, four points each.
+
+    use chrono::Duration;
+
+    fn pinned_bars() -> Bars {
+        Bars {
+            opportunity: Bar { lo: 5.0, hi: 13.0 },
+            event: Bar { lo: 4.0, hi: 8.0 },
+        }
+    }
+
+    fn reader() -> Profile {
+        profile(
+            DEFAULT_MAJOR,
+            &["AI/ML".to_string(), "Frontend".to_string()],
+            &[],
+        )
+    }
+
+    const WEAK: &str = "general duties";
+    const MIDDLING: &str = "pytorch";
+    const STRONG: &str = "pytorch react";
+
+    fn closing(
+        title: &str,
+        ty: ItemType,
+        text: &str,
+        in_days: Option<f64>,
+        now: DateTime<Utc>,
+    ) -> Item {
+        let mut it = item(title, "S", ty).with_timestamp(now);
+        it.content_text = text.into();
+        it.closes_at = in_days.map(|d| now + Duration::minutes((d * 1440.0) as i64));
+        it
+    }
+
+    fn scored(items: Vec<Item>, now: DateTime<Utc>) -> Vec<Item> {
+        personalize_with(items, &reader(), now, Some(&pinned_bars())).0
+    }
+
+    fn named<'a>(items: &'a [Item], title: &str) -> &'a Item {
+        items.iter().find(|i| i.title == title).expect(title)
+    }
+
+    fn term(item: &Item, label: &str) -> f64 {
+        item.score_breakdown
+            .iter()
+            .find(|t| t.label == label)
+            .map_or(0.0, |t| t.points)
+    }
+
+    fn close_to(a: f64, b: f64) {
+        assert!((a - b).abs() < 1e-6, "{a} != {b}");
+    }
+
+    #[test]
+    fn urgency_is_full_for_the_last_days_then_halves_each_week() {
+        let now = Utc::now();
+        let at =
+            |days: f64| urgency_score(Some(now + Duration::minutes((days * 1440.0) as i64)), now);
+
+        close_to(at(0.5), 1.0);
+        close_to(at(URGENCY_FULL_DAYS), 1.0);
+        close_to(at(URGENCY_FULL_DAYS + URGENCY_HALF_LIFE_DAYS), 0.5);
+        close_to(at(URGENCY_FULL_DAYS + 2.0 * URGENCY_HALF_LIFE_DAYS), 0.25);
+        close_to(at(URGENCY_HORIZON_DAYS + 1.0), 0.0);
+        close_to(at(-0.5), -1.0);
+        close_to(urgency_score(None, now), 0.0);
+
+        // Never falls as the date gets closer — the old curve did, inside six days.
+        let days = [40.0, 20.0, 10.0, 5.0, 3.0, 1.0, 0.1];
+        for pair in days.windows(2) {
+            assert!(at(pair[1]) >= at(pair[0]), "urgency fell between {pair:?}");
+        }
+    }
+
+    #[test]
+    fn a_deadline_helps_a_good_posting_more_than_a_poor_one() {
+        let now = Utc::now();
+        let ranked = scored(
+            vec![
+                closing("dl-weak", ItemType::Job, WEAK, Some(2.0), now),
+                closing("dl-mid", ItemType::Job, MIDDLING, Some(2.0), now),
+                closing("dl-strong", ItemType::Job, STRONG, Some(2.0), now),
+            ],
+            now,
+        );
+        close_to(term(named(&ranked, "dl-weak"), "Closing soon"), 0.0);
+        close_to(
+            term(named(&ranked, "dl-mid"), "Closing soon"),
+            w().urgency * 0.5,
+        );
+        close_to(
+            term(named(&ranked, "dl-strong"), "Closing soon"),
+            w().urgency,
+        );
+    }
+
+    /// The failure the additive term had: the same bonus for everything, so a
+    /// poor posting closing tomorrow could outrank a better one closing later.
+    /// Merit 9 against 5 is a four-point gap, which an ungated boost of up to
+    /// eight would erase — so this fails if the quality gate is removed.
+    #[test]
+    fn a_weak_posting_closing_tomorrow_does_not_jump_a_better_one_closing_later() {
+        let now = Utc::now();
+        let ranked = scored(
+            vec![
+                closing("jump-weak", ItemType::Job, WEAK, Some(1.0), now),
+                closing("jump-better", ItemType::Job, MIDDLING, Some(30.0), now),
+            ],
+            now,
+        );
+        assert!(
+            named(&ranked, "jump-better").relevance_score
+                > named(&ranked, "jump-weak").relevance_score
+        );
+    }
+
+    #[test]
+    fn the_boost_never_shrinks_as_the_deadline_gets_closer() {
+        let now = Utc::now();
+        let boosts: Vec<f64> = [40.0, 20.0, 10.0, 5.0, 3.0, 1.0, 0.1]
+            .iter()
+            .map(|d| {
+                let ranked = scored(
+                    vec![closing("monotone", ItemType::Job, STRONG, Some(*d), now)],
+                    now,
+                );
+                term(&ranked[0], "Closing soon")
+            })
+            .collect();
+        for pair in boosts.windows(2) {
+            assert!(pair[1] >= pair[0], "boost fell: {boosts:?}");
+        }
+        assert!(boosts[0] > 0.0 && boosts[6] > boosts[0]);
+    }
+
+    #[test]
+    fn a_closed_posting_is_floored_and_is_never_a_last_call() {
+        let now = Utc::now();
+        let ranked = scored(
+            vec![closing("shut", ItemType::Job, STRONG, Some(-1.0), now)],
+            now,
+        );
+        close_to(term(&ranked[0], "Closed"), -CLOSED_PENALTY);
+        close_to(term(&ranked[0], "Closing soon"), 0.0);
+        assert!(!ranked[0].last_call);
+    }
+
+    /// Devpost's deadline used to be stored and shown but never scored, because
+    /// the whole term was gated on being a job.
+    #[test]
+    fn an_event_with_a_deadline_is_scored_and_one_without_is_not() {
+        let now = Utc::now();
+        let ranked = scored(
+            vec![
+                closing("hack-with", ItemType::Event, MIDDLING, Some(2.0), now),
+                closing("hack-without", ItemType::Event, MIDDLING, None, now),
+                closing("hack-over", ItemType::Event, MIDDLING, Some(-2.0), now),
+            ],
+            now,
+        );
+        // Merit 4 + 4 = 8 clears the event bar (4 → 8) completely.
+        close_to(
+            term(named(&ranked, "hack-with"), "Closing soon"),
+            w().urgency,
+        );
+        assert!(named(&ranked, "hack-with").last_call);
+        close_to(term(named(&ranked, "hack-without"), "Closing soon"), 0.0);
+        assert!(!named(&ranked, "hack-without").last_call);
+        close_to(term(named(&ranked, "hack-over"), "Closed"), -CLOSED_PENALTY);
+    }
+
+    #[test]
+    fn a_last_call_needs_both_quality_and_time() {
+        let now = Utc::now();
+        let ranked = scored(
+            vec![
+                closing("lc-yes", ItemType::Job, STRONG, Some(6.0), now),
+                closing(
+                    "lc-late",
+                    ItemType::Job,
+                    STRONG,
+                    Some(LAST_CALL_DAYS + 1.0),
+                    now,
+                ),
+                closing("lc-meh", ItemType::Job, MIDDLING, Some(2.0), now),
+                closing("lc-open", ItemType::Job, STRONG, None, now),
+            ],
+            now,
+        );
+        assert!(named(&ranked, "lc-yes").last_call);
+        assert!(
+            !named(&ranked, "lc-late").last_call,
+            "a week out is not a last call"
+        );
+        assert!(
+            !named(&ranked, "lc-meh").last_call,
+            "good-ish is not good enough"
+        );
+        assert!(
+            !named(&ranked, "lc-open").last_call,
+            "no deadline, no urgency"
+        );
+    }
+
+    /// Merit is what a posting is worth; the clock must not move it, or a
+    /// deadline would be weighed against how long ago it was posted.
+    #[test]
+    fn merit_ignores_the_clock_and_having_already_read_it() {
+        let now = Utc::now();
+        let fresh = closing("clock-a", ItemType::Job, STRONG, None, now);
+        let mut stale = closing("clock-b", ItemType::Job, STRONG, None, now);
+        stale.timestamp = now - Duration::days(90);
+        stale.seen = true;
+
+        let ranked = scored(vec![fresh, stale], now);
+        close_to(
+            named(&ranked, "clock-a").merit.unwrap(),
+            named(&ranked, "clock-b").merit.unwrap(),
+        );
+        assert!(
+            named(&ranked, "clock-a").relevance_score > named(&ranked, "clock-b").relevance_score
+        );
+    }
+
+    #[test]
+    fn the_bars_are_measured_from_the_set_and_never_fall_below_their_floor() {
+        let now = Utc::now();
+        // Everything ties at merit 5, which is what an empty profile looks like.
+        let flat: Vec<Item> = (0..6)
+            .map(|i| closing(&format!("flat-{i}"), ItemType::Job, WEAK, None, now))
+            .collect();
+        let (_, bars) = personalize_with(flat, &reader(), now, None);
+        assert_eq!(bars.opportunity, Bar { lo: 9.0, hi: 13.0 });
+        assert_eq!(
+            bars.event,
+            Bar { lo: 6.0, hi: 12.0 },
+            "no events at all falls back to the floor"
+        );
+
+        // A spread: half at 5 and half at 13 puts both percentiles on 13, and
+        // a ramp with no width would divide by zero.
+        let spread: Vec<Item> = (0..20)
+            .map(|i| {
+                let text = if i < 10 { WEAK } else { STRONG };
+                closing(&format!("spread-{i}"), ItemType::Job, text, None, now)
+            })
+            .collect();
+        let (_, bars) = personalize_with(spread, &reader(), now, None);
+        assert_eq!(bars.opportunity.lo, 13.0);
+        assert!(bars.opportunity.hi >= bars.opportunity.lo + MIN_RAMP);
+        assert!(bars.opportunity.gate(13.0).is_finite());
+    }
+
+    /// The detail pane rescoring one item must agree with the list it was
+    /// clicked from, which a percentile over a single item could not.
+    #[test]
+    fn one_item_rescored_with_the_sets_bars_agrees_with_the_list() {
+        let now = Utc::now();
+        let items: Vec<Item> = (0..10)
+            .map(|i| {
+                let text = if i % 2 == 0 { WEAK } else { STRONG };
+                closing(&format!("agree-{i}"), ItemType::Job, text, Some(2.0), now)
+            })
+            .collect();
+        let alone = items[3].clone();
+
+        let (list, bars) = personalize_with(items, &reader(), now, None);
+        let (single, _) = personalize_with(vec![alone], &reader(), now, Some(&bars));
+
+        let in_list = named(&list, "agree-3");
+        assert_eq!(single[0].relevance_score, in_list.relevance_score);
+        assert_eq!(single[0].last_call, in_list.last_call);
+    }
+
+    /// `fit` trims a cache before anything is fetched, and has to be the same
+    /// arithmetic as the ranker's merit for what the scrape alone can see.
+    #[test]
+    fn fit_is_the_part_of_merit_a_scrape_can_see() {
+        let now = Utc::now();
+        let mut it = closing("fit-one", ItemType::Job, STRONG, None, now);
+        it.company = Some("Google".into());
+
+        let ranked = scored(vec![it.clone()], now);
+        close_to(fit(&it, &reader()), ranked[0].merit.unwrap());
+        // 5 (opportunity) + 8 (two interests) + 8 (tier 1)
+        close_to(fit(&it, &reader()), 21.0);
+    }
+
+    // --- the ceiling ---
+
+    fn titles_of(items: &[Item]) -> Vec<&str> {
+        items.iter().map(|i| i.title.as_str()).collect()
+    }
+
+    #[test]
+    fn under_the_ceiling_nothing_moves() {
+        let now = Utc::now();
+        let items = vec![
+            closing("cap-a", ItemType::Job, WEAK, None, now),
+            closing("cap-b", ItemType::Job, STRONG, None, now),
+        ];
+        let kept = cap_opportunities(items, &reader(), 2);
+        assert_eq!(titles_of(&kept), ["cap-a", "cap-b"]);
+    }
+
+    #[test]
+    fn over_the_ceiling_the_best_fit_stays_and_news_is_never_cut() {
+        let now = Utc::now();
+        let items = vec![
+            closing("cut-weak-1", ItemType::Job, WEAK, None, now),
+            closing("cut-strong", ItemType::Job, STRONG, None, now),
+            closing("cut-news", ItemType::Article, WEAK, None, now),
+            closing("cut-mid", ItemType::Internship, MIDDLING, None, now),
+            closing("cut-weak-2", ItemType::Job, WEAK, None, now),
+        ];
+        let kept = cap_opportunities(items, &reader(), 2);
+        // Survivors keep their original order, and the article is not counted.
+        assert_eq!(titles_of(&kept), ["cut-strong", "cut-news", "cut-mid"]);
+    }
+
+    #[test]
+    fn a_tie_at_the_ceiling_goes_to_the_newer_posting() {
+        let now = Utc::now();
+        let mut older = closing("tie-older", ItemType::Job, WEAK, None, now);
+        older.timestamp = now - Duration::days(10);
+        let newer = closing("tie-newer", ItemType::Job, WEAK, None, now);
+        let kept = cap_opportunities(vec![older, newer], &reader(), 1);
+        assert_eq!(titles_of(&kept), ["tie-newer"]);
+    }
+
+    /// The form offers exactly the bands the classifier can produce: a band
+    /// the classifier never assigns would be a preference that matches nothing,
+    /// and one it assigns but the form omits could never be chosen.
+    #[test]
+    fn the_seniority_choices_are_the_classifiers_bands() {
+        let mut offered: Vec<&str> = seniority_levels();
+        let mut classified: Vec<&str> = SENIORITY.iter().map(|(name, _)| *name).collect();
+        offered.sort_unstable();
+        classified.sort_unstable();
+        assert_eq!(offered, classified);
     }
 }

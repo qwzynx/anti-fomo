@@ -16,6 +16,7 @@ use std::pin::Pin;
 
 use super::employers::{Board, Employer, EMPLOYERS};
 use crate::models::{Item, JobDetail};
+use crate::rank::{classify_item, DEFAULT_MAJOR};
 
 pub mod ashby;
 pub mod greenhouse;
@@ -76,6 +77,30 @@ pub async fn fan_out(
         .await
 }
 
+/// Trims one employer's postings to `cap`, keeping the ones this app is about.
+///
+/// Most boards are under their cap and pass through untouched. The few that
+/// are not — Anduril and SpaceX each publish over two thousand roles — used to
+/// be cut to the newest few hundred, which for a company that is mostly
+/// manufacturing and operations meant a handful of engineering roles among
+/// hundreds of unrelated ones. The software roles go first, newest first
+/// within each group, so the cap spends its slots where the reader looks.
+pub fn keep_best(mut items: Vec<Item>, cap: usize) -> Vec<Item> {
+    if items.len() <= cap {
+        return items;
+    }
+    // Cached key: classifying reads the title and the text, and a comparator
+    // would redo it for both sides of every comparison.
+    items.sort_by_cached_key(|item| {
+        (
+            classify_item(item) != DEFAULT_MAJOR,
+            std::cmp::Reverse(item.timestamp),
+        )
+    });
+    items.truncate(cap);
+    items
+}
+
 /// Copies a description a *list* endpoint already carried onto the item.
 ///
 /// Lever and Ashby hand back the whole posting in the same response as the
@@ -90,4 +115,54 @@ pub fn seed_detail(item: &mut Item, detail: JobDetail) {
     item.responsibilities = detail.responsibilities;
     item.perks = detail.perks;
     item.tagged_skills = detail.tagged_skills;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::ItemType;
+    use chrono::{Duration, Utc};
+
+    fn job(title: &str, days_ago: i64) -> Item {
+        Item::new(
+            title,
+            "Greenhouse",
+            ItemType::Job,
+            format!("https://x.test/{title}"),
+        )
+        .with_timestamp(Utc::now() - Duration::days(days_ago))
+    }
+
+    fn titles(items: Vec<Item>) -> Vec<String> {
+        items.into_iter().map(|i| i.title).collect()
+    }
+
+    #[test]
+    fn a_board_under_its_cap_comes_back_exactly_as_it_was() {
+        let items = vec![job("Machinist", 1), job("Software Engineer", 9)];
+        assert_eq!(
+            titles(keep_best(items, 5)),
+            ["Machinist", "Software Engineer"]
+        );
+    }
+
+    /// A board over its cap is where the choice matters: newest-first would
+    /// keep the machinist and the recruiter and drop the month-old engineer.
+    #[test]
+    fn over_the_cap_software_roles_go_first_and_then_the_newest() {
+        let items = vec![
+            job("Machinist", 1),
+            job("Software Engineer, Backend", 30),
+            job("Software Engineer, Platform", 5),
+            job("Recruiter", 2),
+        ];
+        assert_eq!(
+            titles(keep_best(items, 3)),
+            [
+                "Software Engineer, Platform",
+                "Software Engineer, Backend",
+                "Machinist"
+            ]
+        );
+    }
 }

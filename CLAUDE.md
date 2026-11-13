@@ -30,10 +30,32 @@ Everything ships from `/app`:
       one that strips it to plain text instead throws away both the structure
       the UI renders and the headings that tell requirements from boilerplate.
       Verify with `cargo run --features dev-tools --bin detail_check`.
+  - Sources are `registry()` entries with a `Category` (News / Opportunities /
+    Events): a kind of *source*, not an `ItemType`. `fetch_selected` runs a subset
+    and reports each as it finishes. `Dormant` is the error a source returns when
+    it answered correctly but its list is abandoned (Pitt CSC's repo, untouched
+    for 74 days) — the schedule treats that as having worked, and the sweep must
+    not be fed its rows, or dead listings would become permanent. Dedupe keeps the
+    first copy of a URL but `absorb`s the deadline, pay and text the dropped copy
+    carried. Where a cap must stay it keeps the best, not the newest:
+    `github_internships::select`, `ats::keep_best`, and `rank::cap_opportunities`
+    by `rank::fit` at ingest.
   - `location.rs`, `rank.rs`, `skills.rs` — pure functions (location tagging,
     discipline classification, interest-tag matching, recency decay, relevance
     scoring, round-robin per-source diversification, skill extraction).
-    Unit-tested. **A posting's skills come from its own fetched text and
+    Unit-tested. **A deadline is weighed against quality, not added to it.**
+    `personalize_with` is two passes: every item gets its `merit` (all terms except
+    recency, a deadline and `seen`), then an item with a deadline gains
+    `w.urgency × urgency × Bar::gate(merit)` — so a weak posting closing tomorrow
+    cannot outrank a better one closing later. `last_call` is merit above the bar
+    (the top decile of what is being ranked, floored: an empty profile is a flat
+    field and calls nothing really good) with the deadline inside a week. The bars
+    are measured over the whole set and stored with the ranked cache, so rescoring
+    a single item (`item_detail`) must pass them in — a percentile of one item
+    means nothing. The cache is also rebuilt when the hour turns, because
+    "closes in two days" is a statement about a clock. The detail queue is ordered
+    by merit for the same reason: a deadline is only learned by fetching.
+    **A posting's skills come from its own fetched text and
     nothing else** — its requirements, its duties, its description and the
     tags the source attached, read together. Read **line by line**: where a
     mention sits is most of what it means, so `skills::demand` returns each
@@ -83,6 +105,16 @@ Everything ships from `/app`:
     theme and runs `pdftotext` over the output; printpdf's own `extract_text`
     replays ops rather than reading the file back and will happily report text
     that never reached the page.
+  - `prefs.rs` — what the reader asked to have scraped (`ScrapePrefs`) and which
+    sources that makes due. Pure, so the rules that decide what costs a request
+    are tested without an app: `due` (a source never run, or older than its
+    category's window, or 15 minutes after a failure), `made_due` (what a change
+    of mind refetches) and `admits` (internships vs jobs, decided on the *row*,
+    since every ATS board emits `Job`). **Nothing is fetched before the setup form
+    is answered**: `commands::refresh` returns early without `onboarded_at`, which
+    `db::migrate` backfills for an existing install (`user_version > 0`) and
+    `complete_onboarding` writes for a new one. The launch refresh and every button
+    go through that one gate.
   - `db.rs` — SQLite via `rusqlite` (bundled). Items are a rebuildable cache keyed
     by URL. `settings`, `item_state`, `job_details`, `resumes` and
     `resume_variants` are the durable tables and must survive a schema bump, so
@@ -90,7 +122,7 @@ Everything ships from `/app`:
     empties the cache and leaves the résumés: a feed can be refetched and a
     work history cannot. **Deleting rows does not shrink the file.** Freed
     pages go on a freelist and are reused, so without help the store sits at
-    its own high-water mark forever and the 60-day prune returns nothing to the
+    its own high-water mark forever and the retention sweep returns nothing to the
     disk. `open` puts the file in incremental auto-vacuum — converting one that
     predates that, non-fatally, since the machine where a `VACUUM` cannot run
     is the full one that most needs the app to still launch — and
@@ -101,6 +133,22 @@ Everything ships from `/app`:
     and the freelist, which is the only thing that tells the two apart.
     `journal_size_limit` is the counterpart for the WAL, which otherwise keeps
     the width of the largest refresh long after that refresh is over.
+    **Retention is liveness, not age.** `sweep` runs in `persist` after
+    `save_items_at` and drops a posting when its source stops offering it (three
+    scrapes that vouched for its scope without returning it, at least 24 h apart),
+    when its deadline passed a week ago (`job_details.closes_at` first — most
+    deadlines live there), or when its event ended; only news ages out by date.
+    It used to be a blanket 60 days on `timestamp`, which deleted the oldest
+    postings still open and, for Devpost (stamped with the day entries *opened*),
+    a hackathon the day it was saved. The scope is (source, **employer**) for the
+    ATS sources, because `ats::fan_out` swallows a failed board and the source
+    still looks healthy: sweeping by source would read one dead board as every
+    posting on it gone. A scope that returned nothing is never charged. `source_runs`
+    (dropped with `items`, emptied by `clear_data`) is the per-source ledger that
+    the schedule and Settings read; it must not outlive an emptied cache or every
+    source would read as fresh over nothing. The policy table is
+    `scrapers::liveness`, keyed on `source_platform` strings that
+    `the_policy_table_names_real_sources` pins.
   - `commands.rs` — the `invoke()` surface the UI calls. **Every command that
     touches the database is `#[tauri::command(async)]`.** A plain
     `#[tauri::command]` on a synchronous function runs on the *main thread*,
@@ -134,6 +182,14 @@ Everything ships from `/app`:
   Never write to a field on an item and expect the UI to notice.
   - The feed and the saved list render through `ItemList`, which honours the
     card/list/compact `density` store and reveals results a page at a time.
+  - The setup form (`Onboarding.svelte`) is a full-screen gate, deliberately not
+    a `Modal` (a stray Escape must not strand an empty first-run feed). The store's
+    `onboarding` is `unknown | needed | offered | done` so a returning reader never
+    sees it flash; `feed.scrapeNow()` calls Rust directly rather than `refresh()`,
+    which gives up if one is already running. The seniority and region choices come
+    from `list_setup_options`, not a copy: they are matched by equality and a typo
+    matches nothing. Today's "Last call" band is its own list (`get_last_call`),
+    since a strong posting closing tomorrow can rank past the feed's 400.
   - `/internships` is a job-board split pane at `lg:` — result list beside a
     detail column — and falls back to the plain list plus `ItemModal` below
     that. `ItemDetail` is the shared body of the modal and the pane, so the two

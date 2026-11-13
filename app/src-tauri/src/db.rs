@@ -9,7 +9,14 @@ use std::collections::{HashMap, HashSet};
 
 use crate::models::{DetailStatus, Item, ItemType, JobDetail};
 
-const SCHEMA_VERSION: i32 = 8;
+const SCHEMA_VERSION: i32 = 9;
+
+/// The setting that says the reader has been through the setup form, and so
+/// that scraping may begin. Written by `migrate` for a store that already
+/// existed — those readers were scraped before the form was asked — and by
+/// `complete_onboarding` for everyone else. Lives here because the migration
+/// is the one place that can tell an upgrade from a first launch.
+pub const ONBOARDED_KEY: &str = "onboarded_at";
 
 pub fn open(path: &std::path::Path) -> Result<Connection> {
     if let Some(parent) = path.parent() {
@@ -238,6 +245,14 @@ fn migrate(conn: &Connection) -> Result<()> {
             salary_currency TEXT,
             salary_period   TEXT,
             seniority       TEXT,
+            -- Liveness, which is what retention keys on instead of `timestamp`.
+            -- `timestamp` says when a posting was *written*, and a posting
+            -- that has been open for ninety days is not a stale one — it is
+            -- the one still hiring. `last_seen_at` is stamped by every scrape
+            -- that returns the row; `missed` counts the scrapes that vouched
+            -- for the row's scope and did not return it. See `sweep`.
+            last_seen_at    TEXT NOT NULL,
+            missed          INTEGER NOT NULL DEFAULT 0,
             -- URL is the listing's real identity. The old backend declared
             -- uniqueness on (title, source_platform), but it never actually
             -- wrote to the database, so the flaw never surfaced: Pitt CSC
@@ -250,6 +265,25 @@ fn migrate(conn: &Connection) -> Result<()> {
         CREATE INDEX IF NOT EXISTS idx_items_timestamp ON items (timestamp DESC);
         CREATE INDEX IF NOT EXISTS idx_items_closes ON items (closes_at);
         CREATE INDEX IF NOT EXISTS idx_items_company ON items (company);
+
+        -- What each source did the last time it ran, so a refresh can skip the
+        -- ones still inside their own freshness window and the settings page
+        -- can say which one is failing. Dropped with `items` on purpose: it
+        -- describes that cache, and a ledger that outlived an emptied cache
+        -- would tell every source it was fresh and leave the feed empty.
+        DROP TABLE IF EXISTS source_runs;
+        CREATE TABLE source_runs (
+            source      TEXT PRIMARY KEY,
+            category    TEXT NOT NULL,
+            last_run_at TEXT NOT NULL,
+            -- Whether that run worked. A source that answered and found its
+            -- list abandoned counts: it did its job, it just has nothing
+            -- current to say, and re-asking in half an hour would not help.
+            ok          INTEGER NOT NULL DEFAULT 1,
+            last_ok_at  TEXT,
+            last_count  INTEGER NOT NULL DEFAULT 0,
+            last_error  TEXT
+        );
 
         CREATE TABLE IF NOT EXISTS settings (
             key   TEXT PRIMARY KEY,
@@ -357,6 +391,34 @@ fn migrate(conn: &Connection) -> Result<()> {
         add_column_if_missing(conn, "job_details", column, decl)?;
     }
 
+    // Job Bank postings came back `ok` with no deadline, and an `ok` row is never
+    // fetched again — so the one source that always publishes an "advertised
+    // until" date has been reporting none. The parser looked for that heading
+    // only as a section of its own, and on the live pages it sits inside the
+    // "How to apply" container, which is skipped on purpose; it now reads the
+    // page's `validThrough` directly (`scrapers::details::parse_job_bank`). The
+    // rows read by the old parser go back on the queue. (Runs after the column
+    // loop because `closes_at` does not exist on a store this predates.)
+    conn.execute(
+        "DELETE FROM job_details
+         WHERE status = 'ok' AND closes_at IS NULL AND url LIKE '%jobbank.gc.ca%'",
+        [],
+    )?;
+
+    // A store that already existed was scraped before there was a form to
+    // ask, and holding its owner's feed hostage to one on upgrade would be
+    // worse than the question. `version == 0` is a first launch, which is
+    // the only case that has to answer before anything is fetched. This is
+    // read from `user_version` rather than guessed from the cache: the cache
+    // was just dropped and `clear_data` deletes `last_refresh`, so neither
+    // can tell the two apart.
+    if version > 0 {
+        conn.execute(
+            "INSERT OR IGNORE INTO settings (key, value) VALUES (?1, ?2)",
+            params![ONBOARDED_KEY, Utc::now().to_rfc3339()],
+        )?;
+    }
+
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     Ok(())
 }
@@ -382,6 +444,18 @@ fn add_column_if_missing(conn: &Connection, table: &str, column: &str, decl: &st
 /// Upserts on URL, so re-running a scrape refreshes existing listings in place
 /// instead of duplicating them.
 pub fn save_items(conn: &mut Connection, items: &[Item]) -> Result<usize> {
+    save_items_at(conn, items, Utc::now())
+}
+
+/// [`save_items`] with the scrape's start time named, which is what stamps
+/// `last_seen_at`. [`sweep`] is handed the same instant: a row is "unseen by
+/// this run" exactly when its stamp is earlier than it.
+pub fn save_items_at(
+    conn: &mut Connection,
+    items: &[Item],
+    seen_at: DateTime<Utc>,
+) -> Result<usize> {
+    let seen_at = seen_at.to_rfc3339();
     let tx = conn.transaction()?;
     {
         let mut stmt = tx.prepare(
@@ -390,9 +464,9 @@ pub fn save_items(conn: &mut Connection, items: &[Item]) -> Result<usize> {
                 (title, source_platform, item_type, url, content_text,
                  timestamp, discipline, relevance_score, location, location_tags,
                  simplify_id, company, closes_at, salary_min, salary_max,
-                 salary_currency, salary_period, seniority)
+                 salary_currency, salary_period, seniority, last_seen_at, missed)
             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
-                    ?15, ?16, ?17, ?18)
+                    ?15, ?16, ?17, ?18, ?19, 0)
             ON CONFLICT (url) DO UPDATE SET
                 title           = excluded.title,
                 source_platform = excluded.source_platform,
@@ -416,7 +490,9 @@ pub fn save_items(conn: &mut Connection, items: &[Item]) -> Result<usize> {
                 salary_max      = COALESCE(excluded.salary_max, items.salary_max),
                 salary_currency = COALESCE(excluded.salary_currency, items.salary_currency),
                 salary_period   = COALESCE(excluded.salary_period, items.salary_period),
-                seniority       = COALESCE(excluded.seniority, items.seniority)
+                seniority       = COALESCE(excluded.seniority, items.seniority),
+                last_seen_at    = excluded.last_seen_at,
+                missed          = 0
             "#,
         )?;
 
@@ -440,6 +516,7 @@ pub fn save_items(conn: &mut Connection, items: &[Item]) -> Result<usize> {
                 item.salary_currency,
                 item.salary_period,
                 item.seniority,
+                seen_at,
             ])?;
         }
     }
@@ -502,6 +579,8 @@ fn load_items_where<P: rusqlite::Params>(
             matched_skills: Vec::new(),
             company_tier: None,
             score_breakdown: Vec::new(),
+            merit: None,
+            last_call: false,
             description: None,
             requirements: None,
             responsibilities: None,
@@ -523,11 +602,313 @@ fn parse_rfc3339(s: &str) -> Option<DateTime<Utc>> {
         .map(|d| d.with_timezone(&Utc))
 }
 
-/// Drops entries older than `days` so the local store doesn't grow forever.
-/// Job postings and news both go stale fast; nothing here is worth archiving.
-pub fn prune_older_than(conn: &Connection, days: i64) -> Result<usize> {
-    let cutoff = (Utc::now() - chrono::Duration::days(days)).to_rfc3339();
-    Ok(conn.execute("DELETE FROM items WHERE timestamp < ?1", params![cutoff])?)
+// --- liveness: what stays in the cache ---
+
+/// How long each kind of row is kept. One struct so a test can say "a day"
+/// without waiting one, and so the numbers are read in a single place.
+///
+/// The rule underneath all of them is that **age is not a reason to drop a
+/// posting**. A role that has been open for ninety days is the one still
+/// hiring, and a hackathon that opened in the summer can close in the winter;
+/// both used to be deleted for their `timestamp`. A posting leaves when it
+/// stops being *offered* — its source stopped listing it, or its deadline
+/// passed — and only news, which has no such thing, ages out by date.
+#[derive(Clone, Debug)]
+pub struct Retention {
+    /// Scrapes that must vouch for a posting's scope, and not return it,
+    /// before it is let go. One is not enough: a board that answered with half
+    /// its postings on a bad day would otherwise empty the feed.
+    pub miss_limit: i64,
+    /// ...and this much time must have passed since it was last seen, so a
+    /// reader hammering Refresh cannot spend all the misses in a minute.
+    pub miss_gap: chrono::Duration,
+    /// A posting is kept this long past its own deadline, so "Closed" stays
+    /// visible for a while instead of a result vanishing on the day.
+    pub opportunity_grace: chrono::Duration,
+    /// Same for events, which are shown as happening until they are over.
+    pub event_grace: chrono::Duration,
+    /// The ceiling on silence for anything that is not news: unseen by every
+    /// scrape for this long, it goes whatever else is true of it. Also what
+    /// bounds the sources that are sampled rather than enumerated.
+    pub backstop: chrono::Duration,
+    /// News, the one kind that does age out by date.
+    pub article_age: chrono::Duration,
+}
+
+impl Default for Retention {
+    fn default() -> Self {
+        Retention {
+            miss_limit: 3,
+            miss_gap: chrono::Duration::hours(24),
+            opportunity_grace: chrono::Duration::days(7),
+            event_grace: chrono::Duration::days(1),
+            backstop: chrono::Duration::days(21),
+            article_age: chrono::Duration::days(60),
+        }
+    }
+}
+
+/// A set of rows one scrape can speak for: everything one source carries, or
+/// one employer's rows under it (`company: Some`).
+///
+/// The employer form exists because an ATS source is forty boards behind one
+/// name, and a board that errors is swallowed and contributes nothing while
+/// the source still reports success. Scoping the sweep to the source would
+/// read that silence as "every posting on that board is gone".
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct Scope {
+    pub source: String,
+    pub company: Option<String>,
+}
+
+/// What a sweep removed, by reason, for the log.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct SweepStats {
+    /// Unseen by `miss_limit` scrapes that vouched for them.
+    pub vanished: usize,
+    /// Opportunities past their deadline by more than the grace.
+    pub closed: usize,
+    /// Events that are over.
+    pub ended: usize,
+    /// Not seen by anything for the whole backstop.
+    pub stale: usize,
+    /// News older than `article_age`.
+    pub articles: usize,
+}
+
+/// Removes what is no longer on offer. Run after [`save_items_at`] with the
+/// same `run_start`, so a row this scrape returned has already been stamped
+/// and a row it did not still carries an earlier one.
+///
+/// `alive` is the scopes this scrape returned at least one row for, built by
+/// the caller from its sources' retention policy. A scope that returned
+/// nothing — because it failed, or because its source was skipped — is not in
+/// it, so its rows are never charged a miss: the failure mode of an empty
+/// answer is a stale row, not a deleted one.
+///
+/// `start_dated` names the sources whose `timestamp` is the day the thing
+/// *starts* (Luma), so it can stand in for an end date. For every other event
+/// `timestamp` is when it was announced and must not.
+pub fn sweep(
+    conn: &mut Connection,
+    now: DateTime<Utc>,
+    run_start: DateTime<Utc>,
+    alive: &HashSet<Scope>,
+    start_dated: &[&str],
+    rules: &Retention,
+) -> Result<SweepStats> {
+    let run_start_s = run_start.to_rfc3339();
+    let tx = conn.transaction()?;
+
+    // A temp table rather than a parameter per scope: there is a scope for
+    // every employer board, and one statement over the table is one pass.
+    tx.execute_batch(
+        "CREATE TEMP TABLE IF NOT EXISTS alive_scope (
+             source  TEXT NOT NULL,
+             company TEXT NOT NULL,
+             PRIMARY KEY (source, company)
+         ) WITHOUT ROWID;
+         DELETE FROM alive_scope;",
+    )?;
+    {
+        let mut insert =
+            tx.prepare("INSERT OR IGNORE INTO alive_scope (source, company) VALUES (?1, ?2)")?;
+        for scope in alive {
+            insert.execute(params![
+                scope.source,
+                scope.company.as_deref().unwrap_or("")
+            ])?;
+        }
+    }
+    tx.execute(
+        "UPDATE items SET missed = missed + 1
+         WHERE item_type <> 'Article'
+           AND last_seen_at < ?1
+           AND EXISTS (SELECT 1 FROM alive_scope a
+                       WHERE a.source = items.source_platform
+                         AND (a.company = '' OR a.company = items.company))",
+        params![run_start_s],
+    )?;
+    tx.execute_batch("DELETE FROM alive_scope")?;
+
+    let vanished = tx.execute(
+        "DELETE FROM items
+         WHERE item_type <> 'Article' AND missed >= ?1 AND last_seen_at < ?2",
+        params![rules.miss_limit, (run_start - rules.miss_gap).to_rfc3339()],
+    )?;
+
+    // The fetched deadline wins over the list endpoint's, exactly as
+    // `attach_details` decides it — most deadlines are found by the detail
+    // pass and live only in `job_details`.
+    let closed = tx.execute(
+        "DELETE FROM items
+         WHERE item_type IN ('Job', 'Internship')
+           AND COALESCE((SELECT d.closes_at FROM job_details d WHERE d.url = items.url),
+                        items.closes_at) < ?1",
+        params![(now - rules.opportunity_grace).to_rfc3339()],
+    )?;
+
+    let event_cutoff = (now - rules.event_grace).to_rfc3339();
+    let mut ended = tx.execute(
+        "DELETE FROM items
+         WHERE item_type = 'Event' AND closes_at IS NOT NULL AND closes_at < ?1",
+        params![event_cutoff],
+    )?;
+    for source in start_dated {
+        ended += tx.execute(
+            "DELETE FROM items
+             WHERE item_type = 'Event' AND closes_at IS NULL
+               AND source_platform = ?1 AND timestamp < ?2",
+            params![source, event_cutoff],
+        )?;
+    }
+
+    let stale = tx.execute(
+        "DELETE FROM items WHERE item_type <> 'Article' AND last_seen_at < ?1",
+        params![(now - rules.backstop).to_rfc3339()],
+    )?;
+
+    let articles = tx.execute(
+        "DELETE FROM items WHERE item_type = 'Article' AND timestamp < ?1",
+        params![(now - rules.article_age).to_rfc3339()],
+    )?;
+
+    tx.commit()?;
+    Ok(SweepStats {
+        vanished,
+        closed,
+        ended,
+        stale,
+        articles,
+    })
+}
+
+// --- per-source run ledger ---
+
+/// What one source did the last time it ran.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SourceRun {
+    pub source: String,
+    pub category: String,
+    /// When it last ran, whatever came of it. This is what decides whether the
+    /// source is due again.
+    pub last_run_at: DateTime<Utc>,
+    /// Whether that run worked. `false` shortens the wait before the next one.
+    pub ok: bool,
+    /// When it last *succeeded*. A failing run leaves this alone, so the
+    /// settings page can say "last worked two days ago" rather than nothing.
+    pub last_ok_at: Option<DateTime<Utc>>,
+    pub last_count: i64,
+    /// Why the last run failed, or what a source that ran fine had to say
+    /// about itself ("repository dormant"). Shown as a note, not as an error,
+    /// when `ok` is true.
+    pub last_error: Option<String>,
+}
+
+/// Upserts the ledger. A run with `last_ok_at: None` keeps whatever success
+/// was recorded before it.
+pub fn record_runs(conn: &mut Connection, runs: &[SourceRun]) -> Result<()> {
+    let tx = conn.transaction()?;
+    {
+        let mut stmt = tx.prepare(
+            "INSERT INTO source_runs
+                 (source, category, last_run_at, ok, last_ok_at, last_count, last_error)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+             ON CONFLICT (source) DO UPDATE SET
+                 category    = excluded.category,
+                 last_run_at = excluded.last_run_at,
+                 ok          = excluded.ok,
+                 last_ok_at  = COALESCE(excluded.last_ok_at, source_runs.last_ok_at),
+                 last_count  = excluded.last_count,
+                 last_error  = excluded.last_error",
+        )?;
+        for run in runs {
+            stmt.execute(params![
+                run.source,
+                run.category,
+                run.last_run_at.to_rfc3339(),
+                run.ok,
+                run.last_ok_at.map(|d| d.to_rfc3339()),
+                run.last_count,
+                run.last_error,
+            ])?;
+        }
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+pub fn load_source_runs(conn: &Connection) -> Result<Vec<SourceRun>> {
+    let mut stmt = conn.prepare(
+        "SELECT source, category, last_run_at, ok, last_ok_at, last_count, last_error
+         FROM source_runs",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        let ran: String = row.get(2)?;
+        Ok(SourceRun {
+            source: row.get(0)?,
+            category: row.get(1)?,
+            last_run_at: parse_rfc3339(&ran).unwrap_or_else(|| Utc.timestamp_opt(0, 0).unwrap()),
+            ok: row.get(3)?,
+            last_ok_at: row
+                .get::<_, Option<String>>(4)?
+                .and_then(|s| parse_rfc3339(&s)),
+            last_count: row.get(5)?,
+            last_error: row.get(6)?,
+        })
+    })?;
+    Ok(rows.flatten().collect())
+}
+
+/// Which kinds of row the reader asked to have. Plain flags rather than the
+/// preferences type, so the store does not depend on the thing that owns them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Wanted {
+    pub internships: bool,
+    pub jobs: bool,
+    pub news: bool,
+    pub events: bool,
+}
+
+/// Deletes every row the reader no longer wants — a switched-off kind, or a
+/// switched-off source.
+///
+/// Needed because the sweep never visits what is not being scraped: without
+/// this a category turned off in Settings would stay in the feed forever,
+/// frozen at the moment it was disabled. An *internship* is `item_type ==
+/// 'Internship'` or a role whose title said "Intern", which is the same rule
+/// `ScrapePrefs::admits` applies at ingest; every other opportunity is a job.
+pub fn purge_unwanted(
+    conn: &Connection,
+    wanted: Wanted,
+    disabled_sources: &[String],
+) -> Result<usize> {
+    let mut removed = conn.execute(
+        "DELETE FROM items WHERE
+             (item_type = 'Article' AND ?3 = 0)
+          OR (item_type = 'Event' AND ?4 = 0)
+          OR (item_type IN ('Job', 'Internship') AND
+                CASE WHEN item_type = 'Internship' OR seniority = 'Intern'
+                     THEN ?1 = 0 ELSE ?2 = 0 END)",
+        params![wanted.internships, wanted.jobs, wanted.news, wanted.events],
+    )?;
+    for source in disabled_sources {
+        removed += conn.execute(
+            "DELETE FROM items WHERE source_platform = ?1",
+            params![source],
+        )?;
+    }
+    Ok(removed)
+}
+
+/// Forgets these sources' runs, which is how a source is made due again: a
+/// source with no row has never run.
+pub fn forget_source_runs(conn: &Connection, sources: &[String]) -> Result<usize> {
+    let mut removed = 0;
+    for source in sources {
+        removed += conn.execute("DELETE FROM source_runs WHERE source = ?1", params![source])?;
+    }
+    Ok(removed)
 }
 
 // --- item state: saved / dismissed / seen ---
@@ -790,12 +1171,15 @@ pub fn clear_dismissed(conn: &Connection) -> Result<usize> {
 /// the field, interests and skills the user typed in survive. `last_refresh`
 /// is the one setting that goes: it describes the cache, not the user, and
 /// leaving it behind would make the now-empty store look fresh and stop the
-/// next non-forced refresh from running.
+/// next non-forced refresh from running. The run ledger goes for the same
+/// reason, and it is the one that would actually bite: every source would
+/// read as freshly scraped over a cache with nothing in it.
 pub fn clear_data(conn: &Connection) -> Result<()> {
     conn.execute_batch(
         "DELETE FROM item_state;
          DELETE FROM job_details;
          DELETE FROM items;
+         DELETE FROM source_runs;
          DELETE FROM settings WHERE key = 'last_refresh';",
     )?;
     // Deleting rows only frees pages inside the file. The point of the button
@@ -1399,19 +1783,526 @@ mod tests {
         );
     }
 
+    // --- retention ---
+    //
+    // The sweep decides what the cache keeps, and its failure modes are
+    // silent: a rule that deletes too much empties a feed without an error,
+    // and one that deletes too little only shows as a file that never shrinks.
+    // Each rule below is pinned from the side that would hurt.
+
+    use chrono::Duration;
+
+    fn job(title: &str, source: &str, company: &str) -> Item {
+        Item::new(
+            title,
+            source,
+            ItemType::Job,
+            format!("https://x.test/{title}"),
+        )
+        .with_company(company)
+    }
+
+    fn event(title: &str, source: &str) -> Item {
+        Item::new(
+            title,
+            source,
+            ItemType::Event,
+            format!("https://x.test/{title}"),
+        )
+    }
+
+    fn board(source: &str, company: &str) -> Scope {
+        Scope {
+            source: source.into(),
+            company: Some(company.into()),
+        }
+    }
+
+    fn whole(source: &str) -> Scope {
+        Scope {
+            source: source.into(),
+            company: None,
+        }
+    }
+
+    /// One scrape the way `persist` runs it: stamp what came back, then sweep
+    /// with the scopes that vouched for themselves.
+    fn scrape(
+        conn: &mut Connection,
+        at: DateTime<Utc>,
+        returned: &[Item],
+        alive: &[Scope],
+    ) -> SweepStats {
+        save_items_at(conn, returned, at).unwrap();
+        let alive: HashSet<Scope> = alive.iter().cloned().collect();
+        sweep(conn, at, at, &alive, &["Luma"], &Retention::default()).unwrap()
+    }
+
+    fn titles(conn: &Connection) -> Vec<String> {
+        let mut all: Vec<String> = load_items(conn)
+            .unwrap()
+            .into_iter()
+            .map(|i| i.title)
+            .collect();
+        all.sort();
+        all
+    }
+
     #[test]
-    fn prune_drops_only_stale_rows() {
+    fn a_posting_its_board_stops_listing_goes_after_three_misses_a_day_apart() {
         let mut conn = mem();
-        let fresh = Item::new("fresh", "S", ItemType::Article, "https://x.test/f");
-        let stale = Item::new("stale", "S", ItemType::Article, "https://x.test/s")
-            .with_timestamp(Utc::now() - chrono::Duration::days(90));
+        let t0 = Utc::now();
+        let (a, b) = (
+            job("a", "Greenhouse", "Acme"),
+            job("b", "Greenhouse", "Acme"),
+        );
+        let acme = [board("Greenhouse", "Acme")];
+        scrape(&mut conn, t0, &[a, b.clone()], &acme);
 
-        save_items(&mut conn, &[fresh, stale]).unwrap();
-        prune_older_than(&conn, 60).unwrap();
+        for n in 1..=2 {
+            scrape(
+                &mut conn,
+                t0 + Duration::hours(25 * n),
+                std::slice::from_ref(&b),
+                &acme,
+            );
+            assert_eq!(titles(&conn), ["a", "b"], "dropped after only {n} miss(es)");
+        }
+        let stats = scrape(&mut conn, t0 + Duration::hours(75), &[b], &acme);
+        assert_eq!(stats.vanished, 1);
+        assert_eq!(titles(&conn), ["b"]);
+    }
 
-        let all = load_items(&conn).unwrap();
-        assert_eq!(all.len(), 1);
-        assert_eq!(all[0].title, "fresh");
+    /// Without the time guard, three presses of Refresh would spend the whole
+    /// grace period in a minute.
+    #[test]
+    fn refreshing_repeatedly_cannot_spend_the_grace() {
+        let mut conn = mem();
+        let t0 = Utc::now();
+        let (a, b) = (
+            job("a", "Greenhouse", "Acme"),
+            job("b", "Greenhouse", "Acme"),
+        );
+        let acme = [board("Greenhouse", "Acme")];
+        scrape(&mut conn, t0, &[a, b.clone()], &acme);
+
+        for n in 1..=4 {
+            scrape(
+                &mut conn,
+                t0 + Duration::minutes(n),
+                std::slice::from_ref(&b),
+                &acme,
+            );
+        }
+        assert_eq!(titles(&conn), ["a", "b"], "four quick refreshes dropped it");
+
+        // Once a day has genuinely passed, the misses already banked count.
+        scrape(&mut conn, t0 + Duration::hours(25), &[b], &acme);
+        assert_eq!(titles(&conn), ["b"]);
+    }
+
+    /// The board that errored contributed nothing, which looks identical to a
+    /// board that took every posting down. Only a scope that answered may
+    /// accuse its rows of having gone.
+    #[test]
+    fn a_board_that_never_answered_keeps_its_rows() {
+        let mut conn = mem();
+        let t0 = Utc::now();
+        let (a, other) = (
+            job("a", "Greenhouse", "Acme"),
+            job("o", "Greenhouse", "Other"),
+        );
+        scrape(
+            &mut conn,
+            t0,
+            &[a, other.clone()],
+            &[board("Greenhouse", "Acme"), board("Greenhouse", "Other")],
+        );
+
+        for n in 1..=6 {
+            // Acme's board failed: only Other answered, so only Other is alive.
+            let stats = scrape(
+                &mut conn,
+                t0 + Duration::hours(25 * n),
+                std::slice::from_ref(&other),
+                &[board("Greenhouse", "Other")],
+            );
+            assert_eq!(stats.vanished, 0);
+        }
+        assert_eq!(titles(&conn), ["a", "o"]);
+    }
+
+    #[test]
+    fn a_whole_source_scope_covers_every_employer_under_it() {
+        let mut conn = mem();
+        let t0 = Utc::now();
+        let (x, y) = (
+            job("x", "Simplify", "X Corp"),
+            job("y", "Simplify", "Y Corp"),
+        );
+        scrape(&mut conn, t0, &[x.clone(), y], &[whole("Simplify")]);
+
+        for n in 1..=3 {
+            scrape(
+                &mut conn,
+                t0 + Duration::hours(25 * n),
+                std::slice::from_ref(&x),
+                &[whole("Simplify")],
+            );
+        }
+        assert_eq!(titles(&conn), ["x"]);
+    }
+
+    /// The reason the sweep exists: a role open for ninety days is the one
+    /// still hiring, and used to be deleted for its date.
+    #[test]
+    fn age_alone_never_removes_an_opportunity() {
+        let mut conn = mem();
+        let now = Utc::now();
+        let old = job("old", "Greenhouse", "Acme").with_timestamp(now - Duration::days(90));
+        scrape(&mut conn, now, &[old], &[board("Greenhouse", "Acme")]);
+        assert_eq!(titles(&conn), ["old"]);
+    }
+
+    #[test]
+    fn an_opportunity_goes_a_week_after_its_deadline_not_before() {
+        let mut conn = mem();
+        let now = Utc::now();
+        let at = |days: i64| Some(now + Duration::days(days));
+        let rows = [
+            job("closed", "Greenhouse", "Acme").with_closes_at(at(-8)),
+            job("grace", "Greenhouse", "Acme").with_closes_at(at(-3)),
+            job("open", "Greenhouse", "Acme").with_closes_at(at(3)),
+            job("unknown", "Greenhouse", "Acme"),
+        ];
+        let stats = scrape(&mut conn, now, &rows, &[board("Greenhouse", "Acme")]);
+        assert_eq!(stats.closed, 1);
+        assert_eq!(titles(&conn), ["grace", "open", "unknown"]);
+    }
+
+    /// Most deadlines are found by the detail pass and never reach the `items`
+    /// row, so a sweep that read only that column would keep every one of them.
+    #[test]
+    fn a_deadline_found_by_the_detail_pass_counts() {
+        let mut conn = mem();
+        let now = Utc::now();
+        let late = job("late", "Workday", "Bank");
+        let url = late.url.clone();
+        scrape(&mut conn, now, &[late], &[]);
+
+        let mut detail = JobDetail::with_status(DetailStatus::Ok);
+        detail.closes_at = Some(now - Duration::days(10));
+        save_details(&mut conn, &[(url, detail)]).unwrap();
+
+        let stats = scrape(&mut conn, now, &[], &[]);
+        assert_eq!(stats.closed, 1);
+        assert!(titles(&conn).is_empty());
+    }
+
+    /// Devpost stamps an event with the day it *opened*, which used to be
+    /// pruned on the day it was saved. Luma stamps the day it *starts*.
+    #[test]
+    fn an_event_ends_with_its_deadline_or_its_start_never_its_announcement() {
+        let mut conn = mem();
+        let now = Utc::now();
+        let long_ago = now - Duration::days(90);
+        let rows = [
+            event("hack-open", "Devpost")
+                .with_timestamp(long_ago)
+                .with_closes_at(Some(now + Duration::days(10))),
+            event("hack-over", "Devpost")
+                .with_timestamp(long_ago)
+                .with_closes_at(Some(now - Duration::days(2))),
+            event("hack-nodate", "Devpost").with_timestamp(long_ago),
+            event("luma-past", "Luma").with_timestamp(now - Duration::days(2)),
+            event("luma-soon", "Luma").with_timestamp(now + Duration::days(3)),
+        ];
+        let stats = scrape(&mut conn, now, &rows, &[]);
+        assert_eq!(stats.ended, 2);
+        assert_eq!(titles(&conn), ["hack-nodate", "hack-open", "luma-soon"]);
+    }
+
+    #[test]
+    fn news_is_the_only_thing_that_ages_out_by_date() {
+        let mut conn = mem();
+        let now = Utc::now();
+        let article = |t: &str, days: i64| {
+            Item::new(t, "S", ItemType::Article, format!("https://x.test/{t}"))
+                .with_timestamp(now - Duration::days(days))
+        };
+        let stats = scrape(
+            &mut conn,
+            now,
+            &[
+                article("fresh", 1),
+                article("recent", 59),
+                article("stale", 90),
+            ],
+            &[],
+        );
+        assert_eq!(stats.articles, 1);
+        assert_eq!(titles(&conn), ["fresh", "recent"]);
+    }
+
+    /// The ceiling on silence: whatever else is true of a row, three weeks
+    /// unseen by anything is a row nobody is offering any more.
+    #[test]
+    fn a_row_no_scrape_has_seen_for_three_weeks_goes() {
+        let mut conn = mem();
+        let now = Utc::now();
+        save_items_at(
+            &mut conn,
+            &[job("gone", "Workday", "Bank")],
+            now - Duration::days(22),
+        )
+        .unwrap();
+        save_items_at(
+            &mut conn,
+            &[job("kept", "Workday", "Bank")],
+            now - Duration::days(20),
+        )
+        .unwrap();
+
+        let stats = scrape(&mut conn, now, &[], &[]);
+        assert_eq!(stats.stale, 1);
+        assert_eq!(titles(&conn), ["kept"]);
+    }
+
+    #[test]
+    fn seeing_a_posting_again_clears_its_misses() {
+        let mut conn = mem();
+        let t0 = Utc::now();
+        let (a, b) = (
+            job("a", "Greenhouse", "Acme"),
+            job("b", "Greenhouse", "Acme"),
+        );
+        let acme = [board("Greenhouse", "Acme")];
+        scrape(&mut conn, t0, &[a.clone(), b.clone()], &acme);
+        scrape(
+            &mut conn,
+            t0 + Duration::hours(25),
+            std::slice::from_ref(&b),
+            &acme,
+        );
+        scrape(
+            &mut conn,
+            t0 + Duration::hours(50),
+            std::slice::from_ref(&b),
+            &acme,
+        );
+        // Back before the third miss: the count starts over.
+        scrape(
+            &mut conn,
+            t0 + Duration::hours(75),
+            &[a.clone(), b.clone()],
+            &acme,
+        );
+        scrape(
+            &mut conn,
+            t0 + Duration::hours(100),
+            std::slice::from_ref(&b),
+            &acme,
+        );
+        scrape(&mut conn, t0 + Duration::hours(125), &[b], &acme);
+        assert_eq!(titles(&conn), ["a", "b"]);
+    }
+
+    // --- migration ---
+
+    #[test]
+    fn an_upgrade_counts_as_onboarded_and_a_first_launch_does_not() {
+        let fresh = mem();
+        assert_eq!(
+            get_setting(&fresh, ONBOARDED_KEY).unwrap(),
+            None,
+            "a first launch has to be asked before anything is fetched"
+        );
+
+        // A store as the previous build left it.
+        let old = Connection::open_in_memory().unwrap();
+        migrate(&old).unwrap();
+        old.pragma_update(None, "user_version", 8).unwrap();
+        migrate(&old).unwrap();
+        assert!(
+            get_setting(&old, ONBOARDED_KEY).unwrap().is_some(),
+            "an upgrade would be locked out of its own feed"
+        );
+    }
+
+    #[test]
+    fn a_bump_requeues_job_bank_postings_that_never_found_a_deadline() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        conn.pragma_update(None, "user_version", 8).unwrap();
+        conn.execute_batch(
+            "INSERT INTO job_details (url, status, fetched_at, closes_at) VALUES
+                ('https://www.jobbank.gc.ca/jobsearch/jobposting/1', 'ok', 't', NULL),
+                ('https://www.jobbank.gc.ca/jobsearch/jobposting/2', 'ok', 't', '2030-01-01T00:00:00+00:00'),
+                ('https://boards.example.com/3', 'ok', 't', NULL);",
+        )
+        .unwrap();
+
+        migrate(&conn).unwrap();
+
+        let kept = urls_with_details(&conn).unwrap();
+        assert!(!kept.contains("https://www.jobbank.gc.ca/jobsearch/jobposting/1"));
+        assert!(kept.contains("https://www.jobbank.gc.ca/jobsearch/jobposting/2"));
+        assert!(
+            kept.contains("https://boards.example.com/3"),
+            "only Job Bank is known to have lost its deadline to the old parser"
+        );
+    }
+
+    // --- run ledger ---
+
+    fn run(source: &str, ok: Option<DateTime<Utc>>, error: Option<&str>) -> SourceRun {
+        SourceRun {
+            source: source.into(),
+            category: "opportunities".into(),
+            last_run_at: Utc::now(),
+            ok: ok.is_some(),
+            last_ok_at: ok,
+            last_count: if ok.is_some() { 900 } else { 0 },
+            last_error: error.map(String::from),
+        }
+    }
+
+    #[test]
+    fn a_failing_run_records_the_error_and_keeps_the_last_success() {
+        let mut conn = mem();
+        let worked = Utc::now() - Duration::hours(3);
+        record_runs(&mut conn, &[run("Greenhouse", Some(worked), None)]).unwrap();
+        record_runs(&mut conn, &[run("Greenhouse", None, Some("timed out"))]).unwrap();
+
+        let runs = load_source_runs(&conn).unwrap();
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].last_error.as_deref(), Some("timed out"));
+        assert_eq!(
+            runs[0].last_ok_at.map(|d| d.timestamp()),
+            Some(worked.timestamp()),
+            "the failure erased when it last worked"
+        );
+    }
+
+    // --- purging what the reader switched off ---
+
+    fn all_wanted() -> Wanted {
+        Wanted {
+            internships: true,
+            jobs: true,
+            news: true,
+            events: true,
+        }
+    }
+
+    /// One of everything, so a purge can be read off the titles that remain.
+    fn one_of_each(conn: &mut Connection) {
+        let mut intern_by_title = job("intern-by-title", "Greenhouse", "Acme");
+        intern_by_title.seniority = Some("Intern".into());
+        let rows = [
+            Item::new(
+                "listed-intern",
+                "Simplify",
+                ItemType::Internship,
+                "https://x.test/1",
+            ),
+            intern_by_title,
+            job("plain-job", "Greenhouse", "Acme"),
+            Item::new(
+                "story",
+                "Hacker News",
+                ItemType::Article,
+                "https://x.test/2",
+            ),
+            event("meetup", "Luma"),
+        ];
+        save_items(conn, &rows).unwrap();
+    }
+
+    #[test]
+    fn switching_internships_off_takes_both_kinds_of_intern_and_leaves_jobs() {
+        let mut conn = mem();
+        one_of_each(&mut conn);
+        let wanted = Wanted {
+            internships: false,
+            ..all_wanted()
+        };
+        purge_unwanted(&conn, wanted, &[]).unwrap();
+        assert_eq!(titles(&conn), ["meetup", "plain-job", "story"]);
+    }
+
+    #[test]
+    fn switching_jobs_off_leaves_every_internship() {
+        let mut conn = mem();
+        one_of_each(&mut conn);
+        let wanted = Wanted {
+            jobs: false,
+            ..all_wanted()
+        };
+        purge_unwanted(&conn, wanted, &[]).unwrap();
+        assert_eq!(
+            titles(&conn),
+            ["intern-by-title", "listed-intern", "meetup", "story"]
+        );
+    }
+
+    #[test]
+    fn switching_news_and_events_off_leaves_the_roles() {
+        let mut conn = mem();
+        one_of_each(&mut conn);
+        let wanted = Wanted {
+            news: false,
+            events: false,
+            ..all_wanted()
+        };
+        purge_unwanted(&conn, wanted, &[]).unwrap();
+        assert_eq!(
+            titles(&conn),
+            ["intern-by-title", "listed-intern", "plain-job"]
+        );
+    }
+
+    #[test]
+    fn a_switched_off_source_loses_its_rows_and_nothing_else_does() {
+        let mut conn = mem();
+        one_of_each(&mut conn);
+        let removed = purge_unwanted(&conn, all_wanted(), &["Luma".to_string()]).unwrap();
+        assert_eq!(removed, 1);
+        assert_eq!(
+            titles(&conn),
+            ["intern-by-title", "listed-intern", "plain-job", "story"]
+        );
+    }
+
+    #[test]
+    fn purging_with_everything_wanted_removes_nothing() {
+        let mut conn = mem();
+        one_of_each(&mut conn);
+        assert_eq!(purge_unwanted(&conn, all_wanted(), &[]).unwrap(), 0);
+        assert_eq!(titles(&conn).len(), 5);
+    }
+
+    #[test]
+    fn forgetting_a_run_makes_the_source_due_and_clearing_data_forgets_all() {
+        let mut conn = mem();
+        let now = Some(Utc::now());
+        record_runs(
+            &mut conn,
+            &[run("Greenhouse", now, None), run("Lever", now, None)],
+        )
+        .unwrap();
+
+        assert_eq!(
+            forget_source_runs(&conn, &["Lever".to_string()]).unwrap(),
+            1
+        );
+        assert_eq!(load_source_runs(&conn).unwrap().len(), 1);
+
+        clear_data(&conn).unwrap();
+        assert!(
+            load_source_runs(&conn).unwrap().is_empty(),
+            "an emptied cache would read as freshly scraped"
+        );
     }
 
     fn db_single(conn: &Connection) -> Item {
@@ -1449,15 +2340,16 @@ mod tests {
         }
     }
 
-    /// Bulk enough to span many pages, and old enough for the 60-day prune.
+    /// Bulk enough to span many pages, and old enough for the sweep to take.
+    /// News, because it is the one kind that goes for its date alone.
     fn stale_items(n: usize) -> Vec<Item> {
         (0..n)
             .map(|i| {
                 Item::new(
-                    &format!("Role {i}"),
+                    format!("Story {i}"),
                     "S",
-                    ItemType::Internship,
-                    &format!("https://x.test/{i}"),
+                    ItemType::Article,
+                    format!("https://x.test/{i}"),
                 )
                 .with_timestamp(Utc::now() - chrono::Duration::days(90))
                 .with_content("filler ".repeat(200))
@@ -1492,7 +2384,16 @@ mod tests {
             .unwrap();
         let full = path.size();
 
-        prune_older_than(&conn, 60).unwrap();
+        let now = Utc::now();
+        sweep(
+            &mut conn,
+            now,
+            now,
+            &HashSet::new(),
+            &[],
+            &Retention::default(),
+        )
+        .unwrap();
         incremental_vacuum(&conn).unwrap();
         conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")
             .unwrap();

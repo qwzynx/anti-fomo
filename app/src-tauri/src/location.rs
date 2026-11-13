@@ -99,6 +99,17 @@ pub fn clean_location(raw: &str) -> String {
         .to_string()
 }
 
+/// The places a reader can say they are looking in: a country tag, or a hub
+/// city. Exactly the `location_tags` that [`normalize_location`] emits for a
+/// place, so choosing one matches by equality. "Remote" and "Global /
+/// Multi-region" are tags too, but neither is somewhere a person lives.
+pub fn region_tags() -> Vec<&'static str> {
+    ["Canada", "USA"]
+        .into_iter()
+        .chain(CITY_KEYWORDS.iter().map(|(city, _)| *city))
+        .collect()
+}
+
 /// Maps a raw location string to the tags the UI filters on:
 /// modality (Remote/Hybrid/On-site), hub cities, and region.
 pub fn normalize_location(raw: Option<&str>) -> Vec<String> {
@@ -201,5 +212,19 @@ mod tests {
         assert_eq!(tags[0], "Remote");
         assert_eq!(tags[1], "Hybrid");
         assert!(tags.contains(&"Waterloo".to_string()));
+    }
+
+    /// Every offered region must be a tag some input can actually produce, or
+    /// choosing it would silently match nothing.
+    #[test]
+    fn every_offered_region_is_a_tag_the_tagger_emits() {
+        for region in region_tags() {
+            let probe = region.to_lowercase();
+            let tags = normalize_location(Some(&probe));
+            assert!(
+                tags.iter().any(|t| t == region),
+                "{region} is never emitted: {tags:?}"
+            );
+        }
     }
 }

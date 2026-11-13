@@ -47,6 +47,12 @@ npm run tauri dev
 The window opens immediately on whatever is cached and refreshes in the
 background, so a cold start never blocks on the network.
 
+The first time it opens it **asks before it fetches**: what to keep up with
+(internships, jobs, news, events), which interests matter, and where and at what
+level. Nothing is requested until that is answered, and a kind switched off is
+never contacted at all. An install that predates the form is offered it once and
+may skip it; Settings → What to scrape changes any of it later.
+
 ## Interface
 
 Three destinations — Today, Roles, Saved — and Settings as a tool rather than a
@@ -79,17 +85,27 @@ on hover: there is no hover on Android.
 
 ## How the data flows
 
-On launch, and whenever the cache is more than 10 minutes old, all seventeen
-scrapers run concurrently via `reqwest`. A failing source logs and yields
-nothing rather than taking the refresh down with it. Results are deduplicated by
+On launch, the sources the reader asked for that are *due* run concurrently via
+`reqwest`. A source is due when its last run is older than its category's
+window — news 30 minutes, roles 6 hours, events 12 hours — or 15 minutes after a
+failure; the Refresh button ignores the window but never the reader's choices.
+A failing source logs and yields nothing rather than taking the refresh down
+with it, and is reported per source as it finishes (`feed:progress`). Results are deduplicated by
 URL, classified by keyword, tagged with location facets, ranked, and written to
 SQLite at the platform app-data directory. The UI reads only from that
 database, which is why the feed works offline.
 
-A full refresh lands roughly 1,650 items, about 1,150 of them jobs and
-internships — the category the app exists for. Per-source limits are set against
-what each endpoint actually serves rather than guessed, and the sources that
-page (Job Bank, Devpost) are walked until they run dry.
+A full refresh lands roughly 19,000 items, about 18,700 of them roles (measured
+2026-11-12, all sources on). Per-source limits are set against what each
+endpoint actually serves rather than guessed, and the sources that page (Job
+Bank, Devpost) are walked until they run dry.
+
+**What is kept is decided by whether it is still on offer, not by its age.** A
+role open for ninety days is the one still hiring. A posting leaves when its
+source has stopped listing it for three scrapes at least a day apart, when its
+deadline passed a week ago, or when its event is over; only news ages out by
+date. Where a cap is unavoidable it keeps the best rather than the newest:
+employers on the tier list first, software roles first, then by fit.
 
 **News**
 
@@ -155,7 +171,7 @@ own marks live in a separate durable `item_state` table keyed by URL:
 - **seen** dims an already-opened card and applies the −3 ranking penalty.
 
 `item_state` is created with `IF NOT EXISTS` and is never dropped by a schema
-bump (currently `user_version` 6). Orphan rows are pruned after each refresh.
+bump (currently `user_version` 9). Orphan rows are pruned after each refresh.
 
 ## Job descriptions
 
@@ -271,10 +287,16 @@ for the one posting the pane is showing.
 | --- | --- |
 | `get_feed(major?)` | top 400 ranked list rows |
 | `get_internships(major?)` | every job/internship as a list row, ranked |
+| `get_last_call(major?)` | strong postings closing within a week, soonest first, capped |
 | `get_item_detail(url)` | one posting in full — description, sections, score breakdown |
 | `get_saved()` | starred items, newest star first |
 | `feed_status()` | last refresh, counts, staleness, per-source health |
-| `refresh(force)` | items written, or `null` if the cache was fresh |
+| `refresh(force)` | items written, or `null` if nothing ran (not yet onboarded, nothing due, or one already running) |
+| `get_onboarding_state()` | `"needed"` (first launch), `"offered"` (existing install), or `"done"` |
+| `complete_onboarding(prefs, interests, homeRegion, seniority)` | saves the setup form's answers; the caller then starts the scrape |
+| `skip_onboarding()` | dismisses the form for an existing install |
+| `get_scrape_prefs()` / `set_scrape_prefs(prefs)` | what to collect; setting it deletes what is no longer wanted |
+| `list_setup_options()` | the seniority bands and region tags Rust matches on |
 | `set_saved(item, saved)` | stars/unstars; the whole item is sent so it can be snapshotted |
 | `set_dismissed(url, dismissed)` | hides or unhides one item |
 | `mark_seen(url)` | records an open |

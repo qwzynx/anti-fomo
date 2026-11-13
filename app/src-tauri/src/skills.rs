@@ -817,7 +817,7 @@ pub fn extract(item: &Item) -> Vec<String> {
 /// the memo filled, cleared, and filled again *within a single ranking pass*
 /// and never served a hit: `personalize` measured 2,264 ms cold and 2,250 ms
 /// warm over the real database. A memo that never hits is worse than no memo,
-/// so the number has to stay ahead of `RETENTION_DAYS` worth of postings.
+/// so the number has to stay ahead of the postings the cache can hold.
 const MEMO_CAPACITY: usize = 100_000;
 
 fn memo() -> &'static Mutex<HashMap<String, Vec<Demand>>> {

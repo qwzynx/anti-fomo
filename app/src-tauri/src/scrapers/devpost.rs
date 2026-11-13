@@ -59,8 +59,10 @@ fn strip_prize(raw: &str) -> String {
 ///
 /// Two shapes occur: `"May 19 - Aug 17, 2026"` spells out both months, while
 /// `"Aug 04 - 31, 2026"` omits the repeated month on the right. The deadline is
-/// what matters for ranking — the recency term measures distance from now, so a
-/// hackathon closing this week outranks one closing in three months.
+/// what matters for both retention and ranking: `timestamp` on a Devpost row is
+/// the day submissions *opened*, which says nothing about whether it is still
+/// taking entries, so the sweep ends an event on this date and the urgency term
+/// scores it from this date.
 /// The left half of the same range — when submissions opened, which is the
 /// date the recency term wants. A range we cannot read leaves the caller to
 /// fall back rather than guessing.

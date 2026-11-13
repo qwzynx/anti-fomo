@@ -43,6 +43,7 @@ export {
   LoaderCircle,
   Mail,
   MapPin,
+  Minus,
   Monitor,
   Moon,
   Newspaper,

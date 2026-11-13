@@ -12,12 +12,13 @@ use chrono::{DateTime, Utc};
 use serde::Deserialize;
 
 use super::super::employers::{Board, Employer};
-use super::fan_out;
+use super::{fan_out, keep_best};
 use crate::models::{Item, ItemType};
 use crate::scrapers::Scraper;
 
-/// Anduril and SpaceX each publish over two thousand roles. Newest first, so
-/// the cap keeps the part a reader would ever reach.
+/// Anduril and SpaceX each publish over two thousand roles. Only three boards
+/// in the registry exceed this, and for those `keep_best` spends it on the
+/// software roles, newest first.
 const MAX_PER_EMPLOYER: usize = 400;
 
 pub struct GreenhouseBoards;
@@ -81,19 +82,15 @@ async fn fetch_board(employer: &'static Employer, client: reqwest::Client) -> Re
         .json()
         .await?;
 
-    let mut jobs = board.jobs;
-    // The API returns no useful order, so sort before capping rather than
-    // truncating an arbitrary slice. Cached key, not `sort_by`: `posted`
-    // parses a date, and a comparator would re-parse both sides on every
-    // comparison instead of once per job.
-    jobs.sort_by_cached_key(|job| std::cmp::Reverse(posted(job)));
-    jobs.truncate(MAX_PER_EMPLOYER);
-
-    Ok(jobs
+    // The API returns no useful order, so the cap has to choose rather than
+    // truncate whatever came first. See `keep_best` for what it chooses.
+    let items = board
+        .jobs
         .into_iter()
         .filter(|j| !j.absolute_url.is_empty() && !j.title.trim().is_empty())
         .map(|job| to_item(employer.name, job))
-        .collect())
+        .collect();
+    Ok(keep_best(items, MAX_PER_EMPLOYER))
 }
 
 /// Greenhouse stamps `updated_at` on edits, so `first_published` is the real

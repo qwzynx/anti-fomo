@@ -21,23 +21,38 @@
 //! brotli enabled) and are only fetched on an actual refresh, which is not on
 //! a timer.
 
+use std::collections::HashMap;
+
 use anyhow::Result;
 use async_trait::async_trait;
 use chrono::{DateTime, TimeZone, Utc};
 use serde::Deserialize;
 
 use super::Scraper;
+use crate::companies;
 use crate::models::{Item, ItemType};
 
-/// Newest active listings kept per repo.
+/// Active listings kept per repo.
 ///
-/// Measured on a live fetch: 1,946 / 1,364 / 3,162 active rows, of which
-/// 1,458 / 0 / 2,343 fall inside the 60-day retention window that
-/// `prune_older_than` enforces anyway. 600 keeps a full window's worth of the
-/// two live repos without letting one source contribute several thousand rows:
-/// round-robin diversification protects the first page but not the size of
-/// the cache.
-const MAX_LISTINGS: usize = 600;
+/// Measured on a live fetch (2026-11): 2,243 / 5,399 / 3,252 open rows, of
+/// which only 1,004 and 472 (Simplify, New Grad) are from an employer in the
+/// tier table, and 307 and 243 of those were posted more than 60 days ago.
+/// Keeping the *newest* 600 reached back about ten days, and threw away every
+/// older posting from the employers a reader most wants — they are not stale,
+/// they are the roles that stay open. So the cap is applied by [`select`],
+/// which keeps every tiered employer's listings whatever their age and fills
+/// the rest with the freshest, and the number is sized to hold all of the
+/// first with room left for the second. The cap still exists because
+/// round-robin diversification protects the first page but not the size of the
+/// cache.
+const MAX_LISTINGS: usize = 1_500;
+
+/// A repo none of whose rows has been touched for this long is not being
+/// maintained. Its `active` flags are then the last thing its maintainers
+/// believed, not a statement about today, and a source that keeps re-listing
+/// them looks alive to the cache forever. Measured: Simplify and New Grad
+/// were updated within the hour, Pitt CSC 75 days ago.
+const DORMANT_AFTER_DAYS: i64 = 30;
 
 /// Rows the repos attribute to Simplify itself carry a posting id that
 /// resolves on simplify.jobs; community-contributed rows 404 there. Measured
@@ -110,6 +125,10 @@ struct Listing {
     source: Option<String>,
     #[serde(default)]
     date_posted: i64,
+    /// Bumped by the maintainers' tooling whenever a row is touched, including
+    /// when it is closed. Only used as a pulse for the repo as a whole.
+    #[serde(default)]
+    date_updated: i64,
     #[serde(default)]
     active: bool,
     #[serde(default)]
@@ -125,6 +144,34 @@ impl Listing {
     fn timestamp(&self) -> Option<DateTime<Utc>> {
         Utc.timestamp_opt(self.date_posted, 0).single()
     }
+}
+
+/// How many days it has been since anything in the list was updated, if that
+/// is longer than [`DORMANT_AFTER_DAYS`]. A list that carries no update times
+/// at all cannot be judged, and is not called dormant.
+fn dormant_for_days(listings: &[Listing], now: DateTime<Utc>) -> Option<i64> {
+    let newest = listings
+        .iter()
+        .map(|l| l.date_updated)
+        .max()
+        .filter(|&t| t > 0)?;
+    let days = (now.timestamp() - newest) / 86_400;
+    (days > DORMANT_AFTER_DAYS).then_some(days)
+}
+
+/// Which open listings to keep when there are more than `cap`: every employer
+/// in the tier table first, strongest tier first, then everyone else, each
+/// newest first. Tiers come from the shipped table only — a scraper has no
+/// reader profile — which is the right amount of judgement to apply before the
+/// ranker has seen the row.
+fn select(mut open: Vec<Listing>, cap: usize) -> Vec<Listing> {
+    let no_overrides = HashMap::new();
+    open.sort_by_cached_key(|l| {
+        let tier = companies::tier(l.company_name.as_deref().unwrap_or(""), &no_overrides);
+        (tier.unwrap_or(u8::MAX), std::cmp::Reverse(l.date_posted))
+    });
+    open.truncate(cap);
+    open
 }
 
 /// Postings list every office they are open in; some name more than fifty.
@@ -149,11 +196,19 @@ impl Scraper for GithubInternships {
     async fn fetch(&self, client: &reqwest::Client) -> Result<Vec<Item>> {
         let listings: Vec<Listing> = client.get(self.url).send().await?.json().await?;
 
-        let mut open: Vec<Listing> = listings.into_iter().filter(Listing::is_open).collect();
+        if let Some(days) = dormant_for_days(&listings, Utc::now()) {
+            return Err(super::Dormant(format!(
+                "repository dormant: nothing in it has been updated for {days} days"
+            ))
+            .into());
+        }
+
         // The file is not in date order, so the cap has to sort first or it
-        // would keep an arbitrary slice rather than the freshest one.
-        open.sort_by_key(|l| std::cmp::Reverse(l.date_posted));
-        open.truncate(MAX_LISTINGS);
+        // would keep an arbitrary slice.
+        let open = select(
+            listings.into_iter().filter(Listing::is_open).collect(),
+            MAX_LISTINGS,
+        );
 
         Ok(open
             .into_iter()
@@ -252,6 +307,88 @@ mod tests {
         assert!(
             !listing(r#"{"url":"","date_posted":1,"active":true,"is_visible":true}"#).is_open()
         );
+    }
+
+    fn open_row(company: &str, date_posted: i64) -> Listing {
+        listing(&format!(
+            r#"{{"url":"https://e.com/{company}/{date_posted}","company_name":"{company}",
+                "date_posted":{date_posted},"active":true,"is_visible":true}}"#
+        ))
+    }
+
+    /// The reason the cap is not "newest N": a ninety-day-old posting at an
+    /// employer on the tier list is one worth showing, and a day-old one at an
+    /// unknown employer is not worth more.
+    #[test]
+    fn a_tiered_employer_outlasts_a_fresher_unknown_one_under_the_cap() {
+        let kept = select(
+            vec![
+                open_row("Nobody Corp", 3_000),
+                open_row("Google", 1_000),
+                open_row("Unknown Ltd", 2_000),
+            ],
+            2,
+        );
+        let companies: Vec<_> = kept
+            .iter()
+            .filter_map(|l| l.company_name.as_deref())
+            .collect();
+        assert_eq!(companies, ["Google", "Nobody Corp"]);
+    }
+
+    #[test]
+    fn within_a_tier_the_cap_keeps_the_newest() {
+        let kept = select(
+            vec![
+                open_row("Google", 10),
+                open_row("Google", 30),
+                open_row("Google", 20),
+            ],
+            2,
+        );
+        let stamps: Vec<_> = kept.iter().map(|l| l.date_posted).collect();
+        assert_eq!(stamps, [30, 20]);
+    }
+
+    #[test]
+    fn a_cap_larger_than_the_list_keeps_everything() {
+        assert_eq!(
+            select(vec![open_row("Google", 1), open_row("Zed", 2)], 100).len(),
+            2
+        );
+    }
+
+    /// Without this, dropping the age prune would have turned a repo nobody has
+    /// touched since the summer into permanent entries: the file keeps listing
+    /// them, so the cache would keep seeing them.
+    #[test]
+    fn a_repo_nobody_has_touched_in_a_month_is_dormant() {
+        let now = Utc.timestamp_opt(2_000_000_000, 0).unwrap();
+        let updated = |days_ago: i64| {
+            let t = now.timestamp() - days_ago * 86_400;
+            listing(&format!(
+                r#"{{"url":"https://e.com/j","date_posted":1,"date_updated":{t},
+                    "active":true,"is_visible":true}}"#
+            ))
+        };
+        assert_eq!(
+            dormant_for_days(&[updated(75), updated(120)], now),
+            Some(75)
+        );
+        assert_eq!(dormant_for_days(&[updated(75), updated(2)], now), None);
+        assert_eq!(
+            dormant_for_days(&[updated(30)], now),
+            None,
+            "the boundary is exclusive"
+        );
+        assert_eq!(dormant_for_days(&[updated(31)], now), Some(31));
+    }
+
+    #[test]
+    fn a_list_with_no_update_times_cannot_be_judged_dormant() {
+        let now = Utc.timestamp_opt(2_000_000_000, 0).unwrap();
+        assert_eq!(dormant_for_days(&[open_row("Google", 1)], now), None);
+        assert_eq!(dormant_for_days(&[], now), None);
     }
 
     #[test]

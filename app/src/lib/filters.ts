@@ -64,6 +64,7 @@ export const HUB_DISCIPLINES = ["All", "Software Engineering", "General"];
 
 export const HUB_SORTS = [
   "Best match",
+  "Last call",
   "Newest posted",
   "Closing soonest",
   "Closing latest",
@@ -75,6 +76,7 @@ export type HubSort = (typeof HUB_SORTS)[number];
 /** One-line explanation shown under each option in the sort menu. */
 export const HUB_SORT_BLURBS: Record<HubSort, string> = {
   "Best match": "Personalized to your interests and skills",
+  "Last call": "Strong matches closing soon first, then everything else with a deadline",
   "Newest posted": "Most recently seen first",
   "Closing soonest": "Application deadlines coming up first",
   "Closing latest": "Application deadlines coming up last",
@@ -125,6 +127,21 @@ export function sortItems(items: ScrapedItem[], sort: HubSort): ScrapedItem[] {
   switch (sort) {
     case "Newest posted":
       return byKey((i) => i.timestamp, (a, b) => (a < b ? 1 : a > b ? -1 : 0));
+    case "Last call": {
+      // Three tiers, from what a row carries (`merit` is not in the list payload): the postings
+      // Rust flagged as strong and closing, by date; then anything else with a live deadline,
+      // by date; then everything with none (or already closed), by relevance. Within a tier
+      // the better match wins a tie.
+      const better = (i: ScrapedItem) => -(i.relevance_score ?? 0);
+      return byKey(
+        (i): [number, number, number] => {
+          const t = closesAtUpcoming(i);
+          if (t === null) return [2, 0, better(i)];
+          return [i.last_call ? 0 : 1, t, better(i)];
+        },
+        (a, b) => a[0] - b[0] || a[1] - b[1] || a[2] - b[2],
+      );
+    }
     case "Closing soonest":
       return byKey(closesAtUpcoming, (a, b) => a - b);
     case "Closing latest":

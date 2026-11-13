@@ -2,7 +2,7 @@
   import { logoFor, timeAgo, type ScrapedItem } from "$lib/api";
   import { feed } from "$lib/feed.svelte";
   import { Bookmark, BookmarkCheck, X, iconForType } from "$lib/icons";
-  import { closesLabel, closesSoon, monthDay, splitTitle, typeBadgeClass } from "$lib/item";
+  import { closesLabel, closesSoon, eventDate, monthDay, splitTitle, typeBadgeClass } from "$lib/item";
 
   // One result, everywhere a result is listed. The redesign has no card grid
   // and no density switch, so this is the only shape a result takes — which is
@@ -53,7 +53,7 @@
   // fresh formatter per `toLocaleString` call with options, which is one of the
   // slowest things a row can do — and every row was paying it whether or not it
   // rendered a date.
-  const date = $derived(shape === "date" ? monthDay(item.timestamp) : null);
+  const date = $derived(shape === "date" ? monthDay(eventDate(item)) : null);
 
   /** The fixed column: where it is, or failing that where it came from. */
   const metaText = $derived(
@@ -71,7 +71,9 @@
 
   /** A role's own deadline, when its page published one. */
   const deadline = $derived(isRole ? closesLabel(item) : null);
-  const urgent = $derived(isRole && closesSoon(item));
+  // A last call is flagged by Rust a week out, so it is called out in the urgent colour even
+  // before the three-day mark `closesSoon` uses.
+  const urgent = $derived(isRole && (closesSoon(item) || item.last_call === true));
 
   /**
    * Everything the dense variant has room for, on one line: company/source and
@@ -163,7 +165,7 @@
     <!-- Below sm the two fixed columns have nowhere to go, so they fold in. -->
     {#if !dense && metaText}
       <p class="truncate text-xs text-muted sm:hidden">
-        {metaText} · {timeAgo(item.timestamp)}{#if deadline}{" · "}<span
+        {metaText}{#if item.item_type !== "Event"}{" · "}{timeAgo(item.timestamp)}{/if}{#if deadline}{" · "}<span
             class={urgent ? "font-semibold text-danger" : ""}>{deadline}</span
           >{/if}
       </p>

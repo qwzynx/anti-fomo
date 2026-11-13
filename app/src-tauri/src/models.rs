@@ -239,6 +239,18 @@ pub struct Item {
     /// indistinguishable from an arbitrary one.
     #[serde(default)]
     pub score_breakdown: Vec<ScoreTerm>,
+    /// What the posting is worth regardless of the clock: every scoring term
+    /// except recency, a deadline and having already been opened. The deadline
+    /// boost is scaled by it, and the detail queue is ordered by it. Derived on
+    /// read and not part of a list row — the list only needs the verdict below.
+    #[serde(default)]
+    pub merit: Option<f64>,
+    /// A really good posting whose deadline is close: merit above the bar, and
+    /// closing within [`rank::LAST_CALL_DAYS`](crate::rank::LAST_CALL_DAYS).
+    /// Derived on read against the whole ranked set, so it is never stored, and
+    /// a saved snapshot's copy is stale the moment it is written.
+    #[serde(default)]
+    pub last_call: bool,
 
     // The fetched posting, joined from `job_details` on read. Absent for the
     // postings the chain in `scrapers::details` could not serve — those report
@@ -295,6 +307,8 @@ impl Item {
             matched_skills: Vec::new(),
             company_tier: None,
             score_breakdown: Vec::new(),
+            merit: None,
+            last_call: false,
             description: None,
             requirements: None,
             responsibilities: None,

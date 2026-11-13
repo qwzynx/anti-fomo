@@ -3,10 +3,27 @@ import { SvelteSet } from "svelte/reactivity";
 // Namespaced: several store methods below intentionally share a name with the
 // command they wrap, and `api.setSaved(…)` makes it obvious which is which.
 import * as api from "./api";
-import type { FeedStatus, ScrapedItem, SkillCategory } from "./api";
+import type {
+  FeedStatus,
+  OnboardingState,
+  ScrapedItem,
+  ScrapePrefs,
+  ScrapeProgress,
+  SetupOptions,
+  SkillCategory,
+} from "./api";
 import { MIN_SKILLS_TO_SHOW } from "./skills";
 
 const DEFAULT_MAJOR = "Software Engineering";
+
+/** Everything wanted, which is what a reader who has said nothing gets. */
+const DEFAULT_PREFS: ScrapePrefs = {
+  internships: true,
+  jobs: true,
+  news: true,
+  events: true,
+  disabled_sources: [],
+};
 
 /**
  * How long after the last skill tap the feed is re-ranked. Long enough to
@@ -33,6 +50,8 @@ const SKILL_RERANK_DELAY_MS = 1200;
 let items = $state.raw<ScrapedItem[]>([]);
 let internships = $state.raw<ScrapedItem[]>([]);
 let saved = $state.raw<ScrapedItem[]>([]);
+/** Strong postings closing within a week. Its own list: see `api.getLastCall`. */
+let lastCall = $state.raw<ScrapedItem[]>([]);
 let status = $state<FeedStatus | null>(null);
 let major = $state(DEFAULT_MAJOR);
 let interests = $state.raw<string[]>([]);
@@ -51,6 +70,23 @@ const skillSet = new SvelteSet<string>();
 // nothing and never having opened it must look different — otherwise the
 // setup prompt never goes away.
 let skillsSetupAt = $state<string | null>(null);
+
+// --- what to scrape ---
+//
+// `unknown` until Rust has answered, so a returning reader never sees the form
+// flash for the instant before their state arrives. `needed` blocks everything:
+// nothing has been fetched and nothing will be until it is answered.
+let onboarding = $state<"unknown" | OnboardingState>("unknown");
+let prefs = $state.raw<ScrapePrefs>(DEFAULT_PREFS);
+let setupOptions = $state.raw<SetupOptions>({ seniority: [], regions: [] });
+let homeRegion = $state<string | null>(null);
+let targetSeniority = $state.raw<string[]>([]);
+/** The form re-opened from Settings, by someone who has long since answered it. */
+let setupOpen = $state(false);
+/** One entry per source that has finished in the current refresh. */
+let progress = $state.raw<ScrapeProgress[]>([]);
+/** Callers waiting for the refresh that is already under way to end. */
+let idleWaiters: Array<() => void> = [];
 let skillsFormOpen = $state(false);
 let loading = $state(true);
 let refreshing = $state(false);
@@ -65,6 +101,23 @@ let reloading = false;
 const detailCache = new Map<string, ScrapedItem | null>();
 const DETAIL_CACHE_LIMIT = 200;
 
+/** A JSON array stored as a setting, tolerating a missing or corrupt value. */
+function parseList(raw: string | null): string[] {
+  if (!raw) return [];
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.filter((v): v is string => typeof v === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+/** Resolves when no refresh is running — immediately if none is. */
+function whenIdle(): Promise<void> {
+  if (!refreshing) return Promise.resolve();
+  return new Promise((resolve) => idleWaiters.push(resolve));
+}
+
 /** Replaces a set's contents in one pass, without notifying per element. */
 function reset(set: SvelteSet<string>, values: Iterable<string>) {
   set.clear();
@@ -72,15 +125,17 @@ function reset(set: SvelteSet<string>, values: Iterable<string>) {
 }
 
 async function loadAll() {
-  const [feedItems, internshipItems, savedItems, st] = await Promise.all([
+  const [feedItems, internshipItems, savedItems, lastCallItems, st] = await Promise.all([
     api.getFeed(major),
     api.getInternships(major),
     api.getSaved(),
+    api.getLastCall(major),
     api.feedStatus(),
   ]);
   items = feedItems;
   internships = internshipItems;
   saved = savedItems;
+  lastCall = lastCallItems;
   status = st;
   refreshing = st.refreshing;
   // A reload means a scrape or an enrichment pass landed, so a posting the
@@ -94,7 +149,7 @@ async function loadAll() {
     savedItems.map((i) => i.url),
   );
   const seen: string[] = [];
-  for (const list of [feedItems, internshipItems, savedItems]) {
+  for (const list of [feedItems, internshipItems, savedItems, lastCallItems]) {
     for (const item of list) if (item.seen) seen.push(item.url);
   }
   reset(seenUrls, seen);
@@ -138,6 +193,30 @@ export const feed = {
   },
   get saved() {
     return saved;
+  },
+  get onboarding() {
+    return onboarding;
+  },
+  get prefs() {
+    return prefs;
+  },
+  get setupOptions() {
+    return setupOptions;
+  },
+  get homeRegion() {
+    return homeRegion;
+  },
+  get targetSeniority() {
+    return targetSeniority;
+  },
+  get setupOpen() {
+    return setupOpen;
+  },
+  get progress() {
+    return progress;
+  },
+  get lastCall() {
+    return lastCall;
   },
   get status() {
     return status;
@@ -256,17 +335,46 @@ export const feed = {
       // a manual refresh.
       await Promise.all([
         listen<number>("feed:updated", () => scheduleReload()),
-        listen<boolean>("feed:refreshing", (e) => (refreshing = e.payload)),
+        listen<boolean>("feed:refreshing", (e) => {
+          refreshing = e.payload;
+          // A new refresh starts with an empty list; the end of one releases
+          // anything that was waiting for it.
+          if (e.payload) progress = [];
+          else for (const wake of idleWaiters.splice(0)) wake();
+        }),
+        listen<ScrapeProgress>("feed:progress", (e) => (progress = [...progress, e.payload])),
       ]);
 
-      const [savedMajor, chosen, offered, mySkills, catalog, setupAt] = await Promise.all([
+      const [
+        savedMajor,
+        chosen,
+        offered,
+        mySkills,
+        catalog,
+        setupAt,
+        gate,
+        wanted,
+        options,
+        region,
+        levels,
+      ] = await Promise.all([
         api.getSetting("major"),
         api.getInterests(),
         api.listInterests(),
         api.getSkills(),
         api.listSkills(),
         api.getSetting("skills_setup_at"),
+        api.getOnboardingState(),
+        api.getScrapePrefs(),
+        api.listSetupOptions(),
+        api.getSetting("home_region"),
+        api.getSetting("target_seniority"),
       ]);
+      onboarding = gate;
+      prefs = wanted;
+      setupOptions = options;
+      homeRegion = region && region.trim() ? region : null;
+      targetSeniority = parseList(levels);
       major = savedMajor ?? DEFAULT_MAJOR;
       interests = chosen;
       availableInterests = offered;
@@ -348,6 +456,77 @@ export const feed = {
     const at = new Date().toISOString();
     skillsSetupAt = at;
     await api.setSetting("skills_setup_at", at);
+  },
+
+  // --- the setup form ---
+
+  /** Saves the form's answers. Does not scrape: see `scrapeNow`. */
+  async saveSetup(
+    wanted: ScrapePrefs,
+    chosenInterests: string[],
+    region: string | null,
+    levels: string[],
+  ) {
+    await api.completeOnboarding(wanted, chosenInterests, region, levels);
+    prefs = wanted;
+    interests = chosenInterests;
+    homeRegion = region;
+    targetSeniority = levels;
+    // So the progress list can name the sources that are about to run.
+    status = await api.feedStatus();
+  },
+
+  /**
+   * Scrapes what was just asked for and loads the result, resolving once the
+   * feed is on screen. Calls Rust directly rather than `refresh`, which gives
+   * up if anything is already running: an upgrader's launch scrape may still be
+   * in flight when they press Start, and the right thing then is to follow it,
+   * not to return as though it had finished.
+   */
+  async scrapeNow(): Promise<number | null> {
+    error = null;
+    progress = [];
+    const written = await api.refreshFeed(true);
+    if (written === null) await whenIdle();
+    await loadAll();
+    return written;
+  },
+
+  /** Dismisses the form, whichever way it was reached. */
+  finishSetup() {
+    onboarding = "done";
+    setupOpen = false;
+  },
+
+  /** An existing install waving the form away. */
+  async skipSetup() {
+    await api.skipOnboarding();
+    this.finishSetup();
+  },
+
+  openSetup() {
+    setupOpen = true;
+  },
+
+  closeSetup() {
+    setupOpen = false;
+  },
+
+  /**
+   * Changes what is scraped, from Settings. Rust deletes whatever is no longer
+   * wanted straight away; a plain refresh then fetches only what newly became
+   * wanted, since everything else is still inside its freshness window.
+   */
+  async setPrefs(next: ScrapePrefs) {
+    error = null;
+    try {
+      await api.setScrapePrefs(next);
+      prefs = next;
+      await loadAll();
+      void this.refresh(false);
+    } catch (e) {
+      error = String(e);
+    }
   },
 
   async refresh(force = false) {
