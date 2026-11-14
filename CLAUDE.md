@@ -120,7 +120,8 @@ Everything ships from `/app`:
     with the entry that speaks to the posting, and Experience and Education
     never do — a reordered work history reads as a mistake.
     **`layout` emits positioned boxes and has two consumers** —
-    `pdf.rs` writes them into a PDF and `ResumePreview.svelte` draws the very
+    `pdf.rs` writes them into a PDF and `ResumeSheet.svelte` (one page, inside
+    the paged `ResumePreview` viewer) draws the very
     same boxes as SVG. A résumé's whole job is fitting a page, so a preview
     laid out separately from the file would drift about where a line breaks;
     one pass, two backends, is what makes the preview *be* the file. Text is

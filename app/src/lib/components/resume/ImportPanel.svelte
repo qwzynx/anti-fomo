@@ -58,10 +58,10 @@
           Don't have a resume.json?
         </p>
         <p class="mt-1 text-xs text-muted">
-          Copy this prompt into a chat with Claude, attach the CVs, notes and project
-          write-ups you already have there, and paste back the JSON it returns. It asks for
-          eight to twelve bullets a role — one aimed at backend, one at security, one at
-          scale, and so on — because that surplus is what each posting gets tailored from.
+          Copy this prompt into a chat with Claude, attach the CVs, notes and write-ups you
+          already have, and paste back the JSON it returns. It asks for more bullets than fit
+          on a page, each showing a different side of the role, because that surplus is what
+          each posting gets tailored from.
         </p>
       </div>
       <div class="flex shrink-0 gap-2">

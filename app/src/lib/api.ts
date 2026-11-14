@@ -333,7 +333,7 @@ export function timeAgo(iso: string): string {
 // --- résumé ---
 // The Rust `resume` module's types, field-for-field. `layout_resume` returns
 // positioned boxes rather than HTML because the same boxes are what the PDF
-// writer draws — see `ResumePreview.svelte` and `resume/layout.rs`.
+// writer draws — see `ResumeSheet.svelte` and `resume/layout.rs`.
 
 export type ResumeFamily = "serif" | "sans";
 export type ResumeFontStyle = "regular" | "bold" | "italic" | "bolditalic";

@@ -58,15 +58,6 @@
 
   const doc = $derived(resume.doc);
   const view = $derived(resume.view);
-  /** The fill gauge answers the only question anyone editing a résumé has. */
-  const pageLabel = $derived(
-    view
-      ? view.pages.length === 1
-        ? `1 page · ${Math.round(view.fill * 100)}% full`
-        : `${view.pages.length} pages`
-      : "",
-  );
-
   function touch() {
     resume.touch();
   }
@@ -281,41 +272,6 @@
                 onChange={(next) => resume.setTheme(next)}
               />
             {/if}
-            <div class="mt-6 border-t border-line-soft pt-4">
-              <p class="mb-2 text-xs font-semibold tracking-wide text-subtle uppercase">
-                Backup & transfer
-              </p>
-              <div class="flex flex-wrap gap-2">
-                <button
-                  onclick={exportJson}
-                  disabled={busy === "json"}
-                  class="inline-flex items-center gap-1.5 rounded-md border border-line px-3 py-2 text-sm font-semibold hover:border-brand disabled:opacity-50"
-                >
-                  {#if busy === "json"}<Loader size={14} class="animate-spin" />{:else}<Download size={14} />{/if}
-                  Export resume.json
-                </button>
-                <button
-                  onclick={() => (importing = !importing)}
-                  class="inline-flex items-center gap-1.5 rounded-md border border-line px-3 py-2 text-sm font-semibold hover:border-brand"
-                >
-                  <Upload size={14} />
-                  Import
-                </button>
-              </div>
-              <p class="mt-2 text-xs text-subtle">
-                Everything is on this device only. An export is the one copy that is not.
-              </p>
-              {#if importing}
-                <div class="mt-3">
-                  <ImportPanel
-                    bind:text={importText}
-                    busy={busy === "import"}
-                    onImport={runImport}
-                    hint="Imports as a separate résumé and opens it. Export the one you have first if you want it back."
-                  />
-                </div>
-              {/if}
-            </div>
           </section>
 
           <section class="card mt-4 border-danger/30 p-4">
@@ -323,7 +279,7 @@
             <p class="mb-4 text-sm text-muted">
               Empties every section — contact details, experience, projects, skills — and leaves
               the blank headings behind. The design is kept. This cannot be undone, so export a
-              resume.json first if there is anything in here worth keeping.
+              resume.json from Content first if there is anything in here worth keeping.
             </p>
 
             <button
@@ -336,6 +292,47 @@
             </button>
           </section>
         {:else}
+          <!-- Backup sits with the content it carries: an export is the one copy
+               that is not on this device, and an import is content arriving. -->
+          <section class="card mb-4 p-4">
+            <div class="flex flex-wrap items-center justify-between gap-3">
+              <div class="min-w-0">
+                <h2 class="text-[14px] font-semibold">Backup & transfer</h2>
+                <p class="mt-0.5 text-xs text-subtle">
+                  Everything is on this device only. An export is the one copy that is not.
+                </p>
+              </div>
+              <div class="flex shrink-0 flex-wrap gap-2">
+                <button
+                  onclick={exportJson}
+                  disabled={busy === "json"}
+                  class="inline-flex items-center gap-1.5 rounded-md border border-line px-3 py-2 text-sm font-semibold hover:border-brand disabled:opacity-50"
+                >
+                  {#if busy === "json"}<Loader size={14} class="animate-spin" />{:else}<Download size={14} />{/if}
+                  Export resume.json
+                </button>
+                <button
+                  onclick={() => (importing = !importing)}
+                  aria-expanded={importing}
+                  class="inline-flex items-center gap-1.5 rounded-md border border-line px-3 py-2 text-sm font-semibold hover:border-brand"
+                >
+                  <Upload size={14} />
+                  Import
+                </button>
+              </div>
+            </div>
+            {#if importing}
+              <div class="mt-4 border-t border-line-soft pt-4">
+                <ImportPanel
+                  bind:text={importText}
+                  busy={busy === "import"}
+                  onImport={runImport}
+                  hint="Imports as a separate résumé and opens it. Export the one you have first if you want it back."
+                />
+              </div>
+            {/if}
+          </section>
+
           <section class="card mb-4 p-4">
             <h2 class="mb-3 text-[14px] font-semibold">You</h2>
             <div class="grid gap-3 sm:grid-cols-2">
@@ -454,26 +451,30 @@
         {/if}
       </div>
 
-      <!-- Preview. Sticky at lg: so it stays beside whatever is being edited. -->
-      <aside class="mt-6 lg:sticky lg:top-[70px] lg:mt-0 lg:self-start">
-        <div class="mb-2 flex items-baseline justify-between gap-2">
-          <p class="text-xs font-semibold tracking-wide text-subtle uppercase">Preview</p>
-          <span class="text-xs text-subtle">{pageLabel}</span>
-        </div>
-        {#if view}
-          <div class="max-h-[calc(100dvh-140px)] overflow-y-auto rounded-md bg-line-soft p-3">
-            <ResumePreview pages={view.pages} scale={0.62} label="Your résumé" />
-          </div>
-          {#if view.pages.length > (resume.theme?.max_pages ?? 1)}
-            <p class="mt-2 text-xs text-star">
-              This runs to {view.pages.length} pages. Raise the page limit under Design, or trim a
-              few bullets.
-            </p>
-          {/if}
-        {:else}
-          <div class="flex h-64 items-center justify-center rounded-md bg-line-soft">
+      <!-- Preview. Sticky at lg: so it stays beside whatever is being edited, and
+           a page viewer with its own height so every page is reachable from it. -->
+      <aside class="mt-6 lg:sticky lg:top-0 lg:mt-0 lg:self-start">
+        <div
+          class="card h-[min(80dvh,860px)] overflow-hidden lg:h-[calc(100dvh-8rem)] {view
+            ? ''
+            : 'flex items-center justify-center'}"
+        >
+          {#if view}
+            <ResumePreview
+              pages={view.pages}
+              maxPages={resume.theme?.max_pages ?? 1}
+              fill={view.fill}
+              label="Your résumé"
+            />
+          {:else}
             <Loader size={20} class="animate-spin text-subtle" />
-          </div>
+          {/if}
+        </div>
+        {#if view && view.pages.length > (resume.theme?.max_pages ?? 1)}
+          <p class="mt-2 text-xs text-star">
+            This runs to {view.pages.length} pages. Raise the page limit under Design, or trim a
+            few bullets.
+          </p>
         {/if}
         {#if !feed.needsSkillsSetup && doc.sections.some((s) => s.kind === "skills" && s.entries.length === 0)}
           <p class="mt-2 text-xs text-subtle">

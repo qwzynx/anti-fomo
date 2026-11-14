@@ -1,90 +1,198 @@
 <script lang="ts">
-  import { cssColor, type ResumePage, type ResumeFontStyle } from "$lib/api";
+  import type { ResumePage } from "$lib/api";
+  import { ChevronLeft, ChevronRight } from "$lib/icons";
+  import ResumeSheet from "./ResumeSheet.svelte";
 
   /**
-   * The résumé, drawn from the same positioned boxes the PDF writer draws.
+   * The résumé as a document viewer: one page at a time, scaled to the space
+   * it has, with a page strip beside it when there is more than one.
    *
-   * **SVG, not positioned divs.** An `<svg><text y>` puts the baseline exactly
-   * at `y`, which is what PDF's `Tm` operator does too — so a box drawn here
-   * and the same box drawn into the file land in the identical place. HTML
-   * would mean reproducing CSS line-box maths (content area, half-leading,
-   * the font's own ascent) just to work out where a baseline ends up, and
-   * being a fraction of a point out on every line of a document whose whole
-   * job is fitting one page.
+   * It used to draw every page in one column at a fixed scale, inside whatever
+   * scrolled the rest of the screen — so page two of a tailored résumé was
+   * only reachable by scrolling the editor past everything in it. A viewer
+   * that owns its own box and its own scrolling is what lets the page beside
+   * an editor be read as a page.
    *
-   * Nothing is measured here either. Rust already wrapped the text and
-   * resolved every alignment to a left `x`, so the browser is only asked to
-   * paint runs, never to lay them out. That is why there is no `text-anchor`
-   * and why every string is a single unwrapped line.
-   *
-   * The page is deliberately **not** theme-aware. Paper is white and résumé
-   * ink is dark whatever the app's theme is, so the surrounding chrome dims in
-   * dark mode and the sheet itself does not.
+   * It fills its parent, so the parent must give it a height.
    */
   let {
     pages,
-    /** Points per CSS pixel. 1 renders a Letter page 612px wide. */
-    scale = 1,
     label = "Résumé preview",
+    /** The theme's page limit, so going over it is said here, every time. */
+    maxPages = 1,
+    /** How full the last page is, 0–1, when the caller knows. */
+    fill = null,
   }: {
     pages: ResumePage[];
-    scale?: number;
     label?: string;
+    maxPages?: number;
+    fill?: number | null;
   } = $props();
 
-  const FAMILY = {
-    serif: '"Resume Serif", "Liberation Serif", "Times New Roman", serif',
-    sans: '"Resume Sans", Inter, system-ui, sans-serif',
-  } as const;
+  let index = $state(0);
+  // A relayout can take a page away; the viewer must not point past the end.
+  const current = $derived(Math.min(index, Math.max(0, pages.length - 1)));
+  const page = $derived(pages[current]);
 
-  function weight(style: ResumeFontStyle): number {
-    return style === "bold" || style === "bolditalic" ? 700 : 400;
+  type Fit = "page" | "width";
+  let fit = $state<Fit>("page");
+
+  let stage = $state<HTMLDivElement | null>(null);
+  let stageW = $state(0);
+  let stageH = $state(0);
+  const PAD = 24;
+
+  /** Whole page in view, or the page as wide as the pane and scrolled. */
+  const sheetWidth = $derived.by(() => {
+    if (!page || stageW === 0) return 0;
+    const byWidth = stageW - PAD * 2;
+    const byHeight = ((stageH - PAD * 2) * page.width) / page.height;
+    const w = fit === "width" ? byWidth : Math.min(byWidth, byHeight);
+    // Never so small it cannot be read, never blown up past 160%.
+    return Math.max(160, Math.min(w, page.width * 1.6));
+  });
+
+  function go(n: number) {
+    const next = Math.max(0, Math.min(pages.length - 1, n));
+    if (next === current) return;
+    index = next;
+    stage?.scrollTo({ top: 0 });
   }
 
-  function slant(style: ResumeFontStyle): "italic" | "normal" {
-    return style === "italic" || style === "bolditalic" ? "italic" : "normal";
+  function onKeydown(e: KeyboardEvent) {
+    if (e.defaultPrevented || e.metaKey || e.ctrlKey || e.altKey) return;
+    const el = e.target as HTMLElement | null;
+    if (el?.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(el?.tagName ?? "")) return;
+    // In Width mode the stage scrolls, so Page Up/Down and Home/End belong to
+    // the scroll; only the arrows turn pages there.
+    const paging = fit === "page";
+    const to =
+      e.key === "ArrowLeft" || (paging && e.key === "PageUp")
+        ? current - 1
+        : e.key === "ArrowRight" || (paging && e.key === "PageDown")
+          ? current + 1
+          : paging && e.key === "Home"
+            ? 0
+            : paging && e.key === "End"
+              ? pages.length - 1
+              : null;
+    if (to === null) return;
+    e.preventDefault();
+    go(to);
   }
+
+  const over = $derived(pages.length > maxPages);
+  const limitLabel = $derived(
+    over
+      ? `${pages.length} pages · limit ${maxPages}`
+      : `Fits ${maxPages} ${maxPages === 1 ? "page" : "pages"}`,
+  );
 </script>
 
-<div class="flex flex-col items-center gap-4" role="img" aria-label={label}>
-  {#each pages as page, n (n)}
-    <svg
-      viewBox="0 0 {page.width} {page.height}"
-      width={page.width * scale}
-      height={page.height * scale}
-      class="max-w-full rounded-sm bg-white shadow-lg ring-1 ring-black/10"
-      xmlns="http://www.w3.org/2000/svg"
+<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+<div class="@container flex h-full min-h-0 flex-col" role="region" aria-label={label} onkeydown={onKeydown}>
+  <div class="flex h-10 shrink-0 items-center gap-1 border-b border-line px-2">
+    <button
+      onclick={() => go(current - 1)}
+      disabled={current === 0}
+      aria-label="Previous page"
+      class="tool disabled:opacity-35"
     >
-      <!-- The sheet. Explicit rather than inherited: the app's dark mode must
-           not tint the paper. -->
-      <rect x="0" y="0" width={page.width} height={page.height} fill="#ffffff" />
+      <ChevronLeft size={15} />
+    </button>
+    <span class="min-w-[4.5rem] text-center text-[12px] text-muted tabular-nums" aria-live="polite">
+      Page <span class="font-semibold text-foreground">{current + 1}</span> of {pages.length}
+    </span>
+    <button
+      onclick={() => go(current + 1)}
+      disabled={current >= pages.length - 1}
+      aria-label="Next page"
+      class="tool disabled:opacity-35"
+    >
+      <ChevronRight size={15} />
+    </button>
 
-      {#each page.items as item, i (i)}
-        {#if item.kind === "rect"}
-          <rect
-            x={item.x}
-            y={item.y}
-            width={item.w}
-            height={item.h}
-            fill={cssColor(item.color)}
-          />
-        {:else if item.kind === "text"}
-          <text
-            x={item.x}
-            y={item.y}
-            font-family={FAMILY[item.family]}
-            font-size={item.size}
-            font-weight={weight(item.style)}
-            font-style={slant(item.style)}
-            letter-spacing={item.tracking || null}
-            fill={cssColor(item.color)}
-            xml:space="preserve">{item.text}</text
-          >
-        {/if}
-      {/each}
-    </svg>
-    {#if pages.length > 1}
-      <p class="text-xs font-medium text-subtle">Page {n + 1} of {pages.length}</p>
+    <span
+      class="ml-1.5 truncate rounded-md px-2 py-0.5 text-[11px] font-semibold {over
+        ? 'bg-star-soft text-star'
+        : 'bg-job-soft text-job'}"
+      title={over ? "Over the page limit set under Design" : "Within the page limit set under Design"}
+    >
+      {limitLabel}
+    </span>
+    {#if fill !== null && !over}
+      <span class="hidden truncate text-[11px] text-subtle @2xl:inline">
+        · last page {Math.round(fill * 100)}% full
+      </span>
     {/if}
-  {/each}
+
+    <div
+      class="ml-auto flex shrink-0 items-center rounded-md border border-line bg-surface p-0.5"
+      role="group"
+      aria-label="Zoom"
+    >
+      {#each [{ id: "page", label: "Page" }, { id: "width", label: "Width" }] as const as f (f.id)}
+        <button
+          onclick={() => (fit = f.id)}
+          aria-pressed={fit === f.id}
+          title={f.id === "page" ? "Fit the whole page" : "Fit the page's width"}
+          class="h-6 rounded px-2 text-[11.5px] font-medium transition-colors {fit === f.id
+            ? 'bg-hover text-foreground'
+            : 'text-subtle hover:text-foreground'}"
+        >
+          {f.label}
+        </button>
+      {/each}
+    </div>
+  </div>
+
+  <div class="flex min-h-0 flex-1">
+    {#if pages.length > 1}
+      <nav
+        class="pane hidden w-[92px] shrink-0 flex-col items-center gap-3 border-r border-line py-3 @xl:flex"
+        aria-label="Pages"
+      >
+        {#each pages as p, n (n)}
+          <button
+            onclick={() => go(n)}
+            aria-current={n === current ? "page" : undefined}
+            aria-label="Page {n + 1}"
+            class="group flex flex-col items-center gap-1"
+          >
+            <ResumeSheet
+              page={p}
+              width={62}
+              class="rounded-[2px] ring-1 transition-shadow {n === current
+                ? 'ring-2 ring-brand'
+                : 'ring-black/15 group-hover:ring-brand/60'}"
+            />
+            <span
+              class="text-[11px] tabular-nums {n === current
+                ? 'font-semibold text-foreground'
+                : 'text-subtle'}">{n + 1}</span
+            >
+          </button>
+        {/each}
+      </nav>
+    {/if}
+
+    <!-- Focusable so the arrow keys and Page Up/Down turn pages once it is clicked. -->
+    <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+    <div
+      bind:this={stage}
+      bind:clientWidth={stageW}
+      bind:clientHeight={stageH}
+      tabindex="0"
+      class="pane min-w-0 flex-1 bg-line-soft [scrollbar-gutter:stable] focus-visible:outline-none"
+    >
+      {#if page && sheetWidth > 0}
+        <div
+          class="flex min-h-full justify-center {fit === 'page' ? 'items-center' : 'items-start'}"
+          style="padding: {PAD}px"
+        >
+          <ResumeSheet {page} width={sheetWidth} class="rounded-sm shadow-lg ring-1 ring-black/10" />
+        </div>
+      {/if}
+    </div>
+  </div>
 </div>
