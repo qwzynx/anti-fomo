@@ -316,6 +316,7 @@ for the one posting the pane is showing.
 | `get_internships(major?)` | every job/internship as a list row, ranked |
 | `get_last_call(major?)` | strong postings closing within a week, soonest first, capped |
 | `get_item_detail(url)` | one posting in full — description, sections, score breakdown |
+| `search_descriptions(terms)` | per term, the postings whose fetched description has a word starting with it (FTS5 index `job_text`, kept in step with `job_details` by triggers) |
 | `get_saved()` | starred items, newest star first |
 | `feed_status()` | last refresh, counts, staleness, per-source health |
 | `refresh(force)` | a `RefreshOutcome` (`skipped` / `ran` / `stopped`, sources done, rows written), resolving when the whole run, descriptions included, has ended. Events: `feed:refreshing`, `feed:phase`, `feed:plan`, `feed:progress`, `feed:updated` |
@@ -332,7 +333,7 @@ for the one posting the pane is showing.
 | `list_interests()` / `get_interests()` / `set_interests(interests)` | the interest tags |
 | `list_skills()` | the skill catalog, grouped into categories |
 | `get_skills()` / `set_skills(skills)` | the skills the user says they have |
-| `get_setting(key)` / `set_setting(key, value)` | local preferences |
+| `get_setting(key)` / `set_setting(key, value)` | local preferences; a `ui.` key (Roles filters, saved searches) does not re-rank |
 | `list_sources()` | distinct sources currently cached |
 | `clear_data()` | empties the item cache; the profile and résumés are kept |
 | `list_resumes()` | the résumé picker's rows |

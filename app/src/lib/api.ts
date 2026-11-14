@@ -273,6 +273,10 @@ export const refreshFeed = (force = false) => invoke<RefreshOutcome>("refresh", 
 /** Stops the running refresh. False when nothing was running. */
 export const stopRefresh = () => invoke<boolean>("stop_refresh");
 
+/** Per term, the postings whose fetched description has a word starting with it. */
+export const searchDescriptions = (terms: string[]) =>
+  invoke<Record<string, string[]>>("search_descriptions", { terms });
+
 export const getSetting = (key: string) => invoke<string | null>("get_setting", { key });
 
 export const setSetting = (key: string, value: string) =>

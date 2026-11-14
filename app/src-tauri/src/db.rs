@@ -50,7 +50,150 @@ pub fn open(path: &std::path::Path) -> Result<Connection> {
     conn.pragma_update(None, "journal_size_limit", 4_194_304i64)?;
     migrate(&conn)?;
     enable_incremental_vacuum(&conn);
+    // After the vacuum: building the index on a file that is about to be
+    // rewritten would only be work done twice. Non-fatal, like the vacuum —
+    // search over descriptions is a nicety, and a store that cannot build it
+    // must still open.
+    if let Err(e) = ensure_text_index(&conn) {
+        log::warn!("could not build the description search index: {e}");
+    }
     Ok(conn)
+}
+
+/// The full-text index over fetched postings, built once and then kept in
+/// step with `job_details` by triggers.
+///
+/// List rows never carry a description (that is what keeps the Roles payload
+/// small), so without this a word that only appears in the body — "visa
+/// sponsorship", "relocation", "on-call" — could not be searched for at all.
+///
+/// Measured against a real store: 6.9 MB of index for 25.7 MB of text, built
+/// in under a second, and a term lookup in well under a millisecond. It is
+/// contentless — the text already lives in `job_details`, and keeping a second
+/// copy would cost the full 25 MB again — with `detail=column`, which drops
+/// phrase positions (a quoted phrase is still checked by the UI over the row
+/// it has) for an index a third the size.
+///
+/// Created outside `migrate` and its version gate on purpose: a schema bump
+/// drops the whole items cache, and nothing here is worth a full re-scrape.
+/// Everything is `IF NOT EXISTS`, so this is a no-op on every launch after
+/// the first. The rowid map is an `INTEGER PRIMARY KEY` because the plain
+/// rowid of `job_details` (a TEXT-keyed table) may be renumbered by `VACUUM`,
+/// which `clear_data` runs, and an index keyed on it would then point at the
+/// wrong postings.
+pub fn ensure_text_index(conn: &Connection) -> Result<()> {
+    let existed: bool = conn
+        .query_row(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'job_text_ids'",
+            [],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some();
+
+    conn.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS job_text_ids (
+            id  INTEGER PRIMARY KEY,
+            url TEXT NOT NULL UNIQUE
+        );
+
+        CREATE VIRTUAL TABLE IF NOT EXISTS job_text USING fts5(
+            body,
+            content = '',
+            contentless_delete = 1,
+            tokenize = 'unicode61 remove_diacritics 2',
+            detail = 'column'
+        );
+
+        -- An upsert that inserts fires this; one that conflicts fires the
+        -- UPDATE trigger below. Delete-then-insert, so a row that somehow
+        -- already had an entry is replaced rather than doubled.
+        --
+        -- `NOT EXISTS` rather than `INSERT OR IGNORE`: inside a trigger the
+        -- outer statement's conflict policy wins over the trigger's own, so an
+        -- upsert from `save_details` would turn the IGNORE back into ABORT.
+        CREATE TRIGGER IF NOT EXISTS job_text_after_insert
+        AFTER INSERT ON job_details WHEN new.status = 'ok' BEGIN
+            INSERT INTO job_text_ids (url)
+                SELECT new.url WHERE NOT EXISTS (SELECT 1 FROM job_text_ids WHERE url = new.url);
+            DELETE FROM job_text WHERE rowid = (SELECT id FROM job_text_ids WHERE url = new.url);
+            INSERT INTO job_text (rowid, body) VALUES (
+                (SELECT id FROM job_text_ids WHERE url = new.url),
+                concat_ws(' ', new.description, new.requirements, new.responsibilities, new.perks)
+            );
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS job_text_after_update
+        AFTER UPDATE ON job_details BEGIN
+            DELETE FROM job_text WHERE rowid = (SELECT id FROM job_text_ids WHERE url = old.url);
+            DELETE FROM job_text_ids WHERE url = old.url AND new.status <> 'ok';
+            INSERT INTO job_text_ids (url)
+                SELECT new.url WHERE new.status = 'ok'
+                   AND NOT EXISTS (SELECT 1 FROM job_text_ids WHERE url = new.url);
+            INSERT INTO job_text (rowid, body)
+                SELECT id, concat_ws(' ', new.description, new.requirements, new.responsibilities, new.perks)
+                  FROM job_text_ids WHERE url = new.url AND new.status = 'ok';
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS job_text_after_delete
+        AFTER DELETE ON job_details BEGIN
+            DELETE FROM job_text WHERE rowid = (SELECT id FROM job_text_ids WHERE url = old.url);
+            DELETE FROM job_text_ids WHERE url = old.url;
+        END;
+        "#,
+    )?;
+
+    if !existed {
+        // First launch with the index: read in what was fetched before it.
+        conn.execute_batch(
+            r#"
+            INSERT OR IGNORE INTO job_text_ids (url)
+                SELECT url FROM job_details WHERE status = 'ok';
+            INSERT INTO job_text (rowid, body)
+                SELECT i.id, concat_ws(' ', d.description, d.requirements, d.responsibilities, d.perks)
+                  FROM job_text_ids i JOIN job_details d ON d.url = i.url;
+            "#,
+        )?;
+    }
+    Ok(())
+}
+
+/// A word the description index can be asked about: letters and digits only.
+///
+/// The tokenizer splits on everything else, so "c++" would be asked as "c" —
+/// a prefix of half the vocabulary — and ".net" as "net". Those stay with the
+/// UI's own matcher, which reads them as written.
+pub fn indexable_term(term: &str) -> bool {
+    (2..=40).contains(&term.chars().count()) && term.chars().all(|c| c.is_alphanumeric())
+}
+
+/// For each term, the postings whose fetched text has a word starting with it.
+///
+/// Per term rather than one combined match, because the UI ANDs the terms
+/// across *all* of a posting's fields: "react toronto" should find a posting
+/// whose body says React and whose location says Toronto, which no single
+/// index holds both halves of. Terms the index cannot answer (see
+/// [`indexable_term`]) are left out of the result.
+pub fn search_details(conn: &Connection, terms: &[String]) -> Result<HashMap<String, Vec<String>>> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT i.url FROM job_text t JOIN job_text_ids i ON i.id = t.rowid
+          WHERE job_text MATCH ?1",
+    )?;
+    let mut out = HashMap::new();
+    for term in terms {
+        let term = term.to_lowercase();
+        if !indexable_term(&term) || out.contains_key(&term) {
+            continue;
+        }
+        // Quoted, so nothing in it is read as FTS syntax; `*` makes it a prefix.
+        let query = format!("\"{term}\"*");
+        let urls = stmt
+            .query_map([&query], |row| row.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        out.insert(term, urls);
+    }
+    Ok(out)
 }
 
 /// Puts the file into incremental auto-vacuum, converting one that predates
@@ -1480,7 +1623,106 @@ mod tests {
     fn mem() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
         migrate(&conn).unwrap();
+        ensure_text_index(&conn).unwrap();
         conn
+    }
+
+    // --- description search ---
+
+    fn detail(text: &str) -> JobDetail {
+        JobDetail {
+            description: Some(text.to_string()),
+            status: DetailStatus::Ok,
+            ..Default::default()
+        }
+    }
+
+    fn found(conn: &Connection, term: &str) -> Vec<String> {
+        let mut hits = search_details(conn, &[term.to_string()])
+            .unwrap()
+            .remove(term)
+            .unwrap_or_default();
+        hits.sort();
+        hits
+    }
+
+    #[test]
+    fn descriptions_are_searchable_and_stay_in_step_with_their_rows() {
+        let mut conn = mem();
+        save_details(
+            &mut conn,
+            &[
+                (
+                    "https://a.test/1".into(),
+                    detail("We offer visa sponsorship."),
+                ),
+                (
+                    "https://a.test/2".into(),
+                    detail("Kubernetes on-call rotation"),
+                ),
+            ],
+        )
+        .unwrap();
+        assert_eq!(found(&conn, "sponsor"), vec!["https://a.test/1"]);
+        assert_eq!(found(&conn, "kubernetes"), vec!["https://a.test/2"]);
+
+        // A re-fetch replaces the text rather than adding to it.
+        save_details(
+            &mut conn,
+            &[(
+                "https://a.test/1".into(),
+                detail("No sponsorship here, sorry: relocation only."),
+            )],
+        )
+        .unwrap();
+        assert_eq!(found(&conn, "visa"), Vec::<String>::new());
+        assert_eq!(found(&conn, "relocation"), vec!["https://a.test/1"]);
+
+        // A failed re-fetch takes it out of the index, as it takes the row out of `ok`.
+        let mut failed = detail("");
+        failed.status = DetailStatus::Failed;
+        save_details(&mut conn, &[("https://a.test/2".into(), failed)]).unwrap();
+        assert_eq!(found(&conn, "kubernetes"), Vec::<String>::new());
+
+        // And a deleted row goes with it — including through `clear_data`'s VACUUM.
+        clear_data(&conn).unwrap();
+        assert_eq!(found(&conn, "relocation"), Vec::<String>::new());
+        save_details(
+            &mut conn,
+            &[("https://a.test/3".into(), detail("Rust and Tokio"))],
+        )
+        .unwrap();
+        assert_eq!(found(&conn, "tokio"), vec!["https://a.test/3"]);
+    }
+
+    #[test]
+    fn the_index_reads_in_what_was_fetched_before_it_existed() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        save_details(
+            &mut conn,
+            &[(
+                "https://a.test/old".into(),
+                detail("Embedded firmware in C"),
+            )],
+        )
+        .unwrap();
+        ensure_text_index(&conn).unwrap();
+        assert_eq!(found(&conn, "firmware"), vec!["https://a.test/old"]);
+        // And building it again is a no-op, not a second copy.
+        ensure_text_index(&conn).unwrap();
+        assert_eq!(found(&conn, "firmware"), vec!["https://a.test/old"]);
+    }
+
+    #[test]
+    fn terms_the_tokenizer_would_mangle_are_not_asked() {
+        assert!(indexable_term("rust"));
+        assert!(indexable_term("k8s"));
+        assert!(!indexable_term("c++"));
+        assert!(!indexable_term(".net"));
+        assert!(!indexable_term("a"));
+        let conn = mem();
+        assert!(search_details(&conn, &["c++".into()]).unwrap().is_empty());
     }
 
     // --- résumés ---

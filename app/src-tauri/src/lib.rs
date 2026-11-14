@@ -100,6 +100,7 @@ pub fn run() {
             commands::get_last_call,
             commands::get_saved,
             commands::get_item_detail,
+            commands::search_descriptions,
             commands::feed_status,
             commands::refresh,
             commands::stop_refresh,

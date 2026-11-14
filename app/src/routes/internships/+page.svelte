@@ -32,7 +32,14 @@
     type Modality,
     type TypeFilter,
   } from "$lib/filters";
-  import { highlightTerms, parseQuery, search } from "$lib/query";
+  import * as api from "$lib/api";
+  import {
+    highlightTerms,
+    indexableTerms,
+    parseQuery,
+    search,
+    type DescriptionHits,
+  } from "$lib/query";
   import { roles, type DeadlineFilter } from "$lib/roles.svelte";
 
   // The job-board layout: a scrolling result list beside a detail pane that
@@ -110,12 +117,44 @@
   const marks = $derived(highlightTerms(parsed));
 
   /**
+   * What the full-text index says about the query's words, for the postings
+   * whose description mentions one. Arrives a beat after the row matches; a
+   * stale answer (the query moved on) is dropped by its key.
+   */
+  let described = $state.raw<{ key: string; hits: DescriptionHits } | null>(null);
+  const describedKey = $derived(indexableTerms(parsed).join(" "));
+  $effect(() => {
+    const key = describedKey;
+    if (!key) {
+      described = null;
+      return;
+    }
+    let live = true;
+    api.searchDescriptions(key.split(" ")).then(
+      (raw) => {
+        if (!live) return;
+        const hits: DescriptionHits = new Map();
+        for (const [term, urls] of Object.entries(raw)) hits.set(term, new Set(urls));
+        described = { key, hits };
+      },
+      () => {
+        // The rows' own text still answers; the index is a bonus.
+        if (live) described = null;
+      },
+    );
+    return () => {
+      live = false;
+    };
+  });
+  const descriptionHits = $derived(described?.key === describedKey ? described.hits : undefined);
+
+  /**
    * Search first, over the stable snapshot whose index is memoized on it, then
    * the chips, then the sort. Nothing here builds a string per row unless a
    * specialty chip asks for one.
    */
   const result = $derived.by(() => {
-    const hits = search(items, parsed);
+    const hits = search(items, parsed, descriptionHits);
     const kept = filterRoles(hits.items, roles.filters, (i) => feed.match(i));
     const sorted = sortItems(kept, roles.filters.sort);
     return roles.filters.sort === "Best match" ? byQueryTier(sorted, hits.tier) : sorted;

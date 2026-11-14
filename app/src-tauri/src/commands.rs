@@ -548,6 +548,21 @@ pub fn get_saved(state: State<'_, AppState>) -> CmdResult<Vec<Item>> {
     Ok(items)
 }
 
+/// For each search term, the postings whose fetched description has a word
+/// starting with it. Roles ANDs these with what each row itself carries, so a
+/// word that only appears in the body of a posting still finds it. See
+/// `db::search_details` for why the answer is per term.
+#[tauri::command(async)]
+pub fn search_descriptions(
+    state: State<'_, AppState>,
+    terms: Vec<String>,
+) -> CmdResult<std::collections::HashMap<String, Vec<String>>> {
+    // A query is a handful of words; anything longer is not one.
+    let terms: Vec<String> = terms.into_iter().take(8).collect();
+    let conn = state.db.lock().unwrap();
+    db::search_details(&conn, &terms).map_err(err)
+}
+
 /// One posting in full, for the detail pane and nothing else.
 ///
 /// The list payload deliberately stops at what a row renders. This is the

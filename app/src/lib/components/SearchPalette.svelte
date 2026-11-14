@@ -4,7 +4,15 @@
   import { feed } from "$lib/feed.svelte";
   import { ArrowUpRight, CornerDownLeft, Search, iconForType } from "$lib/icons";
   import { splitTitle } from "$lib/item";
-  import { highlight, highlightTerms, parseQuery, search as find } from "$lib/query";
+  import * as api from "$lib/api";
+  import {
+    highlight,
+    highlightTerms,
+    indexableTerms,
+    parseQuery,
+    search as find,
+    type DescriptionHits,
+  } from "$lib/query";
   import { roles } from "$lib/roles.svelte";
   import { search } from "$lib/search.svelte";
 
@@ -50,9 +58,34 @@
   const marks = $derived(highlightTerms(parsed));
   const tooShort = $derived(settled.trim().length < 2);
 
+  /** Roles whose fetched description has the words — the same answer Roles uses, so "See all N" lands on N. */
+  let described = $state.raw<{ key: string; hits: DescriptionHits } | null>(null);
+  const describedKey = $derived(search.open && !tooShort ? indexableTerms(parsed).join(" ") : "");
+  $effect(() => {
+    const key = describedKey;
+    if (!key) return;
+    let live = true;
+    api.searchDescriptions(key.split(" ")).then(
+      (raw) => {
+        if (!live) return;
+        const hits: DescriptionHits = new Map();
+        for (const [term, urls] of Object.entries(raw)) hits.set(term, new Set(urls));
+        described = { key, hits };
+      },
+      () => {},
+    );
+    return () => {
+      live = false;
+    };
+  });
+  const descriptionHits = $derived(described?.key === describedKey ? described.hits : undefined);
+
   /** Title and employer hits first, then the rest, each in rank order. */
-  function ranked(list: readonly ScrapedItem[]): { all: number; top: ScrapedItem[] } {
-    const hit = find(list, parsed);
+  function ranked(
+    list: readonly ScrapedItem[],
+    hits?: DescriptionHits,
+  ): { all: number; top: ScrapedItem[] } {
+    const hit = find(list, parsed, hits);
     const head: ScrapedItem[] = [];
     const rest: ScrapedItem[] = [];
     for (const item of hit.items) (hit.tier.get(item.url) === 2 ? head : rest).push(item);
@@ -62,7 +95,7 @@
   const groups = $derived.by(() => {
     // Only while the palette is up: this is a scan of the whole corpus.
     if (!search.open || tooShort || parsed.empty) return null;
-    const r = ranked(feed.internships);
+    const r = ranked(feed.internships, descriptionHits);
     const o = ranked(others);
     return {
       roles: r.top.slice(0, GROUP_LIMIT.roles),

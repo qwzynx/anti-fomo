@@ -170,10 +170,24 @@ export function hasWhole(hay: string, phrase: string): boolean {
 }
 
 /**
- * How well an entry matches: 0 = no match, 1 = matched only in the body,
- * 2 = every positive word or phrase was in the title or employer.
+ * Postings whose fetched description has a word starting with each term, from
+ * Rust's full-text index (`search_descriptions`). List rows carry no
+ * description, so this is the only way a word that appears only in the body
+ * of a posting can find it.
  */
-export function score(entry: IndexEntry, q: ParsedQuery): 0 | 1 | 2 {
+export type DescriptionHits = Map<string, Set<string>>;
+
+/** The terms worth asking the description index about. Mirrors `db::indexable_term`. */
+export function indexableTerms(q: ParsedQuery): string[] {
+  return [...new Set(q.terms)].filter((t) => t.length >= 2 && t.length <= 40 && /^[\p{L}\p{N}]+$/u.test(t));
+}
+
+/**
+ * How well an entry matches: 0 = no match, 1 = matched only in the body or
+ * the fetched description, 2 = every positive word or phrase was in the title
+ * or employer.
+ */
+export function score(entry: IndexEntry, q: ParsedQuery, described?: DescriptionHits): 0 | 1 | 2 {
   if (q.companies.length > 0 && !q.companies.some((c) => entry.company.includes(c))) return 0;
   for (const x of q.excludes) {
     if (hasWordPrefix(entry.head, x) || hasWordPrefix(entry.body, x)) return 0;
@@ -181,7 +195,7 @@ export function score(entry: IndexEntry, q: ParsedQuery): 0 | 1 | 2 {
   let allInHead = true;
   for (const t of q.terms) {
     if (hasWordPrefix(entry.head, t)) continue;
-    if (!hasWordPrefix(entry.body, t)) return 0;
+    if (!hasWordPrefix(entry.body, t) && !described?.get(t)?.has(entry.item.url)) return 0;
     allInHead = false;
   }
   for (const p of q.phrases) {
@@ -199,6 +213,7 @@ export function score(entry: IndexEntry, q: ParsedQuery): 0 | 1 | 2 {
 export function search(
   items: readonly ScrapedItem[],
   q: ParsedQuery,
+  described?: DescriptionHits,
 ): { items: readonly ScrapedItem[]; tier: Map<string, number> } {
   const tier = new Map<string, number>();
   // The same array back, not a copy: callers search the stable snapshot first
@@ -206,7 +221,7 @@ export function search(
   if (q.empty) return { items, tier };
   const out: ScrapedItem[] = [];
   for (const entry of indexOf(items)) {
-    const s = score(entry, q);
+    const s = score(entry, q, described);
     if (s > 0) {
       out.push(entry.item);
       tier.set(entry.item.url, s);
