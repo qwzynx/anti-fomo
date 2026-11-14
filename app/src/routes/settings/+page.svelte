@@ -7,6 +7,7 @@
     Briefcase,
     Calendar,
     Check,
+    FileText,
     GraduationCap,
     Monitor,
     Moon,
@@ -24,6 +25,25 @@
   import { groupByCategory } from "$lib/skills";
   import { theme, type Theme } from "$lib/theme.svelte";
   import { confirm } from "$lib/confirm.svelte";
+  import { toast } from "$lib/toast.svelte";
+  import { getVersion } from "@tauri-apps/api/app";
+  import { openLogDir } from "$lib/api";
+
+  let version = $state<string | null>(null);
+  $effect(() => {
+    getVersion().then(
+      (v) => (version = v),
+      () => (version = null),
+    );
+  });
+
+  async function openLogs() {
+    try {
+      await openLogDir();
+    } catch (e) {
+      toast.error("open the log folder", e);
+    }
+  }
 
   const MAJORS = DISCIPLINES.filter((d) => d !== "All");
   const THEMES: { value: Theme; label: string; icon: typeof Sun }[] = [
@@ -426,5 +446,18 @@
       your field and interests. Results are cached locally, so the feed opens instantly and stays readable
       offline.
     </p>
+    <div class="mt-4 flex flex-wrap items-center gap-3 border-t border-line-soft pt-4">
+      <span class="text-sm text-muted">
+        Version <span class="font-semibold text-foreground tabular-nums">{version ?? "…"}</span>
+      </span>
+      <button
+        onclick={openLogs}
+        class="inline-flex items-center gap-1.5 rounded-xl border border-line px-3 py-1.5 text-sm font-semibold text-muted transition-colors hover:border-brand hover:text-foreground"
+      >
+        <FileText size={14} />
+        Open log folder
+      </button>
+      <span class="text-xs text-subtle">Attach the latest log to a bug report.</span>
+    </div>
   </section>
 </main>

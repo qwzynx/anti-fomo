@@ -9,6 +9,7 @@ pub mod rank;
 pub mod resume;
 pub mod scrapers;
 pub mod skills;
+pub mod sync;
 
 use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::Mutex;
@@ -48,6 +49,31 @@ fn apply_linux_webview_workarounds() {
     }
 }
 
+/// The database could not be opened: hides the window that has nothing to
+/// show, and says why in a native dialog whose dismissal quits.
+///
+/// Not `blocking_show`: `setup` runs on the main thread, where a blocking
+/// dialog can deadlock the event loop it needs. The callback form runs inside
+/// that loop instead.
+fn startup_failed(app: &tauri::App, error: &anyhow::Error) {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.hide();
+    }
+    let handle = app.handle().clone();
+    app.dialog()
+        .message(format!(
+            "Anti-FOMO could not open its local database.\n\n{error:#}\n\n\
+             Another copy of the app may be running and holding it, or the file \
+             may be damaged. Close any other copy and try again. If it keeps \
+             happening, moving the file aside will let the app start fresh — \
+             your saved roles and résumés live in that file, so keep the copy."
+        ))
+        .title("Anti-FOMO could not start")
+        .kind(MessageDialogKind::Error)
+        .show(move |_| handle.exit(1));
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     #[cfg(target_os = "linux")]
@@ -60,20 +86,46 @@ pub fn run() {
         .plugin(
             tauri_plugin_log::Builder::new()
                 .level(log::LevelFilter::Info)
-                // A single stdout target: on desktop that is the terminal, on
-                // Android the plugin routes it to logcat — the only way to see
-                // scraper errors on a device.
+                // Stdout is the terminal on desktop and logcat on Android. The
+                // log directory is the one a packaged desktop build has: its
+                // console is hidden on Windows and nobody runs a .dmg from a
+                // shell, so without a file a scraper error or a UI crash on a
+                // user's machine left nothing behind to attach to a report.
+                // Settings → About opens the folder.
                 .clear_targets()
                 .target(tauri_plugin_log::Target::new(
                     tauri_plugin_log::TargetKind::Stdout,
                 ))
+                .target(tauri_plugin_log::Target::new(
+                    tauri_plugin_log::TargetKind::LogDir { file_name: None },
+                ))
+                .max_file_size(2_000_000)
+                .rotation_strategy(tauri_plugin_log::RotationStrategy::KeepSome(3))
                 .build(),
         )
         .setup(|app| {
             // Per-platform app data dir, so the DB does not depend on the
             // working directory the way the old sqlite:///./antifomo.db did.
-            let dir = app.path().app_data_dir()?;
-            let conn = db::open(&dir.join("antifomo.db"))?;
+            let opened = app
+                .path()
+                .app_data_dir()
+                .map_err(anyhow::Error::from)
+                .map(|dir| dir.join("antifomo.db"))
+                .and_then(|path| {
+                    db::open(&path).map_err(|e| e.context(path.display().to_string()))
+                });
+            let conn = match opened {
+                Ok(conn) => conn,
+                Err(e) => {
+                    // Returning the error would end in `.expect` below: an
+                    // abort with nothing on screen, which on a packaged build
+                    // looks like the app simply not opening. Say what failed
+                    // and where, then leave.
+                    log::error!("could not open the database: {e:#}");
+                    startup_failed(app, &e);
+                    return Ok(());
+                }
+            };
 
             app.manage(AppState {
                 db: Mutex::new(conn),
@@ -139,6 +191,7 @@ pub fn run() {
             commands::import_json_resume,
             commands::export_json_resume,
             commands::list_resume_themes,
+            commands::open_log_dir,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Anti-FOMO");

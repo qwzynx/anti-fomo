@@ -14,7 +14,9 @@ use crate::rank::{self, personalize_with, DEFAULT_MAJOR};
 use crate::resume::{self, terms};
 use crate::scrapers::{self, details};
 use crate::skills::{self, SkillCategory};
+use crate::sync::LockExt;
 use crate::AppState;
+use futures::FutureExt;
 
 /// The old `/api/feed` endpoint capped its response at 60, which threw away
 /// most of what the sources returned — the UI pages through the feed now, so
@@ -252,7 +254,7 @@ struct RankedView {
 /// Reads the persisted major, falling back to the default the old backend used
 /// as its query-param default.
 fn current_major(state: &AppState) -> String {
-    let conn = state.db.lock().unwrap();
+    let conn = state.db.lock_recover();
     db::get_setting(&conn, KEY_MAJOR)
         .ok()
         .flatten()
@@ -262,7 +264,7 @@ fn current_major(state: &AppState) -> String {
 /// The user's chosen interest tags. Stored as a JSON array in `settings`; an
 /// unset or corrupt value means "no interests", which simply zeroes that term.
 fn current_interests(state: &AppState) -> Vec<String> {
-    let conn = state.db.lock().unwrap();
+    let conn = state.db.lock_recover();
     db::get_setting(&conn, KEY_INTERESTS)
         .ok()
         .flatten()
@@ -281,7 +283,7 @@ fn current_skills(state: &AppState) -> Vec<String> {
 /// failing the whole read. A corrupt `weights` value zeroes nothing — it falls
 /// back to the shipped defaults.
 fn json_setting<T: serde::de::DeserializeOwned + Default>(state: &AppState, key: &str) -> T {
-    let conn = state.db.lock().unwrap();
+    let conn = state.db.lock_recover();
     db::get_setting(&conn, key)
         .ok()
         .flatten()
@@ -293,7 +295,7 @@ fn json_setting<T: serde::de::DeserializeOwned + Default>(state: &AppState, key:
 /// caller can rank against half a profile.
 fn current_profile(state: &AppState, major: Option<String>) -> rank::Profile {
     let home_region = {
-        let conn = state.db.lock().unwrap();
+        let conn = state.db.lock_recover();
         db::get_setting(&conn, KEY_HOME_REGION)
             .ok()
             .flatten()
@@ -311,7 +313,7 @@ fn current_profile(state: &AppState, major: Option<String>) -> rank::Profile {
 }
 
 fn last_refresh(state: &AppState) -> Option<DateTime<Utc>> {
-    let conn = state.db.lock().unwrap();
+    let conn = state.db.lock_recover();
     db::get_setting(&conn, KEY_LAST_REFRESH)
         .ok()
         .flatten()
@@ -329,7 +331,7 @@ fn is_stale(state: &AppState) -> bool {
 /// Loads the cache, drops anything the user dismissed, and stamps the
 /// saved/seen flags. Every feed-shaped read starts here.
 fn visible_items(state: &AppState) -> CmdResult<Vec<Item>> {
-    let conn = state.db.lock().unwrap();
+    let conn = state.db.lock_recover();
     let states = db::load_states(&conn).map_err(err)?;
     let details = db::load_details(&conn).map_err(err)?;
     let mut items: Vec<Item> = db::load_items(&conn)
@@ -408,7 +410,7 @@ fn ranked_view(
     // Held across the ranking pass on purpose: `loadAll()` fires several
     // commands at once and they run on separate threads, so without this the
     // feed and the hub would each start their own identical 1.2 s pass.
-    let mut slot = state.ranked.lock().unwrap();
+    let mut slot = state.ranked.lock_recover();
     if let Some(cached) = slot.as_ref() {
         let acceptable = cached.profile == profile
             && match freshness {
@@ -519,7 +521,7 @@ fn last_calls(items: &[Item]) -> Vec<&Item> {
 #[tauri::command(async)]
 pub fn get_saved(state: State<'_, AppState>) -> CmdResult<Vec<Item>> {
     let mut items = {
-        let conn = state.db.lock().unwrap();
+        let conn = state.db.lock_recover();
         db::load_saved(&conn).map_err(err)?
     };
 
@@ -559,7 +561,7 @@ pub fn search_descriptions(
 ) -> CmdResult<std::collections::HashMap<String, Vec<String>>> {
     // A query is a handful of words; anything longer is not one.
     let terms: Vec<String> = terms.into_iter().take(8).collect();
-    let conn = state.db.lock().unwrap();
+    let conn = state.db.lock_recover();
     db::search_details(&conn, &terms).map_err(err)
 }
 
@@ -591,7 +593,7 @@ fn item_detail(state: &AppState, url: &str) -> CmdResult<Option<Item>> {
     let cached = view.items.iter().find(|i| i.url == url).cloned();
 
     let mut items = {
-        let conn = state.db.lock().unwrap();
+        let conn = state.db.lock_recover();
         // Not in the feed means dismissed or pruned — the saved list still
         // shows those, and it renders them from the snapshot.
         let item = match cached {
@@ -631,7 +633,7 @@ pub fn feed_status(state: State<'_, AppState>) -> CmdResult<FeedStatus> {
     // after every save and every dismissal, and loading 18,240 rows to call
     // `.len()` on them cost 38 ms and several megabytes each time.
     let (item_count, counts, saved_count, dismissed_count) = {
-        let conn = state.db.lock().unwrap();
+        let conn = state.db.lock_recover();
         let (saved, dismissed) = db::state_counts(&conn).map_err(err)?;
         (
             db::count_items(&conn).map_err(err)?,
@@ -647,7 +649,7 @@ pub fn feed_status(state: State<'_, AppState>) -> CmdResult<FeedStatus> {
     // some are registered as several passes over one site.
     let prefs = current_prefs(&state);
     let runs: std::collections::HashMap<String, db::SourceRun> = {
-        let conn = state.db.lock().unwrap();
+        let conn = state.db.lock_recover();
         db::load_source_runs(&conn)
             .map_err(err)?
             .into_iter()
@@ -729,7 +731,7 @@ impl Progress {
 }
 
 fn onboarded(state: &AppState) -> bool {
-    let conn = state.db.lock().unwrap();
+    let conn = state.db.lock_recover();
     db::get_setting(&conn, db::ONBOARDED_KEY)
         .ok()
         .flatten()
@@ -763,13 +765,13 @@ impl ScanControl {
     /// A new run: forget any earlier stop.
     fn begin(&self) {
         self.stop.store(false, Ordering::SeqCst);
-        *self.handle.lock().unwrap() = None;
+        *self.handle.lock_recover() = None;
     }
 
     /// Registers the phase about to run. A stop that already arrived aborts it
     /// at once, so the request cannot be lost in the gap between phases.
     fn arm(&self, handle: futures::future::AbortHandle) {
-        let mut slot = self.handle.lock().unwrap();
+        let mut slot = self.handle.lock_recover();
         if self.stop.load(Ordering::SeqCst) {
             handle.abort();
         }
@@ -777,12 +779,12 @@ impl ScanControl {
     }
 
     fn disarm(&self) {
-        *self.handle.lock().unwrap() = None;
+        *self.handle.lock_recover() = None;
     }
 
     fn request_stop(&self) {
         self.stop.store(true, Ordering::SeqCst);
-        if let Some(handle) = self.handle.lock().unwrap().as_ref() {
+        if let Some(handle) = self.handle.lock_recover().as_ref() {
             handle.abort();
         }
     }
@@ -882,7 +884,7 @@ async fn scrape(app: &AppHandle, plan: Vec<&'static str>, run_start: DateTime<Ut
                     }
                     {
                         let state = app.state::<AppState>();
-                        let mut conn = state.db.lock().unwrap();
+                        let mut conn = state.db.lock_recover();
                         if let Err(e) = db::record_runs(&mut conn, &[run_of(&outcome, Utc::now())])
                         {
                             log::warn!("{}: could not record the run: {e}", outcome.source);
@@ -953,7 +955,7 @@ pub async fn refresh(app: AppHandle, force: bool) -> CmdResult<RefreshOutcome> {
     let plan = {
         let prefs = current_prefs(&state);
         let runs = {
-            let conn = state.db.lock().unwrap();
+            let conn = state.db.lock_recover();
             db::load_source_runs(&conn).map_err(err)?
         };
         prefs::due(&scrapers::sources(), &runs, &prefs, Utc::now(), force)
@@ -1089,7 +1091,7 @@ async fn enrich_details(app: &AppHandle) -> CmdResult<usize> {
         tauri::async_runtime::spawn_blocking(move || -> CmdResult<_> {
             let state = app.state::<AppState>();
             let attempted = {
-                let conn = state.db.lock().unwrap();
+                let conn = state.db.lock_recover();
                 db::urls_with_details(&conn).map_err(err)?
             };
             let view = ranked_view(&state, None, Freshness::Any)?;
@@ -1123,7 +1125,7 @@ async fn enrich_details(app: &AppHandle) -> CmdResult<usize> {
     }
 
     if !unsupported.is_empty() {
-        let mut conn = state.db.lock().unwrap();
+        let mut conn = state.db.lock_recover();
         db::save_details(&mut conn, &unsupported).map_err(err)?;
     }
     if queue.is_empty() {
@@ -1148,7 +1150,18 @@ async fn enrich_details(app: &AppHandle) -> CmdResult<usize> {
                 .map(|(url, chain)| {
                     let client = client.clone();
                     async move {
-                        let detail = details::fetch(&client, &chain).await;
+                        // A handler that panics on one page fails that page,
+                        // as a network error would — not the whole pass.
+                        let detail = std::panic::AssertUnwindSafe(details::fetch(&client, &chain))
+                            .catch_unwind()
+                            .await
+                            .unwrap_or_else(|panic| {
+                                log::error!(
+                                    "detail fetch for {url} panicked: {}",
+                                    scrapers::panic_message(&panic)
+                                );
+                                models::JobDetail::with_status(models::DetailStatus::Failed)
+                            });
                         (url, detail)
                     }
                 })
@@ -1196,7 +1209,7 @@ async fn flush_details(
     let handle = app.clone();
     let written = tauri::async_runtime::spawn_blocking(move || -> CmdResult<usize> {
         let state = handle.state::<AppState>();
-        let mut conn = state.db.lock().unwrap();
+        let mut conn = state.db.lock_recover();
         let n = db::save_details(&mut conn, &group).map_err(err)?;
         drop(conn);
         invalidate(state.inner());
@@ -1299,7 +1312,7 @@ fn persist_batch(
 
     for chunk in items.chunks(WRITE_CHUNK) {
         let details = seeded(chunk);
-        let mut conn = state.db.lock().unwrap();
+        let mut conn = state.db.lock_recover();
         db::save_items_ranked(&mut conn, chunk, run_start, scrapers::source_order())
             .map_err(err)?;
         if !details.is_empty() {
@@ -1333,7 +1346,7 @@ fn finalize(
     // skills for, so the memo has to go with it.
     skills::clear_memo();
 
-    let mut conn = state.db.lock().unwrap();
+    let mut conn = state.db.lock_recover();
     // Postings leave when they stop being offered, not when they get old: see
     // `db::sweep`. Run even when this scrape returned no rows: what closes,
     // ends or ages out does so by the date, not by what was fetched.
@@ -1386,7 +1399,7 @@ fn learn_boards(state: &AppState) -> CmdResult<()> {
     // Read under the lock, worked out without it: the URL pass is tens of
     // thousands of strings and a reader must not wait behind it.
     let (stored_health, stored_learned, urls) = {
-        let conn = state.db.lock().unwrap();
+        let conn = state.db.lock_recover();
         (
             db::get_setting(&conn, boards::KEY_HEALTH).ok().flatten(),
             db::get_setting(&conn, boards::KEY_DISCOVERED)
@@ -1416,7 +1429,7 @@ fn learn_boards(state: &AppState) -> CmdResult<()> {
     });
 
     {
-        let conn = state.db.lock().unwrap();
+        let conn = state.db.lock_recover();
         db::set_setting(
             &conn,
             boards::KEY_HEALTH,
@@ -1452,7 +1465,7 @@ const SCAN_SLACK: f64 = 1.1;
 
 fn trim_when_over(state: &AppState, limit: usize) -> CmdResult<()> {
     let over = {
-        let conn = state.db.lock().unwrap();
+        let conn = state.db.lock_recover();
         db::opportunity_count(&conn).map_err(err)? > limit
     };
     if !over {
@@ -1463,7 +1476,7 @@ fn trim_when_over(state: &AppState, limit: usize) -> CmdResult<()> {
     // the scoring nor the delete's preparation, so readers are not queued behind
     // a pass over fifty thousand rows.
     let all = {
-        let conn = state.db.lock().unwrap();
+        let conn = state.db.lock_recover();
         db::load_items(&conn).map_err(err)?
     };
     let every: Vec<String> = all.iter().map(|i| i.url.clone()).collect();
@@ -1476,7 +1489,7 @@ fn trim_when_over(state: &AppState, limit: usize) -> CmdResult<()> {
         .into_iter()
         .filter(|url| !kept.contains(url))
         .collect();
-    let mut conn = state.db.lock().unwrap();
+    let mut conn = state.db.lock_recover();
     let n = db::delete_unsaved(&mut conn, &dropped).map_err(err)?;
     log::info!("ceiling: dropped {n} lowest-fit postings");
     Ok(())
@@ -1493,7 +1506,7 @@ fn persist(
     let run_start = Utc::now();
     let runs: Vec<db::SourceRun> = outcomes.iter().map(|o| run_of(o, run_start)).collect();
     {
-        let mut conn = state.db.lock().unwrap();
+        let mut conn = state.db.lock_recover();
         db::record_runs(&mut conn, &runs).map_err(err)?;
     }
     if all_failed(&outcomes, items.len()) {
@@ -1521,11 +1534,24 @@ pub fn set_saved(
     item: Option<Item>,
 ) -> CmdResult<()> {
     {
-        let conn = state.db.lock().unwrap();
+        let conn = state.db.lock_recover();
         db::set_saved(&conn, &url, saved, item.as_ref()).map_err(err)?;
     }
     invalidate(&state);
     Ok(())
+}
+
+/// Opens the folder the log files are written to, for a bug report. From
+/// Rust rather than the webview so the opener's path scope does not have to
+/// grant the UI a directory outside anything it otherwise touches.
+#[tauri::command(async)]
+pub fn open_log_dir(app: AppHandle) -> CmdResult<()> {
+    use tauri_plugin_opener::OpenerExt;
+    let dir = app.path().app_log_dir().map_err(err)?;
+    std::fs::create_dir_all(&dir).map_err(err)?;
+    app.opener()
+        .open_path(dir.to_string_lossy(), None::<&str>)
+        .map_err(err)
 }
 
 /// Records where an application to a saved role stands, and a note on it.
@@ -1537,14 +1563,14 @@ pub fn set_application(
     status: Option<String>,
     note: Option<String>,
 ) -> CmdResult<()> {
-    let conn = state.db.lock().unwrap();
+    let conn = state.db.lock_recover();
     db::set_application(&conn, &url, status.as_deref(), note.as_deref()).map_err(err)
 }
 
 /// Every saved role's application status and note.
 #[tauri::command(async)]
 pub fn get_applications(state: State<'_, AppState>) -> CmdResult<Vec<db::Application>> {
-    let conn = state.db.lock().unwrap();
+    let conn = state.db.lock_recover();
     db::load_applications(&conn).map_err(err)
 }
 
@@ -1552,7 +1578,7 @@ pub fn get_applications(state: State<'_, AppState>) -> CmdResult<Vec<db::Applica
 #[tauri::command(async)]
 pub fn set_dismissed(state: State<'_, AppState>, url: String, dismissed: bool) -> CmdResult<()> {
     {
-        let conn = state.db.lock().unwrap();
+        let conn = state.db.lock_recover();
         db::set_dismissed(&conn, &url, dismissed).map_err(err)?;
     }
     invalidate(&state);
@@ -1563,7 +1589,7 @@ pub fn set_dismissed(state: State<'_, AppState>, url: String, dismissed: bool) -
 #[tauri::command(async)]
 pub fn mark_seen(state: State<'_, AppState>, url: String) -> CmdResult<()> {
     {
-        let conn = state.db.lock().unwrap();
+        let conn = state.db.lock_recover();
         db::mark_seen(&conn, &url).map_err(err)?;
     }
     invalidate(&state);
@@ -1573,7 +1599,7 @@ pub fn mark_seen(state: State<'_, AppState>, url: String) -> CmdResult<()> {
 #[tauri::command(async)]
 pub fn clear_dismissed(state: State<'_, AppState>) -> CmdResult<()> {
     {
-        let conn = state.db.lock().unwrap();
+        let conn = state.db.lock_recover();
         db::clear_dismissed(&conn).map_err(err)?;
     }
     invalidate(&state);
@@ -1591,7 +1617,7 @@ pub fn clear_data(state: State<'_, AppState>) -> CmdResult<()> {
         return Err("A refresh is running. Try again once it finishes.".into());
     }
     {
-        let conn = state.db.lock().unwrap();
+        let conn = state.db.lock_recover();
         db::clear_data(&conn).map_err(err)?;
     }
     skills::clear_memo();
@@ -1616,7 +1642,7 @@ pub fn get_interests(state: State<'_, AppState>) -> CmdResult<Vec<String>> {
 pub fn set_interests(state: State<'_, AppState>, interests: Vec<String>) -> CmdResult<()> {
     let json = serde_json::to_string(&interests).map_err(err)?;
     {
-        let conn = state.db.lock().unwrap();
+        let conn = state.db.lock_recover();
         db::set_setting(&conn, KEY_INTERESTS, &json).map_err(err)?;
     }
     invalidate(&state);
@@ -1641,7 +1667,7 @@ pub fn get_skills(state: State<'_, AppState>) -> CmdResult<Vec<String>> {
 pub fn set_skills(state: State<'_, AppState>, skills: Vec<String>) -> CmdResult<()> {
     let json = serde_json::to_string(&skills).map_err(err)?;
     {
-        let conn = state.db.lock().unwrap();
+        let conn = state.db.lock_recover();
         db::set_setting(&conn, KEY_SKILLS, &json).map_err(err)?;
     }
     invalidate(&state);
@@ -1650,14 +1676,14 @@ pub fn set_skills(state: State<'_, AppState>, skills: Vec<String>) -> CmdResult<
 
 #[tauri::command(async)]
 pub fn get_setting(state: State<'_, AppState>, key: String) -> CmdResult<Option<String>> {
-    let conn = state.db.lock().unwrap();
+    let conn = state.db.lock_recover();
     db::get_setting(&conn, &key).map_err(err)
 }
 
 #[tauri::command(async)]
 pub fn set_setting(state: State<'_, AppState>, key: String, value: String) -> CmdResult<()> {
     {
-        let conn = state.db.lock().unwrap();
+        let conn = state.db.lock_recover();
         db::set_setting(&conn, &key, &value).map_err(err)?;
     }
     // `major`, `weights`, `home_region` and the company tiers all arrive
@@ -1680,7 +1706,7 @@ fn is_ui_setting(key: &str) -> bool {
 /// source filter chips.
 #[tauri::command(async)]
 pub fn list_sources(state: State<'_, AppState>) -> CmdResult<Vec<String>> {
-    let conn = state.db.lock().unwrap();
+    let conn = state.db.lock_recover();
     db::distinct_sources(&conn).map_err(err)
 }
 
@@ -1726,7 +1752,7 @@ fn apply_prefs(state: &AppState, new: &ScrapePrefs) -> CmdResult<()> {
     let sources = scrapers::sources();
 
     {
-        let conn = state.db.lock().unwrap();
+        let conn = state.db.lock_recover();
         db::set_setting(&conn, prefs::KEY, &serde_json::to_string(new).map_err(err)?)
             .map_err(err)?;
         db::purge_unwanted(&conn, new.wanted(), &new.disabled_sources).map_err(err)?;
@@ -1768,7 +1794,7 @@ pub fn get_onboarding_state(state: State<'_, AppState>) -> CmdResult<&'static st
 }
 
 fn onboarding_state(state: &AppState) -> CmdResult<&'static str> {
-    let conn = state.db.lock().unwrap();
+    let conn = state.db.lock_recover();
     let has = |key: &str| {
         db::get_setting(&conn, key)
             .map(|v| v.is_some())
@@ -1828,7 +1854,7 @@ fn finish_onboarding(
 
     apply_prefs(state, prefs)?;
     {
-        let conn = state.db.lock().unwrap();
+        let conn = state.db.lock_recover();
         let json = |v: &Vec<String>| serde_json::to_string(v).map_err(err);
         db::set_setting(&conn, KEY_INTERESTS, &json(&interests)?).map_err(err)?;
         db::set_setting(&conn, KEY_TARGET_SENIORITY, &json(&seniority)?).map_err(err)?;
@@ -1856,7 +1882,7 @@ pub fn skip_onboarding(state: State<'_, AppState>) -> CmdResult<()> {
 }
 
 fn dismiss_onboarding(state: &AppState) -> CmdResult<()> {
-    let conn = state.db.lock().unwrap();
+    let conn = state.db.lock_recover();
     if db::get_setting(&conn, db::ONBOARDED_KEY)
         .map_err(err)?
         .is_none()
@@ -1936,7 +1962,7 @@ fn now_rfc3339() -> String {
 
 /// Reads one stored résumé, or the default when no id is given.
 fn stored_resume(state: &AppState, id: Option<&str>) -> CmdResult<Option<db::StoredResume>> {
-    let conn = state.db.lock().unwrap();
+    let conn = state.db.lock_recover();
     match id {
         Some(id) => db::load_resume(&conn, id).map_err(err),
         None => db::default_resume(&conn).map_err(err),
@@ -1960,7 +1986,7 @@ fn parse_stored(row: db::StoredResume) -> (String, String, resume::Resume, resum
 
 #[tauri::command(async)]
 pub fn list_resumes(state: State<'_, AppState>) -> CmdResult<Vec<ResumeSummary>> {
-    let conn = state.db.lock().unwrap();
+    let conn = state.db.lock_recover();
     Ok(db::list_resumes(&conn)
         .map_err(err)?
         .into_iter()
@@ -2019,20 +2045,20 @@ pub fn save_resume(
     let doc_json = serde_json::to_string(&doc).map_err(err)?;
     let theme_json = serde_json::to_string(&theme.sanitized()).map_err(err)?;
 
-    let conn = state.db.lock().unwrap();
+    let conn = state.db.lock_recover();
     db::save_resume(&conn, &id, &name, &doc_json, &theme_json, &now_rfc3339()).map_err(err)?;
     Ok(id)
 }
 
 #[tauri::command(async)]
 pub fn delete_resume(state: State<'_, AppState>, id: String) -> CmdResult<()> {
-    let mut conn = state.db.lock().unwrap();
+    let mut conn = state.db.lock_recover();
     db::delete_resume(&mut conn, &id).map_err(err)
 }
 
 #[tauri::command(async)]
 pub fn set_default_resume(state: State<'_, AppState>, id: String) -> CmdResult<()> {
-    let mut conn = state.db.lock().unwrap();
+    let mut conn = state.db.lock_recover();
     db::set_default_resume(&mut conn, &id).map_err(err)
 }
 
@@ -2043,7 +2069,7 @@ pub fn get_resume_variant(
     url: String,
     resume_id: String,
 ) -> CmdResult<Option<resume::Variant>> {
-    let conn = state.db.lock().unwrap();
+    let conn = state.db.lock_recover();
     Ok(db::load_variant(&conn, &url, &resume_id)
         .map_err(err)?
         .and_then(|json| serde_json::from_str(&json).ok()))
@@ -2057,7 +2083,7 @@ pub fn save_resume_variant(
     variant: resume::Variant,
 ) -> CmdResult<()> {
     let json = serde_json::to_string(&variant).map_err(err)?;
-    let conn = state.db.lock().unwrap();
+    let conn = state.db.lock_recover();
     db::save_variant(&conn, &url, &resume_id, &json, &now_rfc3339()).map_err(err)
 }
 
@@ -2069,7 +2095,7 @@ pub fn clear_resume_variant(
     url: String,
     resume_id: String,
 ) -> CmdResult<()> {
-    let conn = state.db.lock().unwrap();
+    let conn = state.db.lock_recover();
     db::delete_variant(&conn, &url, &resume_id).map_err(err)
 }
 
@@ -2120,7 +2146,7 @@ fn build_view(
     };
 
     let variant: resume::Variant = {
-        let conn = state.db.lock().unwrap();
+        let conn = state.db.lock_recover();
         db::load_variant(&conn, url, resume_id)
             .map_err(err)?
             .and_then(|json| serde_json::from_str(&json).ok())
@@ -2250,7 +2276,7 @@ pub fn import_json_resume(
     let id = resume::model::new_id();
     let doc_json = serde_json::to_string(&doc).map_err(err)?;
     let theme_json = serde_json::to_string(&resume::Theme::default()).map_err(err)?;
-    let conn = state.db.lock().unwrap();
+    let conn = state.db.lock_recover();
     db::save_resume(&conn, &id, &name, &doc_json, &theme_json, &now_rfc3339()).map_err(err)?;
     Ok(id)
 }
@@ -2436,7 +2462,7 @@ mod tests {
     }
 
     fn titles(state: &AppState) -> Vec<String> {
-        let conn = state.db.lock().unwrap();
+        let conn = state.db.lock_recover();
         let mut all: Vec<String> = db::load_items(&conn)
             .unwrap()
             .into_iter()
@@ -2471,7 +2497,7 @@ mod tests {
         )
         .unwrap();
 
-        let conn = t.state.db.lock().unwrap();
+        let conn = t.state.db.lock_recover();
         let runs: std::collections::HashMap<_, _> = db::load_source_runs(&conn)
             .unwrap()
             .into_iter()
@@ -2520,7 +2546,7 @@ mod tests {
         );
         assert_eq!(titles(&t.state), ["keep"]);
 
-        let conn = t.state.db.lock().unwrap();
+        let conn = t.state.db.lock_recover();
         let run = &db::load_source_runs(&conn).unwrap()[0];
         assert!(
             !run.ok,
@@ -2569,7 +2595,7 @@ mod tests {
 
         // Three days on, two misses already banked for everything.
         {
-            let conn = t.state.db.lock().unwrap();
+            let conn = t.state.db.lock_recover();
             conn.execute(
                 "UPDATE items SET last_seen_at = ?1, missed = 2",
                 rusqlite::params![(Utc::now() - chrono::Duration::days(3)).to_rfc3339()],
@@ -2596,7 +2622,7 @@ mod tests {
     }
 
     fn age_everything(t: &TestState, days: i64, missed: i64) {
-        let conn = t.state.db.lock().unwrap();
+        let conn = t.state.db.lock_recover();
         conn.execute(
             "UPDATE items SET last_seen_at = ?1, missed = ?2",
             rusqlite::params![
@@ -2677,7 +2703,7 @@ mod tests {
         finalize(&t.state, run_start, &none, false).unwrap();
 
         assert_eq!(titles(&t.state), ["a", "b"]);
-        let conn = t.state.db.lock().unwrap();
+        let conn = t.state.db.lock_recover();
         assert!(
             db::get_setting(&conn, KEY_LAST_REFRESH).unwrap().is_none(),
             "a stopped run is not a completed refresh"
@@ -2695,7 +2721,7 @@ mod tests {
         )
         .unwrap();
         {
-            let conn = t.state.db.lock().unwrap();
+            let conn = t.state.db.lock_recover();
             let off = ScrapePrefs {
                 disabled_sources: vec!["Greenhouse".into()],
                 ..ScrapePrefs::default()
@@ -2796,7 +2822,7 @@ mod tests {
     fn an_upgrade_is_offered_the_form_and_may_skip_it() {
         let t = test_state();
         {
-            let conn = t.state.db.lock().unwrap();
+            let conn = t.state.db.lock_recover();
             db::set_setting(&conn, db::ONBOARDED_KEY, "2026-01-01T00:00:00+00:00").unwrap();
         }
         assert_eq!(onboarding_state(&t.state).unwrap(), "offered");
@@ -2827,7 +2853,7 @@ mod tests {
         apply_prefs(&t.state, &internships_only).unwrap();
         assert_eq!(titles(&t.state), ["intern"]);
         let runs = |state: &AppState| {
-            db::load_source_runs(&state.db.lock().unwrap())
+            db::load_source_runs(&state.db.lock_recover())
                 .unwrap()
                 .len()
         };
@@ -2866,7 +2892,7 @@ mod tests {
         apply_prefs(&t.state, &without).unwrap();
 
         assert!(titles(&t.state).is_empty());
-        assert!(db::load_source_runs(&t.state.db.lock().unwrap())
+        assert!(db::load_source_runs(&t.state.db.lock_recover())
             .unwrap()
             .is_empty());
     }
@@ -2948,7 +2974,7 @@ mod tests {
         persist(&t.state, items, Vec::new()).unwrap();
         assert_eq!(titles(&t.state).len(), first, "a repeat scrape lost rows");
 
-        let runs = db::load_source_runs(&t.state.db.lock().unwrap()).unwrap();
+        let runs = db::load_source_runs(&t.state.db.lock_recover()).unwrap();
         let pitt = runs
             .iter()
             .find(|r| r.source == "Pitt CSC Repo")

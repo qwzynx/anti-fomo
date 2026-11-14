@@ -129,7 +129,13 @@ lto = true
 # every cached posting — 28 MB of description text — and it runs on a phone.
 # `lto` + `strip` already keep the binary reasonable.
 opt-level = 3
-panic = "abort"
+# Unwind, not abort. The scrapers parse pages nobody here controls, and a
+# parser that indexes past the end of one that changed shape panics. With
+# abort that killed the whole app mid-refresh; unwinding lets
+# `scrapers::stream_sources` and the detail pass catch it and record that one
+# source (or page) as failed. `sync::LockExt` is the other half: a lock held
+# during the panic would otherwise poison every later command.
+panic = "unwind"
 strip = true
 
 # `tauri dev` builds this profile, and it is the build you actually feel while

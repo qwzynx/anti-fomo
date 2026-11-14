@@ -28,6 +28,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, OnceLock, RwLock};
 
 use super::employers::{Board, Employer, EMPLOYERS};
+use crate::sync::{LockExt, RwLockExt};
 
 /// A board named in the bundled list or found in the cache.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -174,7 +175,7 @@ fn reports() -> &'static Mutex<Vec<(String, Answer)>> {
 /// Replaces the learned boards. Called with what `settings` holds, before a
 /// scrape.
 pub fn set_learned(found: &[Found]) {
-    let mut interned = interned().lock().unwrap();
+    let mut interned = interned().lock_recover();
     let mut boards = Vec::with_capacity(found.len());
     for f in found {
         let id = format!("{}:{}", f.ats, f.slug.to_ascii_lowercase());
@@ -186,7 +187,7 @@ pub fn set_learned(found: &[Found]) {
             boards.push(leaked);
         }
     }
-    *learned().write().unwrap() = boards;
+    *learned().write_recover() = boards;
 }
 
 /// Replaces the set of boards to leave alone this run.
@@ -196,7 +197,7 @@ pub fn set_skipped(health: &HashMap<String, BoardHealth>, now: DateTime<Utc>) {
         .filter(|(_, h)| is_skipped(h, now))
         .map(|(key, _)| key.clone())
         .collect();
-    *skipped().write().unwrap() = skip;
+    *skipped().write_recover() = skip;
 }
 
 /// Whether a board has failed enough, recently enough, to be left alone.
@@ -212,8 +213,8 @@ pub fn is_skipped(health: &BoardHealth, now: DateTime<Utc>) -> bool {
 /// boards that name the same employer are read once, and a board that has
 /// given up is left out.
 pub fn all() -> Vec<&'static Employer> {
-    let skip = skipped().read().unwrap();
-    let learned = learned().read().unwrap();
+    let skip = skipped().read_recover();
+    let learned = learned().read_recover();
     let mut seen: HashSet<String> = HashSet::new();
     let mut out = Vec::new();
     let candidates = EMPLOYERS
@@ -235,14 +236,14 @@ pub fn all() -> Vec<&'static Employer> {
 /// A board finished.
 pub fn report(board: &Board, answer: Answer) {
     if let Some(key) = key(board) {
-        reports().lock().unwrap().push((key, answer));
+        reports().lock_recover().push((key, answer));
     }
 }
 
 /// Forgets what boards have reported without filing it — for a run whose
 /// answers cannot be trusted (every source failed: the network, not the boards).
 pub fn discard_reports() {
-    reports().lock().unwrap().clear();
+    reports().lock_recover().clear();
 }
 
 /// Folds what boards reported since the last call into their health records.
@@ -250,7 +251,7 @@ pub fn discard_reports() {
 /// at most one a day. Anything unclear leaves the record alone but for the time
 /// it was tried.
 pub fn record_reports(health: &mut HashMap<String, BoardHealth>, now: DateTime<Utc>) -> usize {
-    let drained: Vec<_> = std::mem::take(&mut *reports().lock().unwrap());
+    let drained: Vec<_> = std::mem::take(&mut *reports().lock_recover());
     let n = drained.len();
     for (key, answer) in drained {
         let entry = health.entry(key).or_default();
@@ -279,7 +280,7 @@ pub fn record_reports(health: &mut HashMap<String, BoardHealth>, now: DateTime<U
 
 /// The key of every board already read, built once.
 fn known_keys() -> HashSet<String> {
-    let learned = learned().read().unwrap();
+    let learned = learned().read_recover();
     EMPLOYERS
         .iter()
         .chain(bundled().iter())
@@ -478,7 +479,7 @@ mod tests {
         answer: Answer,
         at: DateTime<Utc>,
     ) {
-        reports().lock().unwrap().push((key.to_string(), answer));
+        reports().lock_recover().push((key.to_string(), answer));
         record_reports(health, at);
     }
 

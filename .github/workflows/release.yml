@@ -23,7 +23,32 @@ permissions:
   contents: read
 
 jobs:
+  # The tag names the release; tauri.conf.json names the version inside every
+  # bundle. When they disagree the installers ship with the wrong version and
+  # the updater-less desktop builds cannot even say which one they are. The
+  # README asks for the three version fields to be bumped together by hand;
+  # this is the check that it happened, before an hour of builds.
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
+      - name: Tag matches the app version
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          conf=$(jq -r .version app/src-tauri/tauri.conf.json)
+          pkg=$(jq -r .version app/package.json)
+          cargo=$(sed -n 's/^version = "\(.*\)"/\1/p' app/src-tauri/Cargo.toml | head -1)
+          echo "tag=$TAG tauri.conf.json=$conf package.json=$pkg Cargo.toml=$cargo"
+          if [ "$TAG" != "v$conf" ] || [ "$conf" != "$pkg" ] || [ "$conf" != "$cargo" ]; then
+            echo "::error::Tag $TAG and the app versions ($conf / $pkg / $cargo) must all agree."
+            exit 1
+          fi
+
   desktop:
+    needs: verify
     strategy:
       fail-fast: false
       matrix:
@@ -117,6 +142,7 @@ jobs:
           retention-days: 7
 
   android:
+    needs: verify
     runs-on: ubuntu-22.04
     # Must match scripts/setup-android.sh, which is what a contributor's local
     # env is built from — a version drift here would pass locally and fail

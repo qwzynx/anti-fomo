@@ -38,6 +38,9 @@
     "targets": "all",
     "category": "Education",
     "shortDescription": "Your internships, tech news and events in one ranked feed",
+    "longDescription": "Anti-FOMO scrapes job boards, employer career pages, tech news and student events directly on your device, ranks them against your field, skills and interests, and keeps everything in one local feed. Search every posting's full text, save searches, track your applications, and tailor a one-page résumé to any role. No account and no server: your data stays on your machine.",
+    "publisher": "qwzynx",
+    "copyright": "© 2026 qwzynx",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

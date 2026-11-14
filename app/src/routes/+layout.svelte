@@ -12,6 +12,7 @@
   import SkillsWizard from "$lib/components/SkillsWizard.svelte";
   import Toaster from "$lib/components/Toaster.svelte";
   import TopBar from "$lib/components/TopBar.svelte";
+  import { installErrorHandlers } from "$lib/errors";
   import { feed } from "$lib/feed.svelte";
   import { CircleAlert, X } from "$lib/icons";
   import { search } from "$lib/search.svelte";
@@ -44,8 +45,13 @@
   );
 
   $effect(() => {
+    const uninstall = installErrorHandlers();
     feed.init();
-    return theme.watchSystem();
+    const unwatch = theme.watchSystem();
+    return () => {
+      uninstall();
+      unwatch?.();
+    };
   });
 
   // A new page is a list at its top again, so an update no longer needs to wait.

@@ -480,6 +480,24 @@ after a fresh clone. Tauri already puts `android.permission.INTERNET` in the
 manifest, so no manual edit is needed; without it every scraper would silently
 return empty.
 
+## Where things live
+
+Everything is under the app's data directory, named by the bundle identifier
+`dev.qwzynx.antifomo`:
+
+| Platform | Database (`antifomo.db`) | Logs (`Anti-FOMO.log`) |
+| --- | --- | --- |
+| Linux | `~/.local/share/dev.qwzynx.antifomo/` | `~/.local/share/dev.qwzynx.antifomo/logs/` |
+| macOS | `~/Library/Application Support/dev.qwzynx.antifomo/` | `~/Library/Logs/dev.qwzynx.antifomo/` |
+| Windows | `%APPDATA%\dev.qwzynx.antifomo\` | `%LOCALAPPDATA%\dev.qwzynx.antifomo\logs\` |
+| Android | the app's private storage | the app's private storage |
+
+Settings → About shows the version and opens the log folder. The log rotates
+at 2 MB and keeps the last few files; uncaught UI errors are written to it too
+(`[ui] …`), so a bug report should attach the newest one. If the database
+cannot be opened at launch — locked by another copy of the app, or corrupt —
+the app says so in a dialog naming the file instead of exiting silently.
+
 ## Releasing
 
 Pushing a `v*` tag triggers `.github/workflows/release.yml`, which builds Linux,
@@ -496,7 +514,8 @@ takes the tag to build as an input, so a manual run does not depend on which
 branch you launch it from.
 
 Bump the version in all three of `app/package.json`, `app/src-tauri/Cargo.toml`
-and `app/src-tauri/tauri.conf.json` before tagging — `tauri.conf.json` is what
+and `app/src-tauri/tauri.conf.json` before tagging (the workflow's first job,
+`verify`, fails the run if the tag and the three disagree) — `tauri.conf.json` is what
 names the bundles and sets the Android `versionCode`, and a tag that disagrees
 with it produces assets labelled with the old version.
 

@@ -12,6 +12,7 @@ use std::sync::{Mutex, OnceLock};
 use serde::{Deserialize, Serialize};
 
 use crate::models::Item;
+use crate::sync::LockExt;
 
 /// Category → skills → keywords.
 ///
@@ -784,12 +785,12 @@ pub fn demand(item: &Item) -> Vec<Demand> {
     // is twenty lines for a 67x cut on a path that runs on every keystroke's
     // worth of settings churn, and phones are slower than this laptop.
     let key = &item.url;
-    if let Some(hit) = memo().lock().unwrap().get(key) {
+    if let Some(hit) = memo().lock_recover().get(key) {
         return hit.clone();
     }
 
     let found = demand_uncached(item);
-    let mut cache = memo().lock().unwrap();
+    let mut cache = memo().lock_recover();
     // The keys are URLs, so this is bounded by the item cache — but a long
     // session that refreshes for weeks would still creep. Dropping the whole
     // map is fine: it costs one recompute pass, not correctness.
@@ -828,7 +829,7 @@ fn memo() -> &'static Mutex<HashMap<String, Vec<Demand>>> {
 /// Drops the memo. Called after a scrape, when a URL's text may have changed
 /// under a key we have already answered for.
 pub fn clear_memo() {
-    memo().lock().unwrap().clear();
+    memo().lock_recover().clear();
 }
 
 /// Skills whose ordinary keywords are also ordinary English words, and the

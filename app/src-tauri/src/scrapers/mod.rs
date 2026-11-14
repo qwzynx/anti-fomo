@@ -6,8 +6,10 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use futures::stream::{FuturesUnordered, StreamExt};
+use futures::FutureExt;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
+use std::panic::AssertUnwindSafe;
 use std::time::Duration;
 
 use crate::companies;
@@ -300,6 +302,28 @@ pub enum Msg {
     Done(SourceOutcome),
 }
 
+/// A source whose code panicked. Not retried: a parser that tripped over a
+/// page will trip over the same page three seconds later.
+#[derive(Debug)]
+pub struct Panicked(pub String);
+
+impl std::fmt::Display for Panicked {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "panicked: {}", self.0)
+    }
+}
+
+impl std::error::Error for Panicked {}
+
+/// The text of a caught panic, for the log and the source's health line.
+pub fn panic_message(panic: &(dyn std::any::Any + Send)) -> String {
+    panic
+        .downcast_ref::<&str>()
+        .map(|s| s.to_string())
+        .or_else(|| panic.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "unknown panic".to_string())
+}
+
 /// The registry order of every source, for the write-time ownership rule.
 pub fn source_order() -> &'static [&'static str] {
     static ORDER: std::sync::OnceLock<Vec<&'static str>> = std::sync::OnceLock::new();
@@ -321,7 +345,15 @@ pub async fn fetch_stream(names: &[&str], tx: futures::channel::mpsc::UnboundedS
         .into_iter()
         .filter(|(_, scraper)| names.contains(&scraper.source_name()))
         .collect();
+    stream_sources(selected, tx).await;
+}
 
+/// [`fetch_stream`] over scrapers already chosen — the seam the tests use to
+/// put a source that misbehaves among ones that do not.
+async fn stream_sources(
+    selected: Vec<(Category, Box<dyn Scraper>)>,
+    tx: futures::channel::mpsc::UnboundedSender<Msg>,
+) {
     let client = match build_client() {
         Ok(client) => client,
         Err(e) => {
@@ -355,7 +387,15 @@ pub async fn fetch_stream(names: &[&str], tx: futures::channel::mpsc::UnboundedS
                             count += items.len();
                             let _ = tx.unbounded_send(Msg::Batch { source, items });
                         };
-                        scraper.fetch_batches(&client, &mut sink).await
+                        // A panic in one source's parser — an index past the
+                        // end of a page that changed shape — is that source
+                        // failing, not the app. Caught here because every
+                        // source runs in this one task; uncaught it would
+                        // unwind through the whole scrape.
+                        AssertUnwindSafe(scraper.fetch_batches(&client, &mut sink))
+                            .catch_unwind()
+                            .await
+                            .unwrap_or_else(|panic| Err(Panicked(panic_message(&panic)).into()))
                     };
                     // A source that failed before it produced anything gets one
                     // more try after a pause: with dozens of requests in flight
@@ -363,8 +403,9 @@ pub async fn fetch_stream(names: &[&str], tx: futures::channel::mpsc::UnboundedS
                     // later, and the next scheduled attempt is a quarter of an
                     // hour away. A source that already sent rows is not retried —
                     // those rows would arrive twice.
-                    let retryable =
-                        matches!(&result, Err(e) if e.downcast_ref::<Dormant>().is_none());
+                    let retryable = matches!(&result, Err(e)
+                        if e.downcast_ref::<Dormant>().is_none()
+                            && e.downcast_ref::<Panicked>().is_none());
                     if retryable && count == 0 && attempt == 0 {
                         attempt += 1;
                         log::info!("{source}: failed, trying once more");
@@ -570,6 +611,74 @@ pub fn truncate_words(s: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct Fine;
+    struct Panics;
+
+    #[async_trait]
+    impl Scraper for Fine {
+        fn source_name(&self) -> &'static str {
+            "Fine"
+        }
+        async fn fetch(&self, _: &reqwest::Client) -> Result<Vec<Item>> {
+            Ok(vec![Item::new(
+                "A role",
+                "Fine",
+                ItemType::Job,
+                "https://fine.test/1",
+            )])
+        }
+    }
+
+    #[async_trait]
+    impl Scraper for Panics {
+        fn source_name(&self) -> &'static str {
+            "Panics"
+        }
+        async fn fetch(&self, _: &reqwest::Client) -> Result<Vec<Item>> {
+            let rows: Vec<&str> = Vec::new();
+            // What a parser does when a page changes shape under it.
+            let _ = rows[3];
+            unreachable!()
+        }
+    }
+
+    #[tokio::test]
+    async fn a_source_that_panics_fails_alone() {
+        let (tx, mut rx) = futures::channel::mpsc::unbounded();
+        stream_sources(
+            vec![
+                (
+                    Category::Opportunities,
+                    Box::new(Panics) as Box<dyn Scraper>,
+                ),
+                (Category::Opportunities, Box::new(Fine) as Box<dyn Scraper>),
+            ],
+            tx,
+        )
+        .await;
+
+        let mut rows = 0;
+        let mut outcomes = Vec::new();
+        while let Some(msg) = rx.next().await {
+            match msg {
+                Msg::Batch { items, .. } => rows += items.len(),
+                Msg::Done(outcome) => outcomes.push(outcome),
+            }
+        }
+        assert_eq!(rows, 1, "the healthy source's rows still arrive");
+        assert_eq!(
+            outcomes.len(),
+            2,
+            "both sources report, the panicking one included"
+        );
+        let panicked = outcomes.iter().find(|o| o.source == "Panics").unwrap();
+        assert!(
+            matches!(&panicked.health, Health::Failed(why) if why.contains("panicked")),
+            "{:?}",
+            panicked.health
+        );
+    }
 
     #[test]
     fn truncation_leaves_short_strings_alone() {

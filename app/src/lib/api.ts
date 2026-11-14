@@ -273,6 +273,9 @@ export const refreshFeed = (force = false) => invoke<RefreshOutcome>("refresh", 
 /** Stops the running refresh. False when nothing was running. */
 export const stopRefresh = () => invoke<boolean>("stop_refresh");
 
+/** Opens the folder holding the app's log files, for a bug report. */
+export const openLogDir = () => invoke<void>("open_log_dir");
+
 /** Where an application to a saved role stands. `null` = saved, not applied yet. */
 export type ApplicationStatus = "applied" | "interviewing" | "offer" | "rejected";
 
