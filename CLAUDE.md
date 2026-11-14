@@ -143,7 +143,17 @@ Everything ships from `/app`:
   - `db.rs` — SQLite via `rusqlite` (bundled). Items are a rebuildable cache keyed
     by URL. `settings`, `item_state`, `job_details`, `resumes` and
     `resume_variants` are the durable tables and must survive a schema bump, so
-    they are created with `IF NOT EXISTS` and never dropped. `clear_data`
+    they are created with `IF NOT EXISTS` and never dropped. **Additive schema
+    goes in `open()`, not `migrate`**: a version bump drops the items cache and
+    costs a full re-scrape, so new durable columns (`ensure_application_columns`
+    — the tracker's `app_status`/`app_updated_at`/`app_note` on `item_state`)
+    and the description index (`ensure_text_index`) are idempotent steps run on
+    every open. `job_text` is a contentless FTS5 index over `job_details`, kept
+    in step by triggers and keyed through `job_text_ids` (an `INTEGER PRIMARY
+    KEY`, because `VACUUM` may renumber a TEXT-keyed table's rowids); inside a
+    trigger the outer upsert's conflict policy overrides `OR IGNORE`, so guard
+    inserts with `NOT EXISTS`. `search_details` answers per term so the UI can
+    AND terms across a row's own fields and its description. `clear_data`
     empties the cache and leaves the résumés: a feed can be refetched and a
     work history cannot. **Deleting rows does not shrink the file.** Freed
     pages go on a freelist and are reused, so without help the store sits at
@@ -181,6 +191,12 @@ Everything ships from `/app`:
     source would read as fresh over nothing. The policy table is
     `scrapers::liveness`, keyed on `source_platform` strings that
     `the_policy_table_names_real_sources` pins.
+  - **Locks go through `sync::LockExt`** (`lock_recover`, `read_recover`,
+    `write_recover`), never `.lock().unwrap()`. Release builds unwind so that
+    `scrapers::stream_sources` and the detail pass can `catch_unwind` a source
+    or page that panics; a poisoned lock must not then brick every command.
+    `set_setting` does not re-rank for `ui.`-prefixed keys (the Roles filters,
+    saved searches), which are written on every chip tap.
   - `commands.rs` — the `invoke()` surface the UI calls. **Every command that
     touches the database is `#[tauri::command(async)]`.** A plain
     `#[tauri::command]` on a synchronous function runs on the *main thread*,
@@ -235,7 +251,18 @@ Everything ships from `/app`:
   - `/internships` is a job-board split pane at `lg:` — result list beside a
     detail column — and falls back to the plain list plus `ItemModal` below
     that. `ItemDetail` is the shared body of the modal and the pane, so the two
-    cannot drift apart.
+    cannot drift apart. Roles has its own search field as well as the ⌘K palette;
+    both use `lib/query.ts` (AND-ed word-start terms, `"whole words"`,
+    `-exclude`, `company:`), indexed once per list snapshot, plus Rust's
+    description hits. Its filter state lives in `lib/roles.svelte.ts`, outside
+    the page, persisted as `ui.roles_filters`; `filterRoles` in `lib/filters.ts`
+    is the one pass, shared with saved-search counts.
+  - **Feedback for an action is a toast** (`lib/toast.svelte.ts`), with an Undo
+    where the action can be taken back. `feed.error` and its banner are only
+    for a refresh that failed. Destructive actions ask through
+    `confirm()` (`lib/confirm.svelte.ts`). Overlays register with
+    `lib/layers.svelte.ts` so Escape closes only the top one and the scroll
+    lock is counted. Uncaught UI errors go to the log file via `lib/errors.ts`.
 
 See `app/README.md` for the source list, the command table, and Android setup.
 
@@ -297,6 +324,9 @@ See `app/README.md` for the source list, the command table, and Android setup.
   printpdf's runtime subsetter is a no-op without its `text_layout` feature and
   that feature drags in a layout and fontconfig stack that cannot cross-compile
   to Android.
+- **Gates**: `npm run check`, `npm test` (vitest, pure modules in
+  `src/**/*.test.ts`), `cargo fmt --check`, `cargo clippy --all-targets
+  --features dev-tools -- -D warnings`, `cargo test --lib`. CI runs all five.
 - **Icons come from `lib/icons.ts`**, which re-exports the lucide set the UI uses
   — no emoji in the interface, and no importing from `lucide-svelte` directly.
   Type an icon prop as `IconComponent` from that file; lucide still declares its

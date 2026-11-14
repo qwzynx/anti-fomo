@@ -14,6 +14,7 @@
   import TopBar from "$lib/components/TopBar.svelte";
   import { installErrorHandlers } from "$lib/errors";
   import { feed } from "$lib/feed.svelte";
+  import { roles } from "$lib/roles.svelte";
   import { CircleAlert, X } from "$lib/icons";
   import { search } from "$lib/search.svelte";
   import { theme } from "$lib/theme.svelte";
@@ -47,6 +48,9 @@
   $effect(() => {
     const uninstall = installErrorHandlers();
     feed.init();
+    // Before anything can hand Roles a query (the palette's "See all"): the
+    // stored chips must land first, or they would land on top of it.
+    void roles.init();
     const unwatch = theme.watchSystem();
     return () => {
       uninstall();

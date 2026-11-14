@@ -235,7 +235,7 @@
         onclick={() => feed.dismiss(item)}
         aria-label="Hide this item"
         title="Not interested"
-        class="tap h-9 w-9 sm:h-8 sm:w-8 {dense ? 'opacity-0 group-hover:opacity-100 focus-visible:opacity-100' : ''}"
+        class="tap h-9 w-9 sm:h-8 sm:w-8 {dense ? 'reveal-on-hover' : ''}"
       >
         <X size={16} />
       </button>

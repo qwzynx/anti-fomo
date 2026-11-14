@@ -290,6 +290,20 @@ h3 {
   animation: slide-up 0.25s cubic-bezier(0.32, 0.72, 0, 1) both;
 }
 
+/* A row control that stays out of the way until the row is pointed at — but
+   only where there is a pointer that can point. On touch (a tablet at lg:)
+   there is no hover, and an invisible button you can still tap is worse than
+   a visible one. */
+@media (hover: hover) {
+  .group .reveal-on-hover {
+    opacity: 0;
+  }
+  .group:hover .reveal-on-hover,
+  .reveal-on-hover:focus-visible {
+    opacity: 1;
+  }
+}
+
 /* A dialog: a sheet rising from the bottom edge on a phone, where `Modal`
    pins it, and a fade-up where it is a centred card. */
 .animate-sheet {

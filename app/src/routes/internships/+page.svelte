@@ -154,10 +154,13 @@
    * specialty chip asks for one.
    */
   const result = $derived.by(() => {
+    // A plain copy for the pass: the filter reads a dozen fields per row, and
+    // through the reactive proxy that is a dozen tracked reads times 40,000.
+    const f = $state.snapshot(roles.filters);
     const hits = search(items, parsed, descriptionHits);
-    const kept = filterRoles(hits.items, roles.filters, (i) => feed.match(i));
-    const sorted = sortItems(kept, roles.filters.sort);
-    return roles.filters.sort === "Best match" ? byQueryTier(sorted, hits.tier) : sorted;
+    const kept = filterRoles(hits.items, f, (i) => feed.match(i));
+    const sorted = sortItems(kept, f.sort);
+    return f.sort === "Best match" ? byQueryTier(sorted, hits.tier) : sorted;
   });
 
   // Back to the top when the filters change the list, but leave paging alone
@@ -337,7 +340,9 @@
   }
 
   function onKeydown(e: KeyboardEvent) {
-    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    if (e.defaultPrevented || e.metaKey || e.ctrlKey || e.altKey) return;
+    // A menu (sort, saved searches) owns its own arrow keys.
+    if ((e.target as Element | null)?.closest?.('[role="menu"], [role="menuitemradio"]')) return;
     if (e.key === "/" && !typing(e.target)) {
       e.preventDefault();
       searchInput?.focus();

@@ -125,17 +125,21 @@
     onOpen(item);
   }
 
-  function seeAll() {
+  async function seeAll() {
+    const query = search.query.trim();
+    search.hide();
+    // The stored chips must have been read first, or they would be restored
+    // on top of the query after the clear below.
+    await roles.init();
     // "See all 46" should land on 46, so the chips Roles had on are cleared
     // (the sort stays: it orders, it does not narrow).
     roles.clear();
-    roles.filters.query = search.query.trim();
-    search.hide();
+    roles.filters.query = query;
     void goto("/internships");
   }
 
   function activate(i: number) {
-    if (i === seeAllIndex) seeAll();
+    if (i === seeAllIndex) void seeAll();
     else if (flat[i]) choose(flat[i]);
   }
 
@@ -155,7 +159,7 @@
       e.preventDefault();
       // Shift-Enter, or Enter with nothing to pick: the full list on Roles.
       if (e.shiftKey || total === 0) {
-        if (!tooShort) seeAll();
+        if (!tooShort) void seeAll();
       } else activate(cursor);
     } else if (e.key === "Tab") {
       // The input is the only stop; Tab would otherwise walk into the page behind.
@@ -261,7 +265,7 @@
               seeAllIndex
                 ? 'bg-brand-soft'
                 : ''}"
-              onclick={seeAll}
+              onclick={() => void seeAll()}
               onmouseenter={() => (cursor = seeAllIndex)}
               onkeydown={() => {}}
             >

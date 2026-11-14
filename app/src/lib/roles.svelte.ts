@@ -64,7 +64,7 @@ const PERSIST_DELAY_MS = 400;
 /** Never reassigned — always edited in place, so a page may hold a reference to it. */
 const filters = $state<RolesFilters>({ ...structuredClone(DEFAULT_FILTERS) });
 let saved = $state.raw<SavedSearch[]>([]);
-let loaded = false;
+let loading: Promise<void> | null = null;
 /** The stored filters have been read. Writing before then would clobber them with defaults. */
 let ready = $state(false);
 let persistTimer: ReturnType<typeof setTimeout> | undefined;
@@ -144,25 +144,30 @@ export const roles = {
     return saved;
   },
 
-  /** Loads what was stored, once per session. */
-  async init() {
-    if (loaded) return;
-    loaded = true;
-    try {
-      const [rawFilters, rawSaved] = await Promise.all([
-        api.getSetting(FILTERS_KEY),
-        api.getSetting(SAVED_KEY),
-      ]);
-      // A query typed before the read landed (the palette's "See all") wins.
-      const query = filters.query;
-      Object.assign(filters, revive(rawFilters));
-      if (query) filters.query = query;
-      saved = reviveSaved(rawSaved);
-    } catch {
-      // Defaults are a fine place to start.
-    } finally {
-      ready = true;
-    }
+  /**
+   * Loads what was stored, once per session. Every caller gets the same
+   * promise, so awaiting it means the stored chips have actually landed —
+   * not merely that some earlier call has started reading them.
+   */
+  init(): Promise<void> {
+    loading ??= (async () => {
+      try {
+        const [rawFilters, rawSaved] = await Promise.all([
+          api.getSetting(FILTERS_KEY),
+          api.getSetting(SAVED_KEY),
+        ]);
+        // A query typed before the read landed wins.
+        const query = filters.query;
+        Object.assign(filters, revive(rawFilters));
+        if (query) filters.query = query;
+        saved = reviveSaved(rawSaved);
+      } catch {
+        // Defaults are a fine place to start.
+      } finally {
+        ready = true;
+      }
+    })();
+    return loading;
   },
 
   get ready() {

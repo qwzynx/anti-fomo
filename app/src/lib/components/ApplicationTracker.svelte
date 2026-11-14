@@ -34,11 +34,29 @@
     void feed.setApplication(item, status === next ? null : next, note || null);
   }
 
+  /** The write a pending note owes, bound to the posting it was typed for. */
+  let pendingNote: (() => void) | null = null;
+
   function onNote(value: string) {
     note = value;
     clearTimeout(noteTimer);
-    noteTimer = setTimeout(() => void feed.setApplication(item, status, value || null), 600);
+    // Captured now, not read when the timer fires: by then the pane may be
+    // showing another posting (j/k), and the note must not follow it there.
+    const target = item;
+    const stage = status;
+    pendingNote = () => {
+      pendingNote = null;
+      void feed.setApplication(target, stage, value || null);
+    };
+    noteTimer = setTimeout(() => pendingNote?.(), 600);
   }
+
+  // Leaving the posting mid-sentence (closing the modal, moving the
+  // selection) writes what was typed rather than dropping it.
+  $effect(() => () => {
+    clearTimeout(noteTimer);
+    pendingNote?.();
+  });
 
   const since = $derived.by(() => {
     if (!app?.updated_at || !status) return null;

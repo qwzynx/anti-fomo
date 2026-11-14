@@ -100,7 +100,7 @@
 
   /** Saves the override and lays out again, so the page reflects the toggle. */
   async function applyVariant(next: ResumeVariant) {
-    if (!resume.id) return;
+    if (!resume.id || !url) return;
     const previous = variant;
     variant = next;
     try {
@@ -242,13 +242,15 @@
             </p>
           </section>
         {:else}
-          <TailorPanel
-            doc={resume.doc}
-            {view}
-            {variant}
-            onVariant={(next) => void applyVariant(next)}
-            onReset={() => void reset()}
-          />
+          {#key url}
+            <TailorPanel
+              doc={resume.doc}
+              {view}
+              {variant}
+              onVariant={(next) => void applyVariant(next)}
+              onReset={() => void reset()}
+            />
+          {/key}
         {/if}
       </div>
     </div>

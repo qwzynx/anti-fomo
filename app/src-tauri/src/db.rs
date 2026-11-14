@@ -221,6 +221,7 @@ pub fn ensure_text_index(conn: &Connection) -> Result<()> {
 
     if !existed {
         // First launch with the index: read in what was fetched before it.
+        let started = std::time::Instant::now();
         conn.execute_batch(
             r#"
             INSERT OR IGNORE INTO job_text_ids (url)
@@ -230,6 +231,11 @@ pub fn ensure_text_index(conn: &Connection) -> Result<()> {
                   FROM job_text_ids i JOIN job_details d ON d.url = i.url;
             "#,
         )?;
+        let rows: i64 = conn.query_row("SELECT count(*) FROM job_text_ids", [], |r| r.get(0))?;
+        log::info!(
+            "built the description search index over {rows} postings in {} ms",
+            started.elapsed().as_millis()
+        );
     }
     Ok(())
 }
@@ -261,8 +267,16 @@ pub fn search_details(conn: &Connection, terms: &[String]) -> Result<HashMap<Str
         if !indexable_term(&term) || out.contains_key(&term) {
             continue;
         }
-        // Quoted, so nothing in it is read as FTS syntax; `*` makes it a prefix.
-        let query = format!("\"{term}\"*");
+        // Quoted, so nothing in it is read as FTS syntax. `*` makes it a
+        // prefix — but not for two letters: "ai" or "go" as a prefix is a
+        // large slice of the vocabulary ("aid", "gone"), and the answer would
+        // be most of the cache shipped as URLs on every keystroke. Two letters
+        // match as a whole word.
+        let query = if term.chars().count() < 3 {
+            format!("\"{term}\"")
+        } else {
+            format!("\"{term}\"*")
+        };
         let urls = stmt
             .query_map([&query], |row| row.get::<_, String>(0))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -1845,6 +1859,21 @@ mod tests {
         // And building it again is a no-op, not a second copy.
         ensure_text_index(&conn).unwrap();
         assert_eq!(found(&conn, "firmware"), vec!["https://a.test/old"]);
+    }
+
+    #[test]
+    fn two_letters_match_a_whole_word_not_a_prefix() {
+        let mut conn = mem();
+        save_details(
+            &mut conn,
+            &[
+                ("https://a.test/ai".into(), detail("Applied AI team")),
+                ("https://a.test/aid".into(), detail("Financial aid office")),
+            ],
+        )
+        .unwrap();
+        assert_eq!(found(&conn, "ai"), vec!["https://a.test/ai"]);
+        assert_eq!(found(&conn, "fina"), vec!["https://a.test/aid"]);
     }
 
     #[test]

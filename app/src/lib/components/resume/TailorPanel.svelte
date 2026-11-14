@@ -70,6 +70,10 @@
   }
 
   let headlineTimer: ReturnType<typeof setTimeout> | undefined;
+  // The page keys this panel on the posting, so a timer still pending when it
+  // goes would write into whichever posting replaced it. Dropped instead: at
+  // most half a second of typing.
+  $effect(() => () => clearTimeout(headlineTimer));
   function onHeadline(value: string) {
     clearTimeout(headlineTimer);
     headlineTimer = setTimeout(() => {
