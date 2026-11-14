@@ -26,6 +26,8 @@
     hint = "",
     /** Hidden from sight but read out — for a field whose column heading is its label. */
     hideLabel = false,
+    type = "text",
+    autocomplete,
     oninput,
   }: {
     label: string;
@@ -35,6 +37,9 @@
     rows?: number;
     hint?: string;
     hideLabel?: boolean;
+    /** The keyboard and validation a phone shows: email, tel, url. */
+    type?: "text" | "email" | "tel" | "url";
+    autocomplete?: HTMLInputElement["autocomplete"];
     oninput?: () => void;
   } = $props();
 
@@ -63,14 +68,16 @@
     <input
       {id}
       bind:value
-      type="text"
+      {type}
+      {autocomplete}
+      aria-describedby={hint ? `${id}-hint` : undefined}
       {placeholder}
       {oninput}
       class="control control-focus w-full"
     />
   {/if}
   {#if hint}
-    <p class="mt-1 text-xs text-subtle">{hint}</p>
+    <p id="{id}-hint" class="mt-1 text-xs text-subtle">{hint}</p>
   {/if}
 </div>
 

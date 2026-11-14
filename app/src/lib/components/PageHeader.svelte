@@ -18,7 +18,7 @@
   } = $props();
 </script>
 
-<div class="safe-top-mobile flex items-start justify-between gap-4 pt-4 pb-3 sm:pt-6 md:pt-6">
+<div class="flex items-start justify-between gap-4 pt-4 pb-3 sm:pt-6 md:pt-6">
   <div class="min-w-0">
     <h1 class="font-display text-[26px] leading-tight font-bold tracking-tight sm:text-3xl">
       {title}

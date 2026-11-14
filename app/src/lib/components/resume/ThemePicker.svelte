@@ -77,9 +77,20 @@
     });
   }
 
+  /**
+   * What the steppers stay inside. Below 8pt a résumé stops being readable on
+   * paper and above 14pt it stops being a résumé; a quarter inch of margin is
+   * where printers start clipping, an inch and a half is wasted page.
+   */
+  const BOUNDS = { base_size: [8, 14], margin: [18, 108] } as const;
+
   const step = (field: "base_size" | "margin", delta: number) => {
-    onChange({ ...theme, [field]: +(theme[field] + delta).toFixed(2) });
+    const [lo, hi] = BOUNDS[field];
+    const next = Math.min(hi, Math.max(lo, +(theme[field] + delta).toFixed(2)));
+    if (next !== theme[field]) onChange({ ...theme, [field]: next });
   };
+  const atMin = (field: "base_size" | "margin") => theme[field] <= BOUNDS[field][0];
+  const atMax = (field: "base_size" | "margin") => theme[field] >= BOUNDS[field][1];
 
   /** Whether this version does anything with colour at all. */
   const usesAccent = (t: ResumeTheme) => Object.values(t.accent_roles).some(Boolean);
@@ -181,11 +192,21 @@
     <div>
       <p class="mb-2 text-xs font-semibold tracking-wide text-subtle uppercase">Text size</p>
       <div class="flex items-center gap-2">
-        <button onclick={() => step("base_size", -0.5)} class="tap h-8 w-8 border border-line">
+        <button
+          onclick={() => step("base_size", -0.5)}
+          disabled={atMin("base_size")}
+          aria-label="Smaller text"
+          class="tap h-10 w-10 border border-line disabled:opacity-40"
+        >
           −
         </button>
         <span class="min-w-12 text-center text-sm font-semibold">{theme.base_size}pt</span>
-        <button onclick={() => step("base_size", 0.5)} class="tap h-8 w-8 border border-line">
+        <button
+          onclick={() => step("base_size", 0.5)}
+          disabled={atMax("base_size")}
+          aria-label="Larger text"
+          class="tap h-10 w-10 border border-line disabled:opacity-40"
+        >
           +
         </button>
       </div>
@@ -193,11 +214,21 @@
     <div>
       <p class="mb-2 text-xs font-semibold tracking-wide text-subtle uppercase">Margins</p>
       <div class="flex items-center gap-2">
-        <button onclick={() => step("margin", -6)} class="tap h-8 w-8 border border-line">−</button>
+        <button
+          onclick={() => step("margin", -6)}
+          disabled={atMin("margin")}
+          aria-label="Narrower margins"
+          class="tap h-10 w-10 border border-line disabled:opacity-40">−</button
+        >
         <span class="min-w-12 text-center text-sm font-semibold">
           {(theme.margin / 72).toFixed(2)}″
         </span>
-        <button onclick={() => step("margin", 6)} class="tap h-8 w-8 border border-line">+</button>
+        <button
+          onclick={() => step("margin", 6)}
+          disabled={atMax("margin")}
+          aria-label="Wider margins"
+          class="tap h-10 w-10 border border-line disabled:opacity-40">+</button
+        >
       </div>
     </div>
   </div>

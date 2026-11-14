@@ -414,12 +414,13 @@
 {/snippet}
 
 <!--
-  Below lg this is an ordinary scrolling page. At lg it becomes a fixed-height
-  app pane so the two columns can own the scrolling and the detail pane's Apply
-  button always sits on screen rather than hanging off the bottom.
+  Below lg this is an ordinary scrolling page. At lg the layout holds the shell
+  to the window's height (see `paneRoute` there) and this fills what is left,
+  so the two columns own the scrolling and the detail pane's Apply button
+  always sits on screen rather than hanging off the bottom.
 -->
 <main
-  class="mx-auto flex w-full max-w-7xl flex-1 flex-col px-4 pb-8 sm:px-6 lg:h-[calc(100dvh-58px)] lg:flex-none lg:overflow-hidden lg:px-8 lg:pb-5"
+  class="mx-auto flex w-full max-w-7xl flex-1 flex-col px-4 pb-8 sm:px-6 lg:min-h-0 lg:overflow-hidden lg:px-8 lg:pb-3"
 >
   <div class="shrink-0">
     <PageHeader title="Roles" {subtitle} />
@@ -437,8 +438,9 @@
           value={draft}
           oninput={(e) => onDraft(e.currentTarget.value)}
           type="search"
-          placeholder='Search title, company, skill — try "react toronto" or company:shopify'
+          placeholder="Search roles, companies, skills"
           aria-label="Search roles"
+          title={'Every word must match. "exact phrase" · -exclude · company:name'}
           autocomplete="off"
           spellcheck="false"
           class="h-full min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-subtle [&::-webkit-search-cancel-button]:hidden"

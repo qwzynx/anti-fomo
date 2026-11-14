@@ -266,7 +266,7 @@
           </section>
 
           <section class="card mt-5 border-danger/30 p-5">
-            <h3 class="mb-1 text-lg font-bold">Start over</h3>
+            <h2 class="mb-1 text-lg font-bold">Start over</h2>
             <p class="mb-4 text-sm text-muted">
               Empties every section — contact details, experience, projects, skills — and leaves
               the blank headings behind. The design is kept. This cannot be undone, so export a
@@ -303,10 +303,10 @@
           </section>
         {:else}
           <section class="card mb-5 p-5">
-            <h3 class="mb-3 text-lg font-bold">You</h3>
+            <h2 class="mb-3 text-lg font-bold">You</h2>
             <div class="grid gap-3 sm:grid-cols-2">
               <Field
-                label="Full name"
+                label="Full name" autocomplete="name"
                 bind:value={doc.contact.name}
                 oninput={touch}
                 placeholder="Ada Lovelace"
@@ -321,13 +321,13 @@
                 placeholder="Software Engineer"
               />
               <Field
-                label="Email"
+                label="Email" type="email" autocomplete="email"
                 bind:value={doc.contact.email}
                 oninput={touch}
                 placeholder="you@example.com"
               />
               <Field
-                label="Phone"
+                label="Phone" type="tel" autocomplete="tel"
                 bind:value={doc.contact.phone}
                 oninput={touch}
                 placeholder="+1 416 555 0100"
@@ -348,7 +348,7 @@
                 </div>
                 <div class="min-w-0 flex-1">
                   <Field
-                    label="URL"
+                    label="URL" type="url" autocomplete="off"
                     bind:value={link.url}
                     oninput={touch}
                     placeholder="https://github.com/you"
@@ -378,7 +378,7 @@
                   bind:value={section.title}
                   oninput={touch}
                   aria-label="Section name"
-                  class="min-w-0 flex-1 border-0 bg-transparent p-0 text-lg font-bold focus:outline-none"
+                  class="-mx-1 min-w-0 flex-1 rounded-md border-0 bg-transparent px-1 text-lg font-bold hover:bg-line-soft focus-visible:bg-line-soft"
                 />
                 <span class="shrink-0 text-xs text-subtle">
                   {section.entries.length}

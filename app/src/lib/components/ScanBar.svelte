@@ -1,6 +1,6 @@
 <script lang="ts">
   import { feed } from "$lib/feed.svelte";
-  import { LoaderCircle, Square } from "$lib/icons";
+  import { ChevronUp, LoaderCircle, Square } from "$lib/icons";
 
   // The one place a running scrape is visible and stoppable from every page.
   // It sits under the top bar rather than in it so it is there on a phone too,
@@ -73,4 +73,23 @@
       </button>
     </div>
   </div>
+{/if}
+
+<!--
+  The bar above scrolls away with the page, and "pending" only ever turns on
+  once the reader has scrolled down a list — so the button in it was off-screen
+  exactly when it mattered. This copy floats over the content instead.
+-->
+{#if feed.pending}
+  <button
+    type="button"
+    onclick={() => {
+      feed.applyPending();
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    }}
+    class="animate-fade-up fixed top-[calc(env(safe-area-inset-top)+0.75rem)] left-1/2 z-30 inline-flex -translate-x-1/2 items-center gap-1.5 rounded-full bg-brand px-4 py-2 text-[13px] font-semibold text-brand-fg shadow-lg shadow-brand/30 transition-colors hover:bg-brand-hover md:top-[70px]"
+  >
+    <ChevronUp size={14} strokeWidth={2.5} />
+    Show new results
+  </button>
 {/if}

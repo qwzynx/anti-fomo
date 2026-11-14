@@ -5,6 +5,7 @@
   import ItemModal from "$lib/components/ItemModal.svelte";
   import ItemRow from "$lib/components/ItemRow.svelte";
   import PageHeader from "$lib/components/PageHeader.svelte";
+  import RowSkeleton from "$lib/components/RowSkeleton.svelte";
   import { feed } from "$lib/feed.svelte";
   import { eventDate } from "$lib/item";
   import { BookOpen, Bookmark, Briefcase, Calendar, type IconComponent } from "$lib/icons";
@@ -80,7 +81,9 @@
   ]);
 
   const subtitle = $derived(
-    feed.saved.length === 0
+    feed.loading
+      ? "Loading…"
+      : feed.saved.length === 0
       ? "Nothing saved yet."
       : `${feed.saved.length} ${feed.saved.length === 1 ? "item" : "items"}, kept on this device even after they drop out of the feed.`,
   );
@@ -106,7 +109,11 @@
 <main class="mx-auto w-full max-w-6xl flex-1 px-4 pb-8 sm:px-6 lg:px-8">
   <PageHeader title="Saved" {subtitle} />
 
-  {#if feed.saved.length === 0}
+  {#if feed.loading}
+    <div class="card mt-2 overflow-hidden p-2">
+      <RowSkeleton count={6} />
+    </div>
+  {:else if feed.saved.length === 0}
     <EmptyState
       icon={Bookmark}
       title="No saved items"

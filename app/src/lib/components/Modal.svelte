@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { Snippet } from "svelte";
+  import { layers } from "$lib/layers.svelte";
 
   // Dialog chrome and nothing else: the backdrop, the scroll lock, focus
   // management and the Escape key. Lifted out of ItemModal once the skills
@@ -29,14 +30,19 @@
 
   const widthClass = $derived(size === "lg" ? "max-w-3xl" : "max-w-xl");
 
-  // The backdrop scroll-locks the page underneath while open.
+  // Registers as a layer while open: the page stays scroll-locked while any
+  // layer is up, and only the top one answers Escape and Tab.
+  let layer = $state<number | null>(null);
   $effect(() => {
     if (!open) return;
-    document.body.style.overflow = "hidden";
+    const handle = layers.open();
+    layer = handle.id;
     return () => {
-      document.body.style.overflow = "";
+      handle.close();
+      layer = null;
     };
   });
+  const z = $derived(layer === null ? 50 : 50 + layers.depth(layer) * 2);
 
   // Move focus into the dialog on open and hand it back on close, so keyboard
   // and screen-reader users aren't dropped at the top of the document.
@@ -79,16 +85,20 @@
 
 <svelte:window
   onkeydown={(e) => {
-    if (!open) return;
-    if (e.key === "Escape") onClose();
-    else trapFocus(e);
+    if (!open || layer === null || !layers.isTop(layer)) return;
+    if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      onClose();
+    } else trapFocus(e);
   }}
 />
 
 {#if open}
   <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
   <div
-    class="animate-fade-in fixed inset-0 z-50 flex items-end justify-center bg-black/50 p-0 backdrop-blur-sm sm:items-center sm:p-6"
+    class="animate-fade-in fixed inset-0 flex items-end justify-center bg-black/50 p-0 backdrop-blur-sm sm:items-center sm:p-6"
+    style:z-index={z}
     onclick={onClose}
   >
     <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
@@ -99,7 +109,7 @@
       aria-modal="true"
       aria-labelledby={titleId}
       tabindex="-1"
-      class="animate-fade-up safe-bottom card flex max-h-[88vh] w-full {widthClass} flex-col overflow-hidden rounded-t-3xl bg-elevated shadow-2xl focus:outline-none sm:rounded-3xl"
+      class="animate-sheet safe-bottom card flex max-h-[88dvh] w-full {widthClass} flex-col overflow-hidden rounded-t-3xl bg-elevated shadow-2xl focus:outline-none sm:rounded-3xl"
     >
       {@render children()}
     </div>

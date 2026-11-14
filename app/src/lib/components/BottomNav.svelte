@@ -7,8 +7,9 @@
   // thumb reach. Phones and small tablets get a tab bar; md: and up switches to
   // the top bar, so the two navigations are never on screen together.
   //
-  // Four tabs here against three in the top bar: a phone has nowhere else to
-  // put Settings, and a fourth tab is cheaper than burying it behind a menu.
+  // More tabs here than destinations in the top bar: a phone has nowhere else
+  // to put the résumé builder and Settings, which sit in the top bar's tool
+  // cluster on wider screens, and a tab is cheaper than burying them in a menu.
   const savedCount = $derived(feed.status?.saved_count ?? 0);
 </script>
 

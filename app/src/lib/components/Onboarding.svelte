@@ -177,7 +177,7 @@
   role="dialog"
   aria-modal="true"
   aria-labelledby={TITLE_ID}
-  class="fixed inset-0 z-[100] overflow-y-auto bg-background"
+  class="fixed inset-0 z-[100] overflow-y-auto bg-background pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)]"
 >
   <div class="mx-auto flex min-h-full w-full max-w-2xl flex-col px-5 py-8 sm:px-6 sm:py-12">
     <!-- Header -->

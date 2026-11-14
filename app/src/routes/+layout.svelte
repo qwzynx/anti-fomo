@@ -1,8 +1,10 @@
 <script lang="ts">
   import "../app.css";
   import { afterNavigate } from "$app/navigation";
+  import { page } from "$app/state";
   import type { ScrapedItem } from "$lib/api";
   import BottomNav from "$lib/components/BottomNav.svelte";
+  import ConfirmDialog from "$lib/components/ConfirmDialog.svelte";
   import ItemModal from "$lib/components/ItemModal.svelte";
   import Onboarding from "$lib/components/Onboarding.svelte";
   import ScanBar from "$lib/components/ScanBar.svelte";
@@ -16,6 +18,15 @@
   import { theme } from "$lib/theme.svelte";
 
   let { children } = $props();
+
+  /**
+   * Roles at desktop width is an app pane, not a page: two columns that own
+   * their own scrolling, sized to the window. The shell is held to the window's
+   * height there and the footer steps aside, so whatever chrome is showing
+   * above it — the scan bar, the refresh banner — is subtracted for real
+   * rather than guessed at with a fixed calc.
+   */
+  const paneRoute = $derived(page.url.pathname.startsWith("/internships"));
 
   /** What the palette opened, mounted here so search works from any page. */
   let found = $state<ScrapedItem | null>(null);
@@ -66,7 +77,16 @@
 -->
 <!-- `inert` while the form is up: it covers the screen, and without this Tab would
      walk straight through it into a page that is not there yet. -->
-<div class="flex min-h-screen flex-col bg-background font-sans text-foreground" inert={setup}>
+<div
+  class="flex min-h-screen flex-col bg-background font-sans text-foreground {paneRoute
+    ? 'lg:h-dvh lg:min-h-0 lg:overflow-hidden'
+    : ''}"
+  inert={setup}
+>
+  <!-- The phone's status bar inset, once, for everything below it: the scan
+       bar and the refresh banner come before any page header and would
+       otherwise slide under the notch. The top bar carries its own at md:. -->
+  <div class="h-[env(safe-area-inset-top)] shrink-0 md:hidden" aria-hidden="true"></div>
   <TopBar />
   <ScanBar />
 
@@ -89,9 +109,12 @@
 
   {@render children()}
 
-  <footer class="mt-auto border-t border-line py-8 text-center text-sm text-subtle">
+  <footer
+    class="mt-auto border-t border-line py-8 text-center text-sm text-subtle {paneRoute ? 'lg:hidden' : ''}"
+  >
     <p class="px-6">
-      {feed.status?.sources.length ?? 0} sources scraped on this device · nothing leaves your machine
+      {feed.status?.sources.length ?? 0} sources scraped on this device · your data stays on it (company
+      logos load from Google's favicon service)
     </p>
   </footer>
 
@@ -110,6 +133,7 @@
 <SearchPalette onOpen={(item) => (found = item)} />
 <ItemModal item={found} onClose={() => (found = null)} />
 <SkillsWizard />
+<ConfirmDialog />
 <Toaster />
 
 {#if setup}

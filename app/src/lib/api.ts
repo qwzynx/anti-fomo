@@ -282,7 +282,6 @@ export const getSetting = (key: string) => invoke<string | null>("get_setting", 
 export const setSetting = (key: string, value: string) =>
   invoke<void>("set_setting", { key, value });
 
-export const listSources = () => invoke<string[]>("list_sources");
 
 // --- display helpers ---
 

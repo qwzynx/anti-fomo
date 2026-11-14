@@ -23,6 +23,7 @@
   import type { ScrapePrefs, SourceCategory } from "$lib/api";
   import { groupByCategory } from "$lib/skills";
   import { theme, type Theme } from "$lib/theme.svelte";
+  import { confirm } from "$lib/confirm.svelte";
 
   const MAJORS = DISCIPLINES.filter((d) => d !== "All");
   const THEMES: { value: Theme; label: string; icon: typeof Sun }[] = [
@@ -38,19 +39,25 @@
     feed.setInterests(next);
   }
 
-  // Two taps to wipe the store: the button arms, and a second, separate
-  // button commits. There is no undo behind it, so a stray tap must not be
-  // enough on its own.
-  let confirmingClear = $state(false);
+  // There is no undo behind this, so it asks first — in the shared confirm
+  // dialog, which focuses Cancel, so a stray Enter cannot be the thing that
+  // deletes.
   let clearing = $state(false);
 
   async function clearData() {
+    const saved = feed.status?.saved_count ?? 0;
+    const ok = await confirm({
+      title: "Delete everything collected on this device?",
+      body: `Every cached posting and description${saved > 0 ? `, and your ${saved} saved item${saved === 1 ? "" : "s"},` : ""} will be deleted. Your field, interests, skills and résumés are kept. This cannot be undone.`,
+      confirmLabel: "Delete everything",
+      danger: true,
+    });
+    if (!ok) return;
     clearing = true;
     try {
       await feed.clearData();
     } finally {
       clearing = false;
-      confirmingClear = false;
     }
   }
 
@@ -106,7 +113,7 @@
   />
 
   <section class="card mt-4 mb-5 p-5">
-    <h3 class="mb-1 text-lg font-bold">Your field</h3>
+    <h2 class="mb-1 text-lg font-bold">Your field</h2>
     <p class="mb-4 text-sm text-muted">Items matching your field are ranked to the top.</p>
     <div class="flex flex-wrap gap-2">
       {#each MAJORS as option (option)}
@@ -125,7 +132,7 @@
 
   <section class="card mb-5 p-5">
     <div class="mb-1 flex items-baseline justify-between gap-3">
-      <h3 class="text-lg font-bold">Your interests</h3>
+      <h2 class="text-lg font-bold">Your interests</h2>
       <span class="shrink-0 text-xs font-medium text-subtle">
         {feed.interests.length} selected
       </span>
@@ -161,7 +168,7 @@
 
   <section class="card mb-5 p-5">
     <div class="mb-1 flex items-baseline justify-between gap-3">
-      <h3 class="text-lg font-bold">Your skills</h3>
+      <h2 class="text-lg font-bold">Your skills</h2>
       <span class="shrink-0 text-xs font-medium text-subtle">
         {feed.skills.length} selected
       </span>
@@ -205,7 +212,7 @@
   </section>
 
   <section class="card mb-5 p-5">
-    <h3 class="mb-1 text-lg font-bold">Appearance</h3>
+    <h2 class="mb-1 text-lg font-bold">Appearance</h2>
     <p class="mb-4 text-sm text-muted">"System" follows your OS setting and updates live.</p>
     <div class="flex flex-wrap gap-2">
       {#each THEMES as option (option.value)}
@@ -228,10 +235,14 @@
   <section class="card mb-5 p-5">
     <div class="mb-4 flex items-start justify-between gap-4">
       <div>
-        <h3 class="mb-1 text-lg font-bold">What to scrape</h3>
+        <h2 class="mb-1 text-lg font-bold">What to scrape</h2>
         <p class="text-sm text-muted">
-          {feed.status?.item_count ?? 0} items cached · last refreshed
-          {feed.status?.last_refresh ? timeAgo(feed.status.last_refresh) : "never"}
+          {#if feed.status}
+            {feed.status.item_count.toLocaleString()} items cached · last refreshed
+            {feed.status.last_refresh ? timeAgo(feed.status.last_refresh) : "never"}
+          {:else}
+            Loading…
+          {/if}
           {#if quiet > 0}
             · <span class="text-star">{quiet} quiet</span>
           {/if}
@@ -371,7 +382,7 @@
 
   {#if (feed.status?.dismissed_count ?? 0) > 0}
     <section class="card mb-5 p-5">
-      <h3 class="mb-1 text-lg font-bold">Hidden items</h3>
+      <h2 class="mb-1 text-lg font-bold">Hidden items</h2>
       <p class="mb-4 text-sm text-muted">
         You've hidden {feed.status?.dismissed_count} item{feed.status?.dismissed_count === 1
           ? ""
@@ -388,7 +399,7 @@
   {/if}
 
   <section class="card mb-5 border-danger/30 p-5">
-    <h3 class="mb-1 text-lg font-bold">Clear stored data</h3>
+    <h2 class="mb-1 text-lg font-bold">Clear stored data</h2>
     <p class="mb-4 text-sm text-muted">
       Deletes everything the app has collected on this device — {feed.status?.item_count ?? 0}
       cached item{(feed.status?.item_count ?? 0) === 1 ? "" : "s"}, every fetched job
@@ -398,37 +409,18 @@
       feed refills on the next refresh. This cannot be undone.
     </p>
 
-    {#if confirmingClear}
-      <div class="flex flex-wrap items-center gap-2">
-        <button
-          onclick={clearData}
-          disabled={clearing}
-          class="inline-flex items-center gap-1.5 rounded-xl bg-danger px-4 py-2 text-sm font-semibold text-danger-fg transition-colors hover:opacity-90 disabled:opacity-50"
-        >
-          <Trash2 size={15} />
-          {clearing ? "Clearing…" : "Yes, delete everything"}
-        </button>
-        <button
-          onclick={() => (confirmingClear = false)}
-          disabled={clearing}
-          class="rounded-xl border border-line px-4 py-2 text-sm font-semibold text-muted transition-colors hover:border-brand hover:text-brand disabled:opacity-50"
-        >
-          Cancel
-        </button>
-      </div>
-    {:else}
-      <button
-        onclick={() => (confirmingClear = true)}
-        class="inline-flex items-center gap-1.5 rounded-xl border border-danger/40 px-4 py-2 text-sm font-semibold text-danger transition-colors hover:bg-danger hover:text-danger-fg"
-      >
-        <Trash2 size={15} />
-        Clear all data
-      </button>
-    {/if}
+    <button
+      onclick={clearData}
+      disabled={clearing}
+      class="inline-flex items-center gap-1.5 rounded-xl border border-danger/40 px-4 py-2 text-sm font-semibold text-danger transition-colors hover:bg-danger hover:text-danger-fg disabled:opacity-50"
+    >
+      <Trash2 size={15} />
+      {clearing ? "Clearing…" : "Clear all data"}
+    </button>
   </section>
 
   <section class="card p-5">
-    <h3 class="mb-1 text-lg font-bold">About</h3>
+    <h2 class="mb-1 text-lg font-bold">About</h2>
     <p class="text-sm leading-relaxed text-muted">
       Anti-FOMO scrapes {sources.length} public sources directly on your device and ranks them against
       your field and interests. Results are cached locally, so the feed opens instantly and stays readable

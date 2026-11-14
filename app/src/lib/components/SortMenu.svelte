@@ -19,6 +19,42 @@
   let { value = $bindable() }: { value: HubSort } = $props();
 
   let open = $state(false);
+  let trigger = $state<HTMLButtonElement | null>(null);
+  let menu = $state<HTMLElement | null>(null);
+
+  const items = () => [...(menu?.querySelectorAll<HTMLElement>('[role="menuitemradio"]') ?? [])];
+
+  // Opening puts focus on the current choice, as a menu should.
+  $effect(() => {
+    if (!open || !menu) return;
+    const current = items().find((el) => el.getAttribute("aria-checked") === "true");
+    (current ?? items()[0])?.focus();
+  });
+
+  function close(refocus = true) {
+    open = false;
+    if (refocus) trigger?.focus();
+  }
+
+  function onMenuKeydown(e: KeyboardEvent) {
+    const list = items();
+    const at = list.indexOf(document.activeElement as HTMLElement);
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      list[(at + 1) % list.length]?.focus();
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      list[(at - 1 + list.length) % list.length]?.focus();
+    } else if (e.key === "Home") {
+      e.preventDefault();
+      list[0]?.focus();
+    } else if (e.key === "End") {
+      e.preventDefault();
+      list[list.length - 1]?.focus();
+    } else if (e.key === "Tab") {
+      close(false);
+    }
+  }
 
   function iconFor(sort: HubSort): IconComponent {
     switch (sort) {
@@ -40,16 +76,25 @@
 
   function pick(sort: HubSort) {
     value = sort;
-    open = false;
+    close();
   }
 </script>
 
-<svelte:window onkeydown={(e) => open && e.key === "Escape" && (open = false)} />
+<svelte:window
+  onkeydown={(e) => {
+    if (open && e.key === "Escape") {
+      e.stopPropagation();
+      close();
+    }
+  }}
+/>
 
 <div class="relative shrink-0">
   <button
-    onclick={() => (open = !open)}
-    aria-haspopup="listbox"
+    bind:this={trigger}
+    onclick={() => (open ? close() : (open = true))}
+    aria-haspopup="menu"
+    aria-label="Sort roles by: {value}"
     aria-expanded={open}
     class="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-full border px-3 text-[13px] font-semibold transition-colors
            {open
@@ -64,19 +109,23 @@
     <!-- Catches an outside click without a dark scrim — this is a menu, not a
          modal, and the page underneath should keep reading normally. -->
     <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
-    <div class="fixed inset-0 z-40" onclick={() => (open = false)}></div>
+    <div class="fixed inset-0 z-40" onclick={() => close(false)}></div>
 
     <div
-      role="listbox"
+      bind:this={menu}
+      role="menu"
+      tabindex="-1"
       aria-label="Sort roles by"
+      onkeydown={onMenuKeydown}
       class="animate-fade-up card absolute right-0 z-50 mt-2 w-72 origin-top-right overflow-hidden bg-elevated p-1.5 shadow-2xl"
     >
       {#each HUB_SORTS as sort (sort)}
         {@const Icon = iconFor(sort)}
         {@const active = sort === value}
         <button
-          role="option"
-          aria-selected={active}
+          role="menuitemradio"
+          aria-checked={active}
+          tabindex="-1"
           onclick={() => pick(sort)}
           class="flex w-full items-start gap-2.5 rounded-xl px-2.5 py-2 text-left transition-colors {active
             ? 'bg-brand-soft'

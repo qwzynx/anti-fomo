@@ -78,7 +78,7 @@
 
   const subtitle = $derived(
     feed.loading
-      ? `Scanning ${feed.status?.sources.length ?? 0} sources…`
+      ? "Loading your feed…"
       : fresh > 0
         ? `${fresh} new ${fresh === 1 ? "thing" : "things"} worth your attention since yesterday.`
         : `${feed.items.length.toLocaleString()} items cached · nothing new in the last day.`,

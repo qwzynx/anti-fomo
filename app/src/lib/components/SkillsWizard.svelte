@@ -11,6 +11,7 @@
     skillCategoryIcon,
   } from "$lib/icons";
   import { groupByCategory, stepsFor } from "$lib/skills";
+  import { toast } from "$lib/toast.svelte";
   import Modal from "./Modal.svelte";
   import SkillChip from "./SkillChip.svelte";
 
@@ -79,6 +80,16 @@
 
   function close() {
     feed.closeSkillsForm();
+  }
+
+  /** One tap, so it can be taken back: the toast carries an Undo. */
+  async function clearAll() {
+    const previous = feed.skills;
+    await feed.setSkills([]);
+    toast.info(`Cleared ${previous.length} skill${previous.length === 1 ? "" : "s"}`, {
+      label: "Undo",
+      run: () => feed.setSkills(previous),
+    });
   }
 </script>
 
@@ -248,9 +259,9 @@
       {#if editing}
         <div class="flex items-center justify-between gap-3">
           <button
-            onclick={() => feed.setSkills([])}
+            onclick={clearAll}
             disabled={total === 0}
-            class="text-xs font-semibold text-brand disabled:cursor-not-allowed disabled:text-subtle"
+            class="-ml-2 rounded-lg px-2 py-2 text-xs font-semibold text-brand hover:bg-brand-soft disabled:cursor-not-allowed disabled:text-subtle disabled:hover:bg-transparent"
           >
             Clear all
           </button>

@@ -142,6 +142,8 @@
   function onKeydown(e: KeyboardEvent) {
     if (e.key === "Escape") {
       e.preventDefault();
+      // Only this layer: a dialog open beneath the palette stays open.
+      e.stopPropagation();
       search.hide();
     } else if (e.key === "ArrowDown") {
       e.preventDefault();
