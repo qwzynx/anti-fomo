@@ -7,6 +7,7 @@
     Banknote,
     Bookmark,
     BookmarkCheck,
+    EyeOff,
     FileText,
     Hourglass,
     MapPin,
@@ -36,11 +37,17 @@
     item,
     onClose,
     titleId,
+    dismissable = true,
+    onDismissed,
   }: {
     item: ScrapedItem;
     /** Renders a close button when the host is dismissable. */
     onClose?: () => void;
     titleId?: string;
+    /** Offers "hide from feed". Off where hiding means nothing, e.g. Saved. */
+    dismissable?: boolean;
+    /** Told after a hide, so a modal host can close itself. */
+    onDismissed?: (item: ScrapedItem) => void;
   } = $props();
 
   let logoFailed = $state(false);
@@ -56,6 +63,8 @@
    * where it is asked for.
    */
   let fetched = $state<ScrapedItem | null | undefined>(undefined);
+  /** The fetch itself failed — distinct from "fetched, and there was nothing". */
+  let fetchFailed = $state(false);
 
   $effect(() => {
     const url = item.url;
@@ -66,12 +75,21 @@
     // rerun reads the value it just wrote, forever. `peeked` breaks the cycle.
     const peeked = feed.peekDetail(url);
     fetched = peeked;
+    fetchFailed = false;
     if (peeked !== undefined) return;
 
     let live = true;
-    void feed.detail(url).then((d) => {
-      if (live) fetched = d;
-    });
+    feed.detail(url).then(
+      (d) => {
+        if (live) fetched = d;
+      },
+      () => {
+        // Settle on the list row rather than spinning forever.
+        if (!live) return;
+        fetched = null;
+        fetchFailed = true;
+      },
+    );
     return () => {
       live = false;
     };
@@ -175,11 +193,25 @@
       </div>
     </div>
     <div class="flex shrink-0 items-center gap-1">
+      {#if dismissable}
+        <button
+          onclick={() => {
+            void feed.dismiss(item);
+            onDismissed?.(item);
+          }}
+          aria-label="Hide this from your feed"
+          title="Hide"
+          class="flex h-10 w-10 items-center justify-center rounded-full text-subtle transition-colors hover:bg-line-soft hover:text-foreground"
+        >
+          <EyeOff size={18} />
+        </button>
+      {/if}
       <button
         onclick={() => feed.toggleSaved(item)}
         aria-pressed={saved}
         aria-label={saved ? "Remove from saved" : "Save this item"}
-        class="flex h-8 w-8 items-center justify-center rounded-full transition-colors hover:bg-line-soft
+        title={saved ? "Saved" : "Save"}
+        class="flex h-10 w-10 items-center justify-center rounded-full transition-colors hover:bg-line-soft
                {saved ? 'text-brand' : 'text-subtle hover:text-foreground'}"
       >
         {#if saved}
@@ -192,7 +224,7 @@
         <button
           onclick={onClose}
           aria-label="Close"
-          class="flex h-8 w-8 items-center justify-center rounded-full text-subtle transition-colors hover:bg-line-soft hover:text-foreground"
+          class="flex h-10 w-10 items-center justify-center rounded-full text-subtle transition-colors hover:bg-line-soft hover:text-foreground"
         >
           <X size={18} />
         </button>
@@ -280,6 +312,19 @@
     {/if}
 
     <JobSections item={full} />
+
+    {#if pending}
+      <div class="flex flex-col gap-2" aria-busy="true" aria-label="Loading the full posting">
+        <div class="h-3 w-11/12 animate-pulse rounded bg-line-soft"></div>
+        <div class="h-3 w-4/5 animate-pulse rounded bg-line-soft"></div>
+        <div class="h-3 w-2/3 animate-pulse rounded bg-line-soft"></div>
+      </div>
+    {:else if fetchFailed}
+      <p class="mb-3 text-xs text-danger" role="alert">
+        The full posting could not be loaded from the local store. What the list knows is shown
+        below.
+      </p>
+    {/if}
 
     <!-- The scraped one-liner is redundant once the real posting is here.
          Held back while the fetch is in flight: the note below says the page

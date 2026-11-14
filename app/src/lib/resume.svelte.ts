@@ -36,6 +36,15 @@ let saving = $state(false);
 let error = $state<string | null>(null);
 let dirty = $state(false);
 
+/**
+ * Counts edits. A save compares it before and after its round trip: an edit
+ * that landed while the write was in flight means the copy Rust hands back is
+ * already stale, and adopting it would throw away what was just typed.
+ */
+let edits = 0;
+/** A save was asked for while one was in flight; it runs when that one ends. */
+let saveAgain = false;
+
 let relayoutTimer: ReturnType<typeof setTimeout> | undefined;
 let saveTimer: ReturnType<typeof setTimeout> | undefined;
 /** Guards against a slow layout landing on top of a newer one. */
@@ -179,6 +188,7 @@ export const resume = {
    * not need a row rewritten per character.
    */
   touch() {
+    edits++;
     dirty = true;
     clearTimeout(relayoutTimer);
     relayoutTimer = setTimeout(() => void relayout(), RELAYOUT_DELAY);
@@ -190,27 +200,44 @@ export const resume = {
   async save() {
     if (!doc || !theme) return;
     clearTimeout(saveTimer);
+    // One write at a time. Two in flight for a résumé that has no id yet would
+    // each create a row; later ones would race on which copy wins.
+    if (saving) {
+      saveAgain = true;
+      return;
+    }
     saving = true;
     error = null;
+    const editsAtStart = edits;
     try {
       const created = id === null;
       const savedId = await api.saveResume(id, name, $state.snapshot(doc), $state.snapshot(theme));
       id = savedId;
-      dirty = false;
       // Rust mints ids and re-reads every bullet's skills on save, so what
       // comes back is the authority. Keeping the local copy would leave a new
       // bullet with no id, and an id is what a per-posting override refers to.
       const stored = await api.getResume(savedId);
-      if (stored) {
-        doc = stored.doc;
-        theme = stored.theme;
+      if (edits === editsAtStart) {
+        dirty = false;
+        if (stored) {
+          doc = stored.doc;
+          theme = stored.theme;
+        }
       }
+      // Otherwise the reader typed while this was in flight. Their copy is
+      // newer than the one just read back, so it stays, still dirty, and the
+      // save `touch` already scheduled writes it — and adopts *that* answer,
+      // ids and all, once nothing has moved under it.
       if (created) list = await api.listResumes();
       await relayout();
     } catch (e) {
       fail(e, "could not save the résumé");
     } finally {
       saving = false;
+      if (saveAgain) {
+        saveAgain = false;
+        void resume.save();
+      }
     }
   },
 

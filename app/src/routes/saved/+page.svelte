@@ -171,4 +171,4 @@
   {/if}
 </main>
 
-<ItemModal item={selected} onClose={() => (selected = null)} />
+<ItemModal item={selected} onClose={() => (selected = null)} dismissable={false} />

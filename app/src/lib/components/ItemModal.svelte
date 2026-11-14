@@ -6,13 +6,17 @@
   // Binds one item to the shared dialog chrome. Everything visible comes from
   // ItemDetail, which the jobs page renders directly in its right-hand column
   // instead; everything structural comes from Modal.
-  let { item, onClose }: { item: ScrapedItem | null; onClose: () => void } = $props();
+  let {
+    item,
+    onClose,
+    dismissable = true,
+  }: { item: ScrapedItem | null; onClose: () => void; dismissable?: boolean } = $props();
 
   let titleId = $derived(item ? `modal-title-${encodeURIComponent(item.url)}` : undefined);
 </script>
 
 <Modal open={item !== null} {onClose} {titleId}>
   {#if item}
-    <ItemDetail {item} {onClose} {titleId} />
+    <ItemDetail {item} {onClose} {titleId} {dismissable} onDismissed={onClose} />
   {/if}
 </Modal>

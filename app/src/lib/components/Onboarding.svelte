@@ -1,5 +1,6 @@
 <script lang="ts">
   import { feed } from "$lib/feed.svelte";
+  import { toast } from "$lib/toast.svelte";
   import {
     ArrowLeft,
     Briefcase,
@@ -159,7 +160,9 @@
 
   function dismiss() {
     if (reopened) feed.closeSetup();
-    else if (offered) void feed.skipSetup().catch((e) => (failure = String(e)));
+    // The failure line lives on the last step; a skip can fail from any step,
+    // so it is reported where it will be seen.
+    else if (offered) void feed.skipSetup().catch((e) => toast.error("skip setup", e));
   }
 
   function onKeydown(e: KeyboardEvent) {

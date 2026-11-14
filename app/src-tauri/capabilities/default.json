@@ -12,9 +12,7 @@
     "opener:allow-open-path",
     "log:default",
     "dialog:allow-save",
-    "dialog:allow-open",
-    "dialog:allow-message",
     "fs:allow-write-file",
-    "fs:allow-read-file"
+    "fs:allow-write-text-file"
   ]
 }

@@ -15,6 +15,7 @@ import type {
   SkillCategory,
 } from "./api";
 import { MIN_SKILLS_TO_SHOW } from "./skills";
+import { toast } from "./toast.svelte";
 
 const DEFAULT_MAJOR = "Software Engineering";
 
@@ -530,16 +531,28 @@ export const feed = {
   },
 
   async setMajor(next: string) {
+    const previous = major;
     major = next;
-    await api.setSetting("major", next);
-    await loadAll();
+    try {
+      await api.setSetting("major", next);
+      await loadAll();
+    } catch (e) {
+      major = previous;
+      toast.error("change your field", e);
+    }
   },
 
   /** Re-ranks rather than re-scrapes: interests only affect scoring. */
   async setInterests(next: string[]) {
+    const previous = interests;
     interests = next;
-    await api.setInterests(next);
-    await loadAll();
+    try {
+      await api.setInterests(next);
+      await loadAll();
+    } catch (e) {
+      interests = previous;
+      toast.error("save your interests", e);
+    }
   },
 
   // --- skills ---
@@ -577,23 +590,36 @@ export const feed = {
     } catch (e) {
       skills = previous;
       reset(skillSet, previous);
-      error = String(e);
+      toast.error("update your skills", e);
     }
   },
 
   /** Bulk write from the wizard. Re-ranks immediately — there is no burst. */
   async setSkills(next: string[]) {
+    const previous = skills;
     skills = next;
     reset(skillSet, next);
-    await api.setSkills(next);
-    await loadAll();
+    try {
+      await api.setSkills(next);
+      await loadAll();
+    } catch (e) {
+      skills = previous;
+      reset(skillSet, previous);
+      toast.error("save your skills", e);
+    }
   },
 
   /** Marks the form as having been seen, which retires the setup prompt. */
   async completeSkillsSetup() {
     const at = new Date().toISOString();
     skillsSetupAt = at;
-    await api.setSetting("skills_setup_at", at);
+    try {
+      await api.setSetting("skills_setup_at", at);
+    } catch (e) {
+      // Kept locally: the prompt is gone for this session either way, and it
+      // is not worth stranding the reader in the form over a flag.
+      toast.error("remember that skills are set up", e);
+    }
   },
 
   // --- the setup form ---
@@ -659,14 +685,13 @@ export const feed = {
    * wanted, since everything else is still inside its freshness window.
    */
   async setPrefs(next: ScrapePrefs) {
-    error = null;
     try {
       await api.setScrapePrefs(next);
       prefs = next;
       await loadAll();
       void this.refresh(false);
     } catch (e) {
-      error = String(e);
+      toast.error("change what is collected", e);
     }
   },
 
@@ -703,7 +728,7 @@ export const feed = {
     try {
       await api.stopRefresh();
     } catch (e) {
-      error = String(e);
+      toast.error("stop the refresh", e);
     }
   },
 
@@ -722,8 +747,9 @@ export const feed = {
   // Each updates the UI first and reconciles after, so starring a card feels
   // instant rather than waiting on a database round trip.
 
-  async toggleSaved(item: ScrapedItem) {
+  async toggleSaved(item: ScrapedItem, { quiet = false }: { quiet?: boolean } = {}) {
     const next = !savedUrls.has(item.url);
+    const previous = saved;
     if (next) savedUrls.add(item.url);
     else savedUrls.delete(item.url);
     saved = next
@@ -733,30 +759,64 @@ export const feed = {
     try {
       await api.setSaved(item, next);
       status = await api.feedStatus();
+      if (!quiet) {
+        if (next) toast.success("Saved");
+        else
+          toast.info("Removed from saved", {
+            label: "Undo",
+            run: () => this.toggleSaved(item, { quiet: true }),
+          });
+      }
     } catch (e) {
-      // Put the optimistic change back if the write failed.
+      // Put the optimistic change back — both the set and the list — if the
+      // write failed, or the Saved page would keep showing what was not kept.
       if (next) savedUrls.delete(item.url);
       else savedUrls.add(item.url);
-      error = String(e);
+      saved = previous;
+      toast.error(next ? "save it" : "remove it from saved", e);
     }
   },
 
-  /** Hides an item everywhere. Undoable only via Settings → restore. */
+  /**
+   * Hides an item everywhere it is listed, with an Undo on the toast. The
+   * Settings "restore hidden items" button is still there for the rest.
+   */
   async dismiss(item: ScrapedItem) {
+    const before = { items, internships, lastCall };
     items = items.filter((i) => i.url !== item.url);
     internships = internships.filter((i) => i.url !== item.url);
+    lastCall = lastCall.filter((i) => i.url !== item.url);
     try {
       await api.setDismissed(item.url, true);
       status = await api.feedStatus();
+      toast.info("Hidden from your feed", {
+        label: "Undo",
+        run: () => this.undismiss(item),
+      });
     } catch (e) {
-      error = String(e);
-      await loadAll();
+      ({ items, internships, lastCall } = before);
+      toast.error("hide it", e);
+    }
+  },
+
+  /** Brings one dismissed item back. The lists reload to put it in rank order. */
+  async undismiss(item: ScrapedItem) {
+    try {
+      await api.setDismissed(item.url, false);
+      await reloadNow();
+    } catch (e) {
+      toast.error("bring it back", e);
     }
   },
 
   async restoreDismissed() {
-    await api.clearDismissed();
-    await loadAll();
+    try {
+      await api.clearDismissed();
+      await loadAll();
+      toast.success("Hidden items restored");
+    } catch (e) {
+      toast.error("restore hidden items", e);
+    }
   },
 
   /**
@@ -768,10 +828,20 @@ export const feed = {
     try {
       await api.clearData();
       error = null;
+      toast.success("Cached data cleared");
+    } catch (e) {
+      toast.error("clear the cache", e);
+    }
+    try {
+      await loadAll();
     } catch (e) {
       error = String(e);
     }
-    await loadAll();
+  },
+
+  /** Closes the refresh-failed banner until the next failure. */
+  clearError() {
+    error = null;
   },
 
   /** Records that the user opened an item, which sinks it in later rankings. */

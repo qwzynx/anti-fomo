@@ -8,9 +8,10 @@
   import ScanBar from "$lib/components/ScanBar.svelte";
   import SearchPalette from "$lib/components/SearchPalette.svelte";
   import SkillsWizard from "$lib/components/SkillsWizard.svelte";
+  import Toaster from "$lib/components/Toaster.svelte";
   import TopBar from "$lib/components/TopBar.svelte";
   import { feed } from "$lib/feed.svelte";
-  import { CircleAlert } from "$lib/icons";
+  import { CircleAlert, X } from "$lib/icons";
   import { search } from "$lib/search.svelte";
   import { theme } from "$lib/theme.svelte";
 
@@ -75,7 +76,14 @@
       role="status"
     >
       <CircleAlert size={14} class="shrink-0" />
-      Showing cached results — last refresh failed ({feed.error})
+      <span class="min-w-0">Showing cached results — the last refresh failed ({feed.error})</span>
+      <button
+        onclick={() => feed.clearError()}
+        aria-label="Dismiss"
+        class="-my-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-md hover:bg-star/10"
+      >
+        <X size={13} />
+      </button>
     </div>
   {/if}
 
@@ -102,6 +110,7 @@
 <SearchPalette onOpen={(item) => (found = item)} />
 <ItemModal item={found} onClose={() => (found = null)} />
 <SkillsWizard />
+<Toaster />
 
 {#if setup}
   <Onboarding />
