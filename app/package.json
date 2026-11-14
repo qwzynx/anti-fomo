@@ -9,7 +9,8 @@
     "preview": "vite preview",
     "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
     "pretauri": "node scripts/ensure-native-deps.mjs",
-    "tauri": "node scripts/tauri.mjs"
+    "tauri": "node scripts/tauri.mjs",
+    "test": "vitest run"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",
@@ -29,6 +30,7 @@
     "svelte-check": "^4",
     "tailwindcss": "^4",
     "typescript": "^5",
-    "vite": "^7"
+    "vite": "^7",
+    "vitest": "^3.2.7"
   }
 }

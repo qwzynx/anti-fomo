@@ -1627,8 +1627,18 @@ pub fn set_setting(state: State<'_, AppState>, key: String, value: String) -> Cm
     }
     // `major`, `weights`, `home_region` and the company tiers all arrive
     // through here, and every one of them is part of the ranking profile.
-    invalidate(&state);
+    // A `ui.` key is the interface remembering itself — the Roles filters, the
+    // saved searches — and is written on every chip tap; re-ranking the whole
+    // cache for it would cost a second per tap and change nothing.
+    if !is_ui_setting(&key) {
+        invalidate(&state);
+    }
     Ok(())
+}
+
+/// Settings the ranking never reads. See `set_setting`.
+fn is_ui_setting(key: &str) -> bool {
+    key.starts_with("ui.")
 }
 
 /// Every distinct source currently represented in the local store, for the
@@ -2246,6 +2256,22 @@ pub struct ResumeThemeOption {
 mod tests {
     use super::*;
     use chrono::Duration;
+
+    #[test]
+    fn interface_settings_do_not_touch_the_ranking() {
+        assert!(is_ui_setting("ui.roles_filters"));
+        assert!(is_ui_setting("ui.saved_searches"));
+        // Everything the ranking reads must still re-rank.
+        for key in [
+            "major",
+            "weights",
+            "home_region",
+            "target_seniority",
+            "company_tiers",
+        ] {
+            assert!(!is_ui_setting(key), "{key}");
+        }
+    }
 
     #[test]
     fn the_ranked_cache_turns_over_on_the_hour() {

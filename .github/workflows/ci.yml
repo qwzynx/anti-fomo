@@ -44,6 +44,10 @@ jobs:
         working-directory: app
         run: npm run check
 
+      - name: Frontend unit tests
+        working-directory: app
+        run: npm test
+
       - name: Rust format
         working-directory: app/src-tauri
         run: cargo fmt --check

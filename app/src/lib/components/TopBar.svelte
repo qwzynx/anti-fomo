@@ -4,6 +4,7 @@
   import { feed } from "$lib/feed.svelte";
   import { Monitor, Moon, RefreshCw, Search, Sparkles, Square, Sun } from "$lib/icons";
   import { NAV, TOOLS } from "$lib/nav";
+  import { modKey } from "$lib/platform";
   import { search } from "$lib/search.svelte";
   import { theme } from "$lib/theme.svelte";
 
@@ -92,12 +93,12 @@
       >
         <Search size={15} class="shrink-0 text-subtle" />
         <span class="min-w-0 flex-1 truncate text-[13px] text-subtle">
-          Search roles, reading and events
+          Search roles, companies, reading and events
         </span>
         <kbd
           class="hidden shrink-0 rounded-md border border-line bg-surface px-1.5 text-[11px] font-semibold text-subtle lg:block"
         >
-          ⌘K
+          {modKey}K
         </kbd>
       </button>
     </div>

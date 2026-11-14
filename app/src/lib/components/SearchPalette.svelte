@@ -1,74 +1,90 @@
 <script lang="ts">
+  import { goto } from "$app/navigation";
   import { timeAgo, type ScrapedItem } from "$lib/api";
   import { feed } from "$lib/feed.svelte";
-  import { CornerDownLeft, Search, iconForType } from "$lib/icons";
+  import { ArrowUpRight, CornerDownLeft, Search, iconForType } from "$lib/icons";
   import { splitTitle } from "$lib/item";
+  import { highlight, highlightTerms, parseQuery, search as find } from "$lib/query";
+  import { roles } from "$lib/roles.svelte";
   import { search } from "$lib/search.svelte";
 
-  // Search for the whole app, opened from the top bar or ⌘K. It reads the same
-  // store every page reads, so there is nothing to keep in sync and no page
-  // that can be searched from somewhere else and not from here.
+  // Search for the whole app, opened from the top bar or ⌘K/Ctrl-K. It reads
+  // the same store every page reads and the same matcher Roles uses, so the two
+  // never disagree about what "react toronto" finds.
   let { onOpen }: { onOpen: (item: ScrapedItem) => void } = $props();
 
-  /** Enough to choose from without the list becoming its own scrolling feed. */
-  const LIMIT = 8;
+  /** Per group: enough to choose from without the list becoming its own feed. */
+  const GROUP_LIMIT = { roles: 6, other: 3 };
+  const QUERY_DEBOUNCE_MS = 80;
 
   let input = $state<HTMLInputElement | null>(null);
   let cursor = $state(0);
+  /** The query the results are for, a beat behind the field. */
+  let settled = $state(search.query);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+
+  $effect(() => {
+    const q = search.query;
+    clearTimeout(timer);
+    timer = setTimeout(() => (settled = q), QUERY_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  });
 
   /**
-   * The corpus, casefolded once.
-   *
-   * Both lists, because a role that has aged out of the ranked feed is still a
-   * role you might be looking for by name — which is 18,000 items, and the
-   * search used to lowercase every one of their titles *and bodies* on every
-   * keystroke. Against the real cache that is ~800 KB of text refolded per
-   * character typed, and it is the same answer every time. Built lazily by
-   * `$derived`, so a session that never opens search never pays for it.
+   * Everything that is not a role: the feed's reading and events, and saved
+   * items of any kind that have aged out of the ranked lists. Built once per
+   * snapshot, so its search index is too.
    */
-  const corpus = $derived.by(() => {
-    const byUrl = new Map<string, { item: ScrapedItem; title: string; body: string }>();
-    for (const item of [...feed.items, ...feed.internships, ...feed.saved]) {
-      if (byUrl.has(item.url)) continue;
-      byUrl.set(item.url, {
-        item,
-        title: item.title.toLowerCase(),
-        body: `${item.content_text ?? ""} ${item.location ?? ""}`.toLowerCase(),
-      });
+  const others = $derived.by(() => {
+    const seen = new Set(feed.internships.map((i) => i.url));
+    const out: ScrapedItem[] = [];
+    for (const item of [...feed.items, ...feed.saved]) {
+      if (seen.has(item.url)) continue;
+      seen.add(item.url);
+      out.push(item);
     }
-    return [...byUrl.values()];
+    return out;
   });
 
-  const results = $derived.by(() => {
-    // Only while the palette is up. `results` is read by the cursor effect
-    // below, which runs whether or not anything is on screen, and this is a
-    // scan of the whole corpus.
-    if (!search.open) return [];
-    const needle = search.query.trim().toLowerCase();
-    if (needle.length < 2) return [];
+  const parsed = $derived(parseQuery(settled));
+  const marks = $derived(highlightTerms(parsed));
+  const tooShort = $derived(settled.trim().length < 2);
 
-    // Title hits before body hits: someone typing "stripe" wants the Stripe
-    // posting, not the article that mentions Stripe in passing.
-    const title: ScrapedItem[] = [];
-    const body: ScrapedItem[] = [];
-    for (const entry of corpus) {
-      if (entry.title.includes(needle)) title.push(entry.item);
-      else if (body.length < LIMIT && entry.body.includes(needle)) body.push(entry.item);
-      // Both buckets full: nothing further down the corpus can change the
-      // answer, and the old loop kept scanning all 18,000 rows anyway because
-      // it only ever broke on the title bucket.
-      if (title.length >= LIMIT) break;
+  /** Title and employer hits first, then the rest, each in rank order. */
+  function ranked(list: readonly ScrapedItem[]): { all: number; top: ScrapedItem[] } {
+    const hit = find(list, parsed);
+    const head: ScrapedItem[] = [];
+    const rest: ScrapedItem[] = [];
+    for (const item of hit.items) (hit.tier.get(item.url) === 2 ? head : rest).push(item);
+    return { all: hit.items.length, top: [...head, ...rest] };
+  }
+
+  const groups = $derived.by(() => {
+    // Only while the palette is up: this is a scan of the whole corpus.
+    if (!search.open || tooShort || parsed.empty) return null;
+    const r = ranked(feed.internships);
+    const o = ranked(others);
+    return {
+      roles: r.top.slice(0, GROUP_LIMIT.roles),
+      rolesTotal: r.all,
+      other: o.top.slice(0, GROUP_LIMIT.other * 2),
+    };
+  });
+
+  /** Everything the arrow keys walk, in order; the "see all" row is last. */
+  const flat = $derived(groups ? [...groups.roles, ...groups.other] : []);
+  const seeAllIndex = $derived(groups && groups.rolesTotal > groups.roles.length ? flat.length : -1);
+  const total = $derived(flat.length + (seeAllIndex >= 0 ? 1 : 0));
+
+  $effect(() => {
+    if (cursor >= total) cursor = 0;
+  });
+
+  $effect(() => {
+    if (search.open) {
+      input?.focus();
+      input?.select();
     }
-    return [...title, ...body].slice(0, LIMIT);
-  });
-
-  // A shrinking result list must never leave the highlight past its end.
-  $effect(() => {
-    if (cursor >= results.length) cursor = 0;
-  });
-
-  $effect(() => {
-    if (search.open) input?.focus();
   });
 
   function choose(item: ScrapedItem) {
@@ -76,41 +92,96 @@
     onOpen(item);
   }
 
+  function seeAll() {
+    // "See all 46" should land on 46, so the chips Roles had on are cleared
+    // (the sort stays: it orders, it does not narrow).
+    roles.clear();
+    roles.filters.query = search.query.trim();
+    search.hide();
+    void goto("/internships");
+  }
+
+  function activate(i: number) {
+    if (i === seeAllIndex) seeAll();
+    else if (flat[i]) choose(flat[i]);
+  }
+
   function onKeydown(e: KeyboardEvent) {
     if (e.key === "Escape") {
+      e.preventDefault();
       search.hide();
     } else if (e.key === "ArrowDown") {
       e.preventDefault();
-      cursor = results.length === 0 ? 0 : (cursor + 1) % results.length;
+      cursor = total === 0 ? 0 : (cursor + 1) % total;
     } else if (e.key === "ArrowUp") {
       e.preventDefault();
-      cursor = results.length === 0 ? 0 : (cursor - 1 + results.length) % results.length;
-    } else if (e.key === "Enter" && results[cursor]) {
+      cursor = total === 0 ? 0 : (cursor - 1 + total) % total;
+    } else if (e.key === "Enter") {
       e.preventDefault();
-      choose(results[cursor]);
+      // Shift-Enter, or Enter with nothing to pick: the full list on Roles.
+      if (e.shiftKey || total === 0) {
+        if (!tooShort) seeAll();
+      } else activate(cursor);
+    } else if (e.key === "Tab") {
+      // The input is the only stop; Tab would otherwise walk into the page behind.
+      e.preventDefault();
     }
   }
+
+  const optionId = (i: number) => `palette-option-${i}`;
 </script>
 
+{#snippet row(item: ScrapedItem, i: number)}
+  {@const parts = splitTitle(item)}
+  {@const TypeIcon = iconForType(item.item_type)}
+  {@const active = i === cursor}
+  <li
+    id={optionId(i)}
+    role="option"
+    aria-selected={active}
+    class="flex cursor-pointer items-center gap-3 px-4 py-2.5 {active ? 'bg-brand-soft' : ''}"
+    onclick={() => choose(item)}
+    onmouseenter={() => (cursor = i)}
+    onkeydown={() => {}}
+  >
+    <TypeIcon
+      size={15}
+      strokeWidth={2}
+      class="shrink-0 {active ? 'text-brand-soft-fg' : 'text-subtle'}"
+    />
+    <span class="min-w-0 flex-1">
+      <span class="block truncate text-sm font-semibold {active ? 'text-brand-soft-fg' : ''}">
+        {#each highlight(parts.primary, marks) as run, j (j)}{#if run.hit}<mark
+              class="rounded-sm bg-star-soft px-px text-inherit">{run.text}</mark
+            >{:else}{run.text}{/if}{/each}
+      </span>
+      <span class="block truncate text-xs text-subtle">
+        {parts.secondary ? `${parts.secondary} · ` : ""}{item.location?.split("|")[0].trim() ||
+          item.source_platform} · {timeAgo(item.timestamp)}
+      </span>
+    </span>
+    {#if active}
+      <CornerDownLeft size={14} class="shrink-0 text-brand-soft-fg" />
+    {/if}
+  </li>
+{/snippet}
+
 {#if search.open}
-  <!-- The backdrop is a button so a click outside closes, which is what every
-       palette on every platform does. Escape is handled on the panel. -->
   <div class="fixed inset-0 z-50 flex items-start justify-center px-4 pt-[12vh]">
     <button
-      class="animate-fade-in absolute inset-0 cursor-default bg-foreground/25 backdrop-blur-[2px]"
+      class="animate-fade-in absolute inset-0 cursor-default bg-black/40 backdrop-blur-[2px]"
       aria-label="Close search"
+      tabindex="-1"
       onclick={() => search.hide()}
     ></button>
 
-    <!-- tabindex so the panel itself can hold focus while the arrow keys walk
-         the result list; focus starts in the input either way. -->
     <div
       role="dialog"
       aria-modal="true"
       aria-label="Search"
       tabindex="-1"
       onkeydown={onKeydown}
-      class="animate-fade-up relative w-full max-w-2xl overflow-hidden rounded-[20px] border border-line bg-surface shadow-2xl shadow-foreground/10"
+      class="animate-fade-up relative w-full max-w-2xl overflow-hidden rounded-[20px] border border-line bg-surface shadow-2xl shadow-black/20"
     >
       <div class="flex items-center gap-3 border-b border-line-soft px-4">
         <Search size={17} class="shrink-0 text-subtle" />
@@ -118,8 +189,15 @@
           bind:this={input}
           bind:value={search.query}
           type="text"
-          placeholder="Search roles, reading and events"
+          role="combobox"
+          aria-expanded={total > 0}
+          aria-controls="palette-results"
+          aria-activedescendant={total > 0 ? optionId(cursor) : undefined}
+          aria-autocomplete="list"
+          placeholder="Search roles, companies, reading and events"
           aria-label="Search everything"
+          autocomplete="off"
+          spellcheck="false"
           class="h-14 min-w-0 flex-1 bg-transparent text-[15px] outline-none placeholder:text-subtle"
         />
         <kbd
@@ -129,50 +207,57 @@
         </kbd>
       </div>
 
-      {#if results.length > 0}
-        <ul class="max-h-[52vh] overflow-y-auto py-1.5">
-          {#each results as item, i (item.url)}
-            {@const parts = splitTitle(item)}
-            {@const TypeIcon = iconForType(item.item_type)}
-            <li>
-              <button
-                onclick={() => choose(item)}
-                onmouseenter={() => (cursor = i)}
-                class="flex w-full items-center gap-3 px-4 py-2.5 text-left {i === cursor
-                  ? 'bg-brand-soft'
-                  : ''}"
-              >
-                <TypeIcon
-                  size={15}
-                  strokeWidth={2}
-                  class="shrink-0 {i === cursor ? 'text-brand-soft-fg' : 'text-subtle'}"
-                />
-                <span class="min-w-0 flex-1">
-                  <span
-                    class="block truncate text-sm font-semibold {i === cursor
-                      ? 'text-brand-soft-fg'
-                      : ''}"
-                  >
-                    {parts.primary}
-                  </span>
-                  <span class="block truncate text-xs text-subtle">
-                    {parts.secondary ? `${parts.secondary} · ` : ""}{item.source_platform} ·
-                    {timeAgo(item.timestamp)}
-                  </span>
-                </span>
-                {#if i === cursor}
-                  <CornerDownLeft size={14} class="shrink-0 text-brand-soft-fg" />
-                {/if}
-              </button>
+      {#if groups && total > 0}
+        <ul id="palette-results" role="listbox" aria-label="Results" class="max-h-[56vh] overflow-y-auto py-1.5">
+          {#if groups.roles.length > 0}
+            <li role="presentation" class="px-4 pt-1.5 pb-1 text-[11px] font-bold tracking-wider text-subtle uppercase">
+              Roles
             </li>
-          {/each}
+            {#each groups.roles as item, i (item.url)}
+              {@render row(item, i)}
+            {/each}
+          {/if}
+          {#if seeAllIndex >= 0}
+            <li
+              id={optionId(seeAllIndex)}
+              role="option"
+              aria-selected={cursor === seeAllIndex}
+              class="flex cursor-pointer items-center gap-3 px-4 py-2.5 text-sm font-semibold text-brand {cursor ===
+              seeAllIndex
+                ? 'bg-brand-soft'
+                : ''}"
+              onclick={seeAll}
+              onmouseenter={() => (cursor = seeAllIndex)}
+              onkeydown={() => {}}
+            >
+              <ArrowUpRight size={15} class="shrink-0" />
+              <span class="flex-1">See all {groups.rolesTotal.toLocaleString()} matching roles</span>
+              <kbd class="hidden rounded-md border border-line px-1.5 text-[11px] text-subtle sm:block"
+                >Shift ↵</kbd
+              >
+            </li>
+          {/if}
+          {#if groups.other.length > 0}
+            <li role="presentation" class="px-4 pt-3 pb-1 text-[11px] font-bold tracking-wider text-subtle uppercase">
+              Reading, events and saved
+            </li>
+            {#each groups.other as item, k (item.url)}
+              {@render row(item, groups.roles.length + k)}
+            {/each}
+          {/if}
         </ul>
       {:else}
-        <p class="px-4 py-8 text-center text-sm text-muted">
-          {search.query.trim().length < 2
-            ? "Type at least two characters."
-            : `Nothing matches “${search.query.trim()}”.`}
-        </p>
+        <div class="px-4 py-8 text-center text-sm text-muted">
+          {#if tooShort}
+            Type at least two characters.
+            <p class="mt-2 text-xs text-subtle">
+              Every word must match · <span class="font-mono">"exact phrase"</span> ·
+              <span class="font-mono">-exclude</span> · <span class="font-mono">company:name</span>
+            </p>
+          {:else}
+            Nothing matches “{settled.trim()}”.
+          {/if}
+        </div>
       {/if}
     </div>
   </div>

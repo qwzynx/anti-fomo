@@ -3,6 +3,7 @@
   import { feed } from "$lib/feed.svelte";
   import { Bookmark, BookmarkCheck, X, iconForType } from "$lib/icons";
   import { closesLabel, closesSoon, eventDate, monthDay, splitTitle, typeBadgeClass } from "$lib/item";
+  import { highlight } from "$lib/query";
 
   // One result, everywhere a result is listed. The redesign has no card grid
   // and no density switch, so this is the only shape a result takes — which is
@@ -20,6 +21,7 @@
     meta,
     selected = false,
     dismissable = true,
+    marks = [],
   }: {
     item: ScrapedItem;
     onOpen: (item: ScrapedItem) => void;
@@ -32,11 +34,15 @@
     /** Highlights the row the split-pane detail column is showing. */
     selected?: boolean;
     dismissable?: boolean;
+    /** Search terms to highlight in the title. */
+    marks?: string[];
   } = $props();
 
   let logoFailed = $state(false);
 
   const parts = $derived(splitTitle(item));
+  /** Only split into runs when there is something to mark: most rows have nothing. */
+  const titleRuns = $derived(marks.length > 0 ? highlight(parts.primary, marks) : null);
   const isRole = $derived(item.item_type === "Internship" || item.item_type === "Job");
   const logo = $derived(logoFor(item.url));
   const TypeIcon = $derived(iconForType(item.item_type));
@@ -148,7 +154,9 @@
         class="line-clamp-2 text-left {selected ? 'text-brand-soft-fg' : 'hover:text-brand'}"
       >
         <span class="absolute inset-0" aria-hidden="true"></span>
-        {parts.primary}
+        {#if titleRuns}{#each titleRuns as run, i (i)}{#if run.hit}<mark
+                class="rounded-sm bg-star-soft px-px text-inherit">{run.text}</mark
+              >{:else}{run.text}{/if}{/each}{:else}{parts.primary}{/if}
       </button>
     </h3>
     {#if dense || subText}
@@ -222,12 +230,12 @@
         <Bookmark size={16} />
       {/if}
     </button>
-    {#if dismissable && !dense}
+    {#if dismissable}
       <button
         onclick={() => feed.dismiss(item)}
         aria-label="Hide this item"
         title="Not interested"
-        class="tap h-9 w-9 sm:h-8 sm:w-8"
+        class="tap h-9 w-9 sm:h-8 sm:w-8 {dense ? 'opacity-0 group-hover:opacity-100 focus-visible:opacity-100' : ''}"
       >
         <X size={16} />
       </button>

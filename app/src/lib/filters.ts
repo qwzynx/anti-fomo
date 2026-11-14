@@ -91,7 +91,7 @@ export const HUB_SORT_BLURBS: Record<HubSort, string> = {
  * unknown is not the same as "furthest away", and the same logic applies to
  * pay and company here.
  */
-export function sortItems(items: ScrapedItem[], sort: HubSort): ScrapedItem[] {
+export function sortItems(items: readonly ScrapedItem[], sort: HubSort): ScrapedItem[] {
   /**
    * Sorts on a key computed once per item rather than once per comparison.
    *
@@ -155,8 +155,31 @@ export function sortItems(items: ScrapedItem[], sort: HubSort): ScrapedItem[] {
   }
 }
 
-/** Postings write "full-stack" and "full stack" interchangeably. */
+/**
+ * What each specialty chip looks for, as whole words, compiled once.
+ *
+ * These were plain substrings of the chip's own label, which got both halves
+ * wrong: "Data" fired on "database" and "metadata", "Product" on "production",
+ * "AI/ML" only on the literal "ai/ml", and "Backend" missed "back-end". Each is
+ * now the words a posting actually uses for the field, bounded so they cannot
+ * fire inside another word.
+ */
+const SPECIALTY_PATTERNS: Record<string, RegExp> = {
+  Frontend: /\b(front[- ]?end|ui engineer|web developer|react|angular|vue)\b/,
+  Backend: /\b(back[- ]?end|server[- ]side|api engineer|platform engineer)\b/,
+  "Full-Stack": /\b(full[- ]?stack)\b/,
+  DevOps: /\b(dev[- ]?ops|site reliability|sre|infrastructure|cloud engineer|platform engineer)\b/,
+  "AI/ML": /\b(ai|ml|a\.i\.|machine learning|deep learning|artificial intelligence|llms?|computer vision|nlp|data scien\w*)\b/,
+  Embedded: /\b(embedded|firmware|fpga|rtos|hardware engineer|microcontroller\w*)\b/,
+  Data: /\b(data (engineer\w*|scien\w*|analy\w*|platform|infrastructure)|analytics|business intelligence|etl)\b/,
+  Product: /\b(product (manag\w*|design\w*|owner|analyst|engineer\w*)|pm intern|apm)\b/,
+  Security: /\b(security|cyber\w*|infosec|appsec|penetration|soc analyst)\b/,
+};
+
+/** Whether a lowercased haystack is about `specialty`. */
 export function matchesSpecialty(haystack: string, specialty: string): boolean {
+  const pattern = SPECIALTY_PATTERNS[specialty];
+  if (pattern) return pattern.test(haystack);
   const needle = specialty.toLowerCase();
   return haystack.includes(needle) || haystack.includes(needle.replace(/-/g, " "));
 }
@@ -164,4 +187,151 @@ export function matchesSpecialty(haystack: string, specialty: string): boolean {
 /** Toggles a value in a multi-select facet list. */
 export function toggle<T>(list: T[], value: T): T[] {
   return list.includes(value) ? list.filter((v) => v !== value) : [...list, value];
+}
+
+// --- the Roles filter pass ---
+
+/** Interest tags (Settings) that name a specialty chip, so quick chips follow the profile. */
+export const INTEREST_SPECIALTY: Record<string, string> = {
+  "AI/ML": "AI/ML",
+  Frontend: "Frontend",
+  Backend: "Backend",
+  Security: "Security",
+  Data: "Data",
+  "DevOps/Cloud": "DevOps",
+  Hardware: "Embedded",
+  "Product/Design": "Product",
+};
+
+/** Floors offered for "pay at least", annual-equivalent. */
+export const PAY_FLOORS = [40_000, 60_000, 80_000, 100_000, 150_000] as const;
+
+export const DEADLINES = ["Any", "Has deadline", "Closing this week"] as const;
+
+/** The places a role can be filtered to: the setup form's regions plus the multi-region tag. */
+export function locationOptions(regions: string[]): string[] {
+  return [...regions, "Global / Multi-region"];
+}
+
+/** A role's level: what Rust read off the title, or "Intern" for an internship that did not say. */
+export function levelOf(item: ScrapedItem): string | null {
+  return item.seniority ?? (item.item_type === "Internship" ? "Intern" : null);
+}
+
+export interface RoleFilterInput {
+  type: TypeFilter;
+  discipline: string;
+  sources: string[];
+  specialties: string[];
+  modality: Modality;
+  locations: string[];
+  freshness: FreshnessLabel;
+  seniority: string[];
+  minPay: number | null;
+  payDisclosed: boolean;
+  deadline: (typeof DEADLINES)[number];
+  goodMatchOnly: boolean;
+}
+
+/** The coverage a "good match" chip demands. */
+export const GOOD_MATCH = 0.6;
+
+/**
+ * Applies every chip to a list, cheapest test first and computing nothing the
+ * current chips do not ask for. Runs over the whole cache — 17,000 to 40,000
+ * roles — on every tap, so anything per item here is paid that many times: no
+ * strings unless a specialty chip is on, `Set`s for membership, and the clock
+ * read once.
+ */
+export function filterRoles(
+  items: readonly ScrapedItem[],
+  f: RoleFilterInput,
+  match: (item: ScrapedItem) => { have: number; total: number } | null,
+  now = Date.now(),
+): ScrapedItem[] {
+  const cutoff = freshnessCutoff(f.freshness);
+  const cutoffIso = cutoff === -Infinity ? null : new Date(cutoff).toISOString();
+  const sourceSet = f.sources.length > 0 ? new Set(f.sources) : null;
+  const locationSet = f.locations.length > 0 ? new Set(f.locations) : null;
+  const levelSet = f.seniority.length > 0 ? new Set(f.seniority) : null;
+  const wantedSpecialties = f.specialties.length > 0 ? f.specialties : null;
+  const weekOut = now + 7 * 24 * 3600 * 1000;
+
+  return items.filter((item) => {
+    if (f.type !== "All" && item.item_type !== f.type) return false;
+    if (f.discipline !== "All" && item.discipline !== f.discipline) return false;
+    if (sourceSet && !sourceSet.has(item.source_platform)) return false;
+
+    if (f.modality !== "All" || locationSet) {
+      const tags = item.location_tags;
+      if (!tags) return false;
+      if (f.modality !== "All" && !tags.includes(f.modality)) return false;
+      if (locationSet && !tags.some((t) => locationSet.has(t))) return false;
+    }
+
+    // ISO-8601 UTC strings order the same as the instants they name, so this
+    // compares without parsing a Date per row.
+    if (cutoffIso !== null && item.timestamp < cutoffIso) return false;
+
+    if (levelSet) {
+      const level = levelOf(item);
+      if (!level || !levelSet.has(level)) return false;
+    }
+
+    if (f.minPay !== null || f.payDisclosed) {
+      const pay = payAnnualEquivalent(item);
+      if (pay === null) return false;
+      if (f.minPay !== null && pay < f.minPay) return false;
+    }
+
+    if (f.deadline !== "Any") {
+      if (!item.closes_at) return false;
+      const t = new Date(item.closes_at).getTime();
+      if (t < now) return false;
+      if (f.deadline === "Closing this week" && t > weekOut) return false;
+    }
+
+    if (f.goodMatchOnly) {
+      const m = match(item);
+      if (!m || m.have / m.total < GOOD_MATCH) return false;
+    }
+
+    // Last, because it is the only test that has to build a string.
+    if (wantedSpecialties) {
+      const haystack = `${item.title} ${item.content_text ?? ""}`.toLowerCase();
+      if (!wantedSpecialties.some((s) => matchesSpecialty(haystack, s))) return false;
+    }
+    return true;
+  });
+}
+
+/** How many chips are narrowing the list (the query and sort are not chips). */
+export function activeFilterCount(f: RoleFilterInput): number {
+  return (
+    (f.type !== "All" ? 1 : 0) +
+    (f.discipline !== "All" ? 1 : 0) +
+    f.sources.length +
+    f.specialties.length +
+    (f.modality !== "All" ? 1 : 0) +
+    f.locations.length +
+    (f.freshness !== "Any time" ? 1 : 0) +
+    f.seniority.length +
+    (f.minPay !== null ? 1 : 0) +
+    (f.payDisclosed && f.minPay === null ? 1 : 0) +
+    (f.deadline !== "Any" ? 1 : 0) +
+    (f.goodMatchOnly ? 1 : 0)
+  );
+}
+
+/**
+ * Puts title and employer hits ahead of body hits when the sort is "Best
+ * match" and a query is on; otherwise the sort's own order stands. Stable, so
+ * relevance order survives within each tier.
+ */
+export function byQueryTier(sorted: ScrapedItem[], tier: Map<string, number>): ScrapedItem[] {
+  if (tier.size === 0) return sorted;
+  const head: ScrapedItem[] = [];
+  const rest: ScrapedItem[] = [];
+  for (const item of sorted) (tier.get(item.url) === 2 ? head : rest).push(item);
+  return head.length === 0 || rest.length === 0 ? sorted : [...head, ...rest];
 }
