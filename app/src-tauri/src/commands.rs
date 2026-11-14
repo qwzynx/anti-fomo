@@ -2664,6 +2664,7 @@ mod tests {
                 let saved = persist_batch(&t.state, batch, run_start).unwrap();
                 alive.extend(saved.alive);
             }
+            let _serial = scrapers::boards::test_lock();
             finalize(&t.state, run_start, &alive, true).unwrap();
 
             assert!(
@@ -2700,6 +2701,7 @@ mod tests {
         let run_start = Utc::now();
         persist_batch(&t.state, vec![posting("a", "Acme")], run_start).unwrap();
         let none = std::collections::HashSet::new();
+        let _serial = scrapers::boards::test_lock();
         finalize(&t.state, run_start, &none, false).unwrap();
 
         assert_eq!(titles(&t.state), ["a", "b"]);

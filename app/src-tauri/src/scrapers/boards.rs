@@ -167,6 +167,19 @@ fn skipped() -> &'static RwLock<HashSet<String>> {
     SKIPPED.get_or_init(|| RwLock::new(HashSet::new()))
 }
 
+/// Serialises the tests that go through the report queue below.
+///
+/// The queue is process-wide and tests run in parallel, so one test's
+/// `record_reports` could drain a `Gone` another had just pushed — which is
+/// how `an_offline_laptop_retires_no_board` failed in CI while passing
+/// locally. Every test that pushes or drains (the `run` helper here,
+/// `commands::finalize` in the command tests) holds this first.
+#[cfg(test)]
+pub(crate) fn test_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: Mutex<()> = Mutex::new(());
+    LOCK.lock_recover()
+}
+
 fn reports() -> &'static Mutex<Vec<(String, Answer)>> {
     static REPORTS: OnceLock<Mutex<Vec<(String, Answer)>>> = OnceLock::new();
     REPORTS.get_or_init(|| Mutex::new(Vec::new()))
@@ -485,6 +498,7 @@ mod tests {
 
     #[test]
     fn a_board_gone_three_days_running_is_skipped_for_a_week_and_then_tried_again() {
+        let _serial = test_lock();
         let day0 = Utc::now();
         let mut health = HashMap::new();
         let key = "greenhouse:dead";
@@ -503,6 +517,7 @@ mod tests {
 
     #[test]
     fn a_burst_of_refreshes_in_one_day_is_one_strike() {
+        let _serial = test_lock();
         let now = Utc::now();
         let mut health = HashMap::new();
         for minute in 0..10 {
@@ -520,6 +535,7 @@ mod tests {
     /// network, which would otherwise retire every board for a week.
     #[test]
     fn an_offline_laptop_retires_no_board() {
+        let _serial = test_lock();
         let now = Utc::now();
         let mut health = HashMap::new();
         for day in 0..5 {
