@@ -101,6 +101,8 @@ pub fn run() {
             commands::get_saved,
             commands::get_item_detail,
             commands::search_descriptions,
+            commands::set_application,
+            commands::get_applications,
             commands::feed_status,
             commands::refresh,
             commands::stop_refresh,

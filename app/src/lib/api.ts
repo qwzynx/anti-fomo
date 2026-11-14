@@ -273,6 +273,21 @@ export const refreshFeed = (force = false) => invoke<RefreshOutcome>("refresh", 
 /** Stops the running refresh. False when nothing was running. */
 export const stopRefresh = () => invoke<boolean>("stop_refresh");
 
+/** Where an application to a saved role stands. `null` = saved, not applied yet. */
+export type ApplicationStatus = "applied" | "interviewing" | "offer" | "rejected";
+
+export interface Application {
+  url: string;
+  status: ApplicationStatus | null;
+  updated_at: string | null;
+  note: string | null;
+}
+
+export const getApplications = () => invoke<Application[]>("get_applications");
+
+export const setApplication = (url: string, status: ApplicationStatus | null, note: string | null) =>
+  invoke<void>("set_application", { url, status, note });
+
 /** Per term, the postings whose fetched description has a word starting with it. */
 export const searchDescriptions = (terms: string[]) =>
   invoke<Record<string, string[]>>("search_descriptions", { terms });

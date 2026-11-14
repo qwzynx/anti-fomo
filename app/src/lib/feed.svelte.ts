@@ -1,9 +1,11 @@
 import { listen } from "@tauri-apps/api/event";
-import { SvelteSet } from "svelte/reactivity";
+import { SvelteMap, SvelteSet } from "svelte/reactivity";
 // Namespaced: several store methods below intentionally share a name with the
 // command they wrap, and `api.setSaved(…)` makes it obvious which is which.
 import * as api from "./api";
 import type {
+  Application,
+  ApplicationStatus,
   FeedStatus,
   OnboardingState,
   RefreshOutcome,
@@ -84,6 +86,8 @@ let skillCatalog = $state.raw<SkillCategory[]>([]);
 /** Live per-item state, keyed by URL, shared across every list an item is in. */
 const savedUrls = new SvelteSet<string>();
 const seenUrls = new SvelteSet<string>();
+/** Application status and note per saved role, keyed by URL. */
+const applications = new SvelteMap<string, Application>();
 /** The profile as a set, so a coverage check is a lookup and not a scan. */
 const skillSet = new SvelteSet<string>();
 
@@ -166,12 +170,15 @@ function reset(set: SvelteSet<string>, values: Iterable<string>) {
 
 async function loadAll() {
   const mine = ++loadSeq;
-  const [feedItems, internshipItems, savedItems, lastCallItems, st] = await Promise.all([
+  const [feedItems, internshipItems, savedItems, lastCallItems, st, apps] = await Promise.all([
     api.getFeed(major),
     api.getInternships(major),
     api.getSaved(),
     api.getLastCall(major),
     api.feedStatus(),
+    // The tracker is a nicety on top of the lists: a failure here must not
+    // take the whole load down with it.
+    api.getApplications().catch(() => null),
   ]);
   // Superseded while it was in flight: a newer load has already landed.
   if (mine < appliedSeq) return;
@@ -198,6 +205,10 @@ async function loadAll() {
     for (const item of list) if (item.seen) seen.push(item.url);
   }
   reset(seenUrls, seen);
+  if (apps) {
+    applications.clear();
+    for (const a of apps) applications.set(a.url, a);
+  }
 }
 
 /**
@@ -392,6 +403,11 @@ export const feed = {
 
   isSeen(url: string): boolean {
     return seenUrls.has(url);
+  },
+
+  /** Where an application stands, for a saved role that has one. */
+  application(url: string): Application | null {
+    return applications.get(url) ?? null;
   },
 
   hasSkill(name: string): boolean {
@@ -842,6 +858,31 @@ export const feed = {
   /** Closes the refresh-failed banner until the next failure. */
   clearError() {
     error = null;
+  },
+
+  /**
+   * Sets where an application stands and its note. Tracking a role saves it
+   * first, since the tracker lives on Saved and an unsaved row would be
+   * pruned with the cache.
+   */
+  async setApplication(item: ScrapedItem, status: ApplicationStatus | null, note?: string | null) {
+    const previous = applications.get(item.url) ?? null;
+    const nextNote = note === undefined ? (previous?.note ?? null) : note;
+    const statusChanged = (previous?.status ?? null) !== status;
+    applications.set(item.url, {
+      url: item.url,
+      status,
+      note: nextNote,
+      updated_at: statusChanged ? new Date().toISOString() : (previous?.updated_at ?? null),
+    });
+    try {
+      if (!savedUrls.has(item.url)) await this.toggleSaved(item, { quiet: true });
+      await api.setApplication(item.url, status, nextNote);
+    } catch (e) {
+      if (previous) applications.set(item.url, previous);
+      else applications.delete(item.url);
+      toast.error("update the application", e);
+    }
   },
 
   /** Records that the user opened an item, which sinks it in later rankings. */

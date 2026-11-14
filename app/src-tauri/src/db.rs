@@ -57,7 +57,82 @@ pub fn open(path: &std::path::Path) -> Result<Connection> {
     if let Err(e) = ensure_text_index(&conn) {
         log::warn!("could not build the description search index: {e}");
     }
+    ensure_application_columns(&conn)?;
     Ok(conn)
+}
+
+/// The application tracker's columns on `item_state`.
+///
+/// Added in place, outside `migrate`'s version gate, for the reason the text
+/// index is: a version bump drops the items cache and costs a full re-scrape,
+/// and three nullable columns are not worth that. `item_state` is durable, so
+/// `ALTER TABLE … ADD COLUMN` is the only way to touch it anyway.
+pub fn ensure_application_columns(conn: &Connection) -> Result<()> {
+    for column in ["app_status", "app_updated_at", "app_note"] {
+        add_column_if_missing(conn, "item_state", column, "TEXT")?;
+    }
+    Ok(())
+}
+
+/// Where an application stands. Stored as the lowercase word.
+pub const APPLICATION_STATUSES: [&str; 4] = ["applied", "interviewing", "offer", "rejected"];
+
+/// What the reader has done about one saved role.
+#[derive(serde::Serialize, Debug, Clone, PartialEq)]
+pub struct Application {
+    pub url: String,
+    /// One of [`APPLICATION_STATUSES`], or `None` for "saved, not applied yet".
+    pub status: Option<String>,
+    pub updated_at: Option<String>,
+    pub note: Option<String>,
+}
+
+/// Records an application's status and note. Only for a saved role: the
+/// tracker lives on the Saved page, and a row nobody saved would be pruned
+/// with the cache (see [`prune_orphan_states`]) and take its history with it.
+///
+/// Un-saving leaves these columns alone, so an Undo puts the status back.
+pub fn set_application(
+    conn: &Connection,
+    url: &str,
+    status: Option<&str>,
+    note: Option<&str>,
+) -> Result<()> {
+    if let Some(s) = status {
+        anyhow::ensure!(
+            APPLICATION_STATUSES.contains(&s),
+            "unknown application status {s:?}"
+        );
+    }
+    let note = note.map(str::trim).filter(|n| !n.is_empty());
+    let changed = conn.execute(
+        "UPDATE item_state
+            SET app_status = ?2, app_note = ?3,
+                app_updated_at = CASE WHEN app_status IS ?2 THEN app_updated_at ELSE ?4 END
+          WHERE url = ?1 AND saved_at IS NOT NULL",
+        params![url, status, note, Utc::now().to_rfc3339()],
+    )?;
+    anyhow::ensure!(changed == 1, "only a saved role can be tracked");
+    Ok(())
+}
+
+/// Every saved role's application state, for the ones that have any.
+pub fn load_applications(conn: &Connection) -> Result<Vec<Application>> {
+    let mut stmt = conn.prepare(
+        "SELECT url, app_status, app_updated_at, app_note FROM item_state
+          WHERE saved_at IS NOT NULL AND (app_status IS NOT NULL OR app_note IS NOT NULL)",
+    )?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(Application {
+                url: row.get(0)?,
+                status: row.get(1)?,
+                updated_at: row.get(2)?,
+                note: row.get(3)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
 }
 
 /// The full-text index over fetched postings, built once and then kept in
@@ -1624,7 +1699,65 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         migrate(&conn).unwrap();
         ensure_text_index(&conn).unwrap();
+        ensure_application_columns(&conn).unwrap();
         conn
+    }
+
+    // --- application tracker ---
+
+    #[test]
+    fn a_saved_role_carries_its_application_and_keeps_it_through_an_unsave() {
+        let conn = mem();
+        let url = "https://jobs.test/1";
+        // Not saved: refused, so nothing is tracked on a row the cache will prune.
+        assert!(set_application(&conn, url, Some("applied"), None).is_err());
+
+        set_saved(&conn, url, true, None).unwrap();
+        set_application(&conn, url, Some("applied"), Some("  referred by Sam  ")).unwrap();
+        let apps = load_applications(&conn).unwrap();
+        assert_eq!(apps.len(), 1);
+        assert_eq!(apps[0].status.as_deref(), Some("applied"));
+        assert_eq!(apps[0].note.as_deref(), Some("referred by Sam"));
+        let first_at = apps[0].updated_at.clone();
+        assert!(first_at.is_some());
+
+        // Editing only the note does not move the status date.
+        set_application(&conn, url, Some("applied"), Some("follow up Friday")).unwrap();
+        assert_eq!(load_applications(&conn).unwrap()[0].updated_at, first_at);
+
+        assert!(set_application(&conn, url, Some("ghosted"), None).is_err());
+
+        // An unsave hides it; an Undo (re-save) brings it back intact.
+        set_saved(&conn, url, false, None).unwrap();
+        assert!(load_applications(&conn).unwrap().is_empty());
+        set_saved(&conn, url, true, None).unwrap();
+        assert_eq!(
+            load_applications(&conn).unwrap()[0].status.as_deref(),
+            Some("applied")
+        );
+
+        // Clearing both empties the tracker.
+        set_application(&conn, url, None, None).unwrap();
+        assert!(load_applications(&conn).unwrap().is_empty());
+    }
+
+    #[test]
+    fn the_application_columns_arrive_on_an_existing_store_and_survive_a_bump() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        set_saved(&conn, "https://jobs.test/2", true, None).unwrap();
+        ensure_application_columns(&conn).unwrap();
+        ensure_application_columns(&conn).unwrap();
+        set_application(&conn, "https://jobs.test/2", Some("offer"), None).unwrap();
+
+        // A schema bump drops the cache, never `item_state`.
+        conn.pragma_update(None, "user_version", 0).unwrap();
+        migrate(&conn).unwrap();
+        ensure_application_columns(&conn).unwrap();
+        assert_eq!(
+            load_applications(&conn).unwrap()[0].status.as_deref(),
+            Some("offer")
+        );
     }
 
     // --- description search ---

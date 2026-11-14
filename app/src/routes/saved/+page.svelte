@@ -7,7 +7,9 @@
   import PageHeader from "$lib/components/PageHeader.svelte";
   import RowSkeleton from "$lib/components/RowSkeleton.svelte";
   import { feed } from "$lib/feed.svelte";
-  import { eventDate } from "$lib/item";
+  import { eventDate, monthDay } from "$lib/item";
+  import type { ApplicationStatus } from "$lib/api";
+  import { APPLICATION_STAGES, stageLabel } from "$lib/applications";
   import { BookOpen, Bookmark, Briefcase, Calendar, type IconComponent } from "$lib/icons";
 
   // Saved reads as three shelves rather than one undifferentiated list: a role
@@ -63,12 +65,34 @@
 
   let selected = $state<ScrapedItem | null>(null);
   let active = $state("All");
+  /** The application stage the Roles shelf is narrowed to: "any", "none" (saved, not applied) or a stage. */
+  let stage = $state<"any" | "none" | ApplicationStatus>("any");
+
+  const isRole = (i: ScrapedItem) => i.item_type === "Internship" || i.item_type === "Job";
+  const stageOf = (i: ScrapedItem) => feed.application(i.url)?.status ?? null;
+
+  /** Counts per stage over the saved roles, for the stage chips. */
+  const stageCounts = $derived.by(() => {
+    const counts = new Map<string, number>([["none", 0]]);
+    for (const i of feed.saved) {
+      if (!isRole(i)) continue;
+      const s = stageOf(i) ?? "none";
+      counts.set(s, (counts.get(s) ?? 0) + 1);
+    }
+    return counts;
+  });
+  const tracking = $derived([...stageCounts.entries()].some(([k, n]) => k !== "none" && n > 0));
+
+  function stageFilter(i: ScrapedItem): boolean {
+    if (stage === "any" || !isRole(i)) return true;
+    return (stageOf(i) ?? "none") === stage;
+  }
   let shown = $state<Record<string, number>>({});
 
   const shelves = $derived(
     GROUPS.map((g) => ({
       ...g,
-      items: feed.saved.filter((i) => g.types.includes(i.item_type)),
+      items: feed.saved.filter((i) => g.types.includes(i.item_type) && stageFilter(i)),
     })).filter((g) => g.items.length > 0),
   );
 
@@ -96,6 +120,12 @@
    * `item_state` records no saved-at time, so nothing here can say when.
    */
   function metaFor(item: ScrapedItem): string | undefined {
+    if (isRole(item)) {
+      const app = feed.application(item.url);
+      if (!app?.status) return undefined;
+      const d = app.updated_at ? monthDay(app.updated_at) : null;
+      return `${stageLabel(app.status)}${d ? ` · ${d.month} ${Number(d.day)}` : ""}`;
+    }
     if (item.item_type !== "Event") return undefined;
     // The date the event is *about* — a hackathon's deadline, not the day entries opened.
     const days = Math.round((new Date(eventDate(item)).getTime() - Date.now()) / 86400000);
@@ -142,6 +172,32 @@
       </div>
     {/if}
 
+    {#if tracking && (active === "All" || active === "Roles")}
+      <div class="scrollbar-hide -mx-4 mt-2 overflow-x-auto px-4 pb-1 sm:mx-0 sm:px-0">
+        <div class="flex items-center gap-2" role="group" aria-label="Application stage">
+          <span class="shrink-0 text-[11px] font-bold tracking-wider text-subtle uppercase">Stage</span>
+          {#each [{ key: "any", label: "Any" }, { key: "none", label: "Not applied" }, ...APPLICATION_STAGES.map((s) => ({ key: s.value, label: s.label }))] as chip (chip.key)}
+            {@const count = chip.key === "any" ? null : (stageCounts.get(chip.key) ?? 0)}
+            {#if count === null || count > 0 || stage === chip.key}
+              <button
+                onclick={() => (stage = chip.key as typeof stage)}
+                aria-pressed={stage === chip.key}
+                class="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-full px-3 text-[13px] transition-colors
+                       {stage === chip.key
+                  ? 'bg-brand font-semibold text-brand-fg'
+                  : 'border border-line bg-surface font-medium text-muted hover:border-subtle'}"
+              >
+                {chip.label}
+                {#if count !== null}
+                  <span class="tabular-nums {stage === chip.key ? 'opacity-80' : 'text-subtle'}">{count}</span>
+                {/if}
+              </button>
+            {/if}
+          {/each}
+        </div>
+      </div>
+    {/if}
+
     {#each visible as shelf (shelf.key)}
       {@const limit = shown[shelf.key] ?? PREVIEW}
       <Band
@@ -172,7 +228,10 @@
         title="Nothing of that type"
         body="You have saved items, just none in this category."
         actionLabel="Show all"
-        onAction={() => (active = "All")}
+        onAction={() => {
+          active = "All";
+          stage = "any";
+        }}
       />
     {/if}
   {/if}

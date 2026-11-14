@@ -26,6 +26,7 @@
     tagsFor,
     typeBadgeClass,
   } from "$lib/item";
+  import ApplicationTracker from "./ApplicationTracker.svelte";
   import JobSections from "./JobSections.svelte";
   import SkillMatch from "./SkillMatch.svelte";
 
@@ -266,6 +267,10 @@
           </div>
         {/if}
       </div>
+    {/if}
+
+    {#if isOpportunity}
+      <ApplicationTracker {item} />
     {/if}
 
     {#if item.matched_interests && item.matched_interests.length > 0}

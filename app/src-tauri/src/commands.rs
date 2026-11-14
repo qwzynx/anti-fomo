@@ -1528,6 +1528,26 @@ pub fn set_saved(
     Ok(())
 }
 
+/// Records where an application to a saved role stands, and a note on it.
+/// Does not touch the ranking, so nothing is invalidated.
+#[tauri::command(async)]
+pub fn set_application(
+    state: State<'_, AppState>,
+    url: String,
+    status: Option<String>,
+    note: Option<String>,
+) -> CmdResult<()> {
+    let conn = state.db.lock().unwrap();
+    db::set_application(&conn, &url, status.as_deref(), note.as_deref()).map_err(err)
+}
+
+/// Every saved role's application status and note.
+#[tauri::command(async)]
+pub fn get_applications(state: State<'_, AppState>) -> CmdResult<Vec<db::Application>> {
+    let conn = state.db.lock().unwrap();
+    db::load_applications(&conn).map_err(err)
+}
+
 /// Hides an item from the feed and the hub for good.
 #[tauri::command(async)]
 pub fn set_dismissed(state: State<'_, AppState>, url: String, dismissed: bool) -> CmdResult<()> {

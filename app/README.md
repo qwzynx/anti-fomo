@@ -316,6 +316,7 @@ for the one posting the pane is showing.
 | `get_internships(major?)` | every job/internship as a list row, ranked |
 | `get_last_call(major?)` | strong postings closing within a week, soonest first, capped |
 | `get_item_detail(url)` | one posting in full — description, sections, score breakdown |
+| `set_application(url, status, note)` / `get_applications()` | the application tracker on saved roles: applied → interviewing → offer / closed, plus a note (columns on `item_state`) |
 | `search_descriptions(terms)` | per term, the postings whose fetched description has a word starting with it (FTS5 index `job_text`, kept in step with `job_details` by triggers) |
 | `get_saved()` | starred items, newest star first |
 | `feed_status()` | last refresh, counts, staleness, per-source health |
