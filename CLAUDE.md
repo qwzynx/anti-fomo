@@ -217,11 +217,16 @@ Everything ships from `/app`:
     `main.rs` is only a shim. **Mobile will not build if real code moves into
     `main.rs`.**
 - **`app/src`** — the Svelte UI. Routes are `/` (feed), `/internships`, `/saved`,
-  `/resume`, `/resume/tailor` and `/settings`. `NAV` is three destinations; the
-  résumé builder and Settings are *tools* — somewhere you go to change
-  something and come back from — so they sit in the top bar's tool cluster at
-  `md:` and up and return as tabs in the bottom bar below it. The two
-  navigations are never on screen together. `lib/feed.svelte.ts` is
+  `/resume`, `/resume/tailor` and `/settings`. **It is an app shell, not a
+  page**: the root layout is exactly the window (`h-dvh`), with `Sidebar` at
+  `md:` and up (views with counts, Applications = `/saved?stage=active`, saved
+  searches, tools, sync status) and the bottom tab bar below it — the two are
+  never on screen together. Every route is a column: `PageHeader` is a
+  one-line toolbar (title, count, an optional middle slot such as a search
+  field, actions), and beneath it panes that scroll on their own (the `pane`
+  utility). Nothing scrolls the window and there is no footer. Build new views
+  from `toolbar`/`pane`/`tool`/`btn-primary`/`eyebrow`/`kbd` in `app.css`, at
+  13px UI text. `lib/feed.svelte.ts` is
   the single shared store; pages derive from it rather than fetching
   independently. **The three item lists are `$state.raw`**: the hub holds the
   whole opportunity cache, and plain `$state` deep-proxies every row and every

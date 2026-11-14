@@ -22,20 +22,16 @@
   const Icon = $derived(icon);
 </script>
 
-<div class="flex flex-col items-center rounded-3xl border border-dashed border-line bg-surface px-6 py-20 text-center">
-  <div class="mb-4 flex h-12 w-12 items-center justify-center rounded-2xl bg-line-soft text-subtle">
-    <Icon size={22} />
+<div class="flex flex-col items-center px-6 py-16 text-center">
+  <div class="mb-3 flex h-10 w-10 items-center justify-center rounded-lg border border-line bg-surface text-subtle">
+    <Icon size={18} />
   </div>
-  <p class="font-display text-lg font-bold">{title}</p>
+  <p class="text-[14px] font-semibold">{title}</p>
   {#if body}
-    <p class="mt-1 max-w-sm text-sm text-muted">{body}</p>
+    <p class="mt-1 max-w-sm text-[13px] text-muted">{body}</p>
   {/if}
   {#if actionLabel && onAction}
-    <button
-      onclick={onAction}
-      disabled={busy}
-      class="mt-5 rounded-xl bg-brand px-5 py-2.5 text-sm font-semibold text-brand-fg transition-colors hover:bg-brand-hover disabled:opacity-50"
-    >
+    <button onclick={onAction} disabled={busy} class="btn-primary mt-4">
       {busy ? "Working…" : actionLabel}
     </button>
   {/if}

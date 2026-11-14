@@ -95,13 +95,10 @@
     aria-haspopup="true"
     aria-expanded={open}
     title="Saved searches"
-    class="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-full border px-3 text-[13px] font-semibold transition-colors
-           {open || current
-      ? 'border-brand bg-brand-soft text-brand-soft-fg'
-      : 'border-line bg-surface text-muted hover:border-subtle'}"
+    class="tool tool-outline shrink-0 {open || current ? 'text-foreground' : ''}"
   >
     <History size={13} strokeWidth={2.25} class="shrink-0" />
-    <span class="hidden max-w-[10rem] truncate sm:inline">{current ? current.name : "Saved"}</span>
+    <span class="hidden max-w-[10rem] truncate xl:inline">{current ? current.name : "Saved searches"}</span>
   </button>
 
   {#if open}
@@ -109,7 +106,7 @@
     <div class="fixed inset-0 z-40" onclick={close}></div>
 
     <div
-      class="animate-fade-up card absolute right-0 z-50 mt-2 w-80 origin-top-right overflow-hidden bg-elevated p-1.5 shadow-2xl"
+      class="animate-fade-up absolute right-0 z-50 mt-1.5 w-80 origin-top-right overflow-hidden rounded-lg border border-line bg-elevated p-1 shadow-xl shadow-black/10"
     >
       {#if roles.saved.length === 0 && !naming}
         <p class="px-3 pt-2.5 pb-1 text-[13px] text-muted">

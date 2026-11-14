@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { Snippet } from "svelte";
-  import { layers } from "$lib/layers.svelte";
+  import { layers } from "$lib/layers";
 
   // Dialog chrome and nothing else: the backdrop, the scroll lock, focus
   // management and the Escape key. Lifted out of ItemModal once the skills
@@ -109,7 +109,7 @@
       aria-modal="true"
       aria-labelledby={titleId}
       tabindex="-1"
-      class="animate-sheet safe-bottom card flex max-h-[88dvh] w-full {widthClass} flex-col overflow-hidden rounded-t-3xl bg-elevated shadow-2xl focus:outline-none sm:rounded-3xl"
+      class="animate-sheet safe-bottom card flex max-h-[88dvh] w-full {widthClass} flex-col overflow-hidden rounded-t-xl bg-elevated shadow-2xl shadow-black/20 focus:outline-none sm:rounded-xl"
     >
       {@render children()}
     </div>

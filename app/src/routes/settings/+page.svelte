@@ -126,14 +126,17 @@
 <!-- Reached from the top bar's tool cluster at md: and up, and from the fourth
      tab on a phone. It is no longer one of the app's destinations: it is
      somewhere you go to change something and then leave. -->
-<main class="mx-auto w-full max-w-3xl flex-1 px-4 pb-8 sm:px-6 lg:px-8">
+<div class="flex h-full min-h-0 flex-col">
   <PageHeader
     title="Settings"
     subtitle="Everything is stored locally on this device. No account, no server."
   />
 
-  <section class="card mt-4 mb-5 p-5">
-    <h2 class="mb-1 text-lg font-bold">Your field</h2>
+  <div class="pane flex-1">
+  <div class="mx-auto w-full max-w-3xl px-4 py-5 sm:px-6">
+
+  <section class="card mb-4 p-4">
+    <h2 class="mb-1 text-[14px] font-semibold">Your field</h2>
     <p class="mb-4 text-sm text-muted">Items matching your field are ranked to the top.</p>
     <div class="flex flex-wrap gap-2">
       {#each MAJORS as option (option)}
@@ -150,9 +153,9 @@
     </div>
   </section>
 
-  <section class="card mb-5 p-5">
+  <section class="card mb-4 p-4">
     <div class="mb-1 flex items-baseline justify-between gap-3">
-      <h2 class="text-lg font-bold">Your interests</h2>
+      <h2 class="text-[14px] font-semibold">Your interests</h2>
       <span class="shrink-0 text-xs font-medium text-subtle">
         {feed.interests.length} selected
       </span>
@@ -186,9 +189,9 @@
     {/if}
   </section>
 
-  <section class="card mb-5 p-5">
+  <section class="card mb-4 p-4">
     <div class="mb-1 flex items-baseline justify-between gap-3">
-      <h2 class="text-lg font-bold">Your skills</h2>
+      <h2 class="text-[14px] font-semibold">Your skills</h2>
       <span class="shrink-0 text-xs font-medium text-subtle">
         {feed.skills.length} selected
       </span>
@@ -224,15 +227,15 @@
 
     <button
       onclick={() => feed.openSkillsForm()}
-      class="inline-flex items-center gap-1.5 rounded-xl bg-brand px-5 py-2.5 text-sm font-semibold text-brand-fg transition-all hover:bg-brand-hover hover:shadow-lg hover:shadow-brand/25"
+      class="inline-flex items-center gap-1.5 rounded-md bg-brand px-5 py-2.5 text-sm font-semibold text-brand-fg transition-all hover:bg-brand-hover hover:shadow-lg hover:shadow-brand/25"
     >
       <Sparkles size={15} strokeWidth={2.5} />
       {feed.needsSkillsSetup ? "Set up your skills" : "Edit your skills"}
     </button>
   </section>
 
-  <section class="card mb-5 p-5">
-    <h2 class="mb-1 text-lg font-bold">Appearance</h2>
+  <section class="card mb-4 p-4">
+    <h2 class="mb-1 text-[14px] font-semibold">Appearance</h2>
     <p class="mb-4 text-sm text-muted">"System" follows your OS setting and updates live.</p>
     <div class="flex flex-wrap gap-2">
       {#each THEMES as option (option.value)}
@@ -252,10 +255,10 @@
     </div>
   </section>
 
-  <section class="card mb-5 p-5">
+  <section class="card mb-4 p-4">
     <div class="mb-4 flex items-start justify-between gap-4">
       <div>
-        <h2 class="mb-1 text-lg font-bold">What to scrape</h2>
+        <h2 class="mb-1 text-[14px] font-semibold">What to scrape</h2>
         <p class="text-sm text-muted">
           {#if feed.status}
             {feed.status.item_count.toLocaleString()} items cached · last refreshed
@@ -273,7 +276,7 @@
           <button
             onclick={() => feed.stop()}
             disabled={feed.phase === "stopping"}
-            class="inline-flex items-center gap-1.5 rounded-xl border border-line px-4 py-2 text-sm font-semibold text-foreground transition-colors hover:border-subtle disabled:opacity-50"
+            class="inline-flex items-center gap-1.5 rounded-md border border-line px-4 py-2 text-sm font-semibold text-foreground transition-colors hover:border-subtle disabled:opacity-50"
           >
             <Square size={13} class="fill-current" />
             {feed.phase === "stopping" ? "Stopping…" : "Stop scraping"}
@@ -281,7 +284,7 @@
         {:else}
           <button
             onclick={() => feed.refresh(true)}
-            class="inline-flex items-center gap-1.5 rounded-xl bg-brand px-4 py-2 text-sm font-semibold text-brand-fg transition-colors hover:bg-brand-hover"
+            class="inline-flex items-center gap-1.5 rounded-md bg-brand px-4 py-2 text-sm font-semibold text-brand-fg transition-colors hover:bg-brand-hover"
           >
             <RefreshCw size={15} />
             Scrape everything
@@ -392,7 +395,7 @@
       <button
         type="button"
         onclick={() => feed.openSetup()}
-        class="inline-flex items-center gap-1.5 rounded-xl border border-line px-4 py-2 text-sm font-semibold text-muted transition-colors hover:border-brand hover:text-foreground"
+        class="inline-flex items-center gap-1.5 rounded-md border border-line px-4 py-2 text-sm font-semibold text-muted transition-colors hover:border-brand hover:text-foreground"
       >
         <Sparkles size={14} />
         Run setup again
@@ -401,8 +404,8 @@
   </section>
 
   {#if (feed.status?.dismissed_count ?? 0) > 0}
-    <section class="card mb-5 p-5">
-      <h2 class="mb-1 text-lg font-bold">Hidden items</h2>
+    <section class="card mb-4 p-4">
+      <h2 class="mb-1 text-[14px] font-semibold">Hidden items</h2>
       <p class="mb-4 text-sm text-muted">
         You've hidden {feed.status?.dismissed_count} item{feed.status?.dismissed_count === 1
           ? ""
@@ -410,7 +413,7 @@
       </p>
       <button
         onclick={() => feed.restoreDismissed()}
-        class="inline-flex items-center gap-1.5 rounded-xl border border-line px-4 py-2 text-sm font-semibold text-muted transition-colors hover:border-brand hover:text-brand"
+        class="inline-flex items-center gap-1.5 rounded-md border border-line px-4 py-2 text-sm font-semibold text-muted transition-colors hover:border-brand hover:text-brand"
       >
         <RotateCcw size={15} />
         Restore hidden items
@@ -418,8 +421,8 @@
     </section>
   {/if}
 
-  <section class="card mb-5 border-danger/30 p-5">
-    <h2 class="mb-1 text-lg font-bold">Clear stored data</h2>
+  <section class="card mb-4 border-danger/30 p-4">
+    <h2 class="mb-1 text-[14px] font-semibold">Clear stored data</h2>
     <p class="mb-4 text-sm text-muted">
       Deletes everything the app has collected on this device — {feed.status?.item_count ?? 0}
       cached item{(feed.status?.item_count ?? 0) === 1 ? "" : "s"}, every fetched job
@@ -432,19 +435,20 @@
     <button
       onclick={clearData}
       disabled={clearing}
-      class="inline-flex items-center gap-1.5 rounded-xl border border-danger/40 px-4 py-2 text-sm font-semibold text-danger transition-colors hover:bg-danger hover:text-danger-fg disabled:opacity-50"
+      class="inline-flex items-center gap-1.5 rounded-md border border-danger/40 px-4 py-2 text-sm font-semibold text-danger transition-colors hover:bg-danger hover:text-danger-fg disabled:opacity-50"
     >
       <Trash2 size={15} />
       {clearing ? "Clearing…" : "Clear all data"}
     </button>
   </section>
 
-  <section class="card p-5">
-    <h2 class="mb-1 text-lg font-bold">About</h2>
+  <section class="card p-4">
+    <h2 class="mb-1 text-[14px] font-semibold">About</h2>
     <p class="text-sm leading-relaxed text-muted">
       Anti-FOMO scrapes {sources.length} public sources directly on your device and ranks them against
       your field and interests. Results are cached locally, so the feed opens instantly and stays readable
-      offline.
+      offline. Nothing you save or write leaves this device; company logos are loaded from Google's
+      favicon service.
     </p>
     <div class="mt-4 flex flex-wrap items-center gap-3 border-t border-line-soft pt-4">
       <span class="text-sm text-muted">
@@ -452,7 +456,7 @@
       </span>
       <button
         onclick={openLogs}
-        class="inline-flex items-center gap-1.5 rounded-xl border border-line px-3 py-1.5 text-sm font-semibold text-muted transition-colors hover:border-brand hover:text-foreground"
+        class="inline-flex items-center gap-1.5 rounded-md border border-line px-3 py-1.5 text-sm font-semibold text-muted transition-colors hover:border-brand hover:text-foreground"
       >
         <FileText size={14} />
         Open log folder
@@ -460,4 +464,6 @@
       <span class="text-xs text-subtle">Attach the latest log to a bug report.</span>
     </div>
   </section>
-</main>
+  </div>
+  </div>
+</div>

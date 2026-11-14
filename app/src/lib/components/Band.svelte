@@ -30,25 +30,25 @@
   const Icon = $derived(icon);
 </script>
 
-<section>
-  <div class="flex items-baseline justify-between gap-3 pt-4 pb-2">
-    <h2 class="flex min-w-0 items-center gap-2.5">
-      <Icon size={15} strokeWidth={2.5} class="shrink-0 {accent}" />
-      <span class="font-display text-[17px] font-bold tracking-tight">{label}</span>
+<section class="mb-6">
+  <div class="mb-1.5 flex items-center justify-between gap-3 px-1">
+    <h2 class="flex min-w-0 items-center gap-2">
+      <Icon size={13} strokeWidth={2.5} class="shrink-0 {accent}" />
+      <span class="text-[13px] font-semibold">{label}</span>
       {#if blurb}
-        <span class="hidden truncate text-xs font-normal text-subtle sm:inline">{blurb}</span>
+        <span class="hidden truncate text-[12px] font-normal text-subtle sm:inline">{blurb}</span>
       {/if}
     </h2>
 
     {#if actionLabel}
       {#if href}
-        <a {href} class="shrink-0 text-[13px] font-semibold text-brand hover:underline">
+        <a {href} class="shrink-0 text-[12px] font-medium text-subtle hover:text-foreground">
           {actionLabel}
         </a>
       {:else if onAction}
         <button
           onclick={onAction}
-          class="shrink-0 text-[13px] font-semibold text-brand hover:underline"
+          class="shrink-0 text-[12px] font-medium text-subtle hover:text-foreground"
         >
           {actionLabel}
         </button>
@@ -56,5 +56,7 @@
     {/if}
   </div>
 
-  {@render children()}
+  <div class="overflow-hidden rounded-lg border border-line bg-surface">
+    {@render children()}
+  </div>
 </section>

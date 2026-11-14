@@ -220,7 +220,7 @@
       aria-label="Search"
       tabindex="-1"
       onkeydown={onKeydown}
-      class="animate-fade-up relative w-full max-w-2xl overflow-hidden rounded-[20px] border border-line bg-surface shadow-2xl shadow-black/20"
+      class="animate-fade-up relative w-full max-w-2xl overflow-hidden rounded-xl border border-line bg-elevated shadow-2xl shadow-black/25"
     >
       <div class="flex items-center gap-3 border-b border-line-soft px-4">
         <Search size={17} class="shrink-0 text-subtle" />

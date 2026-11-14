@@ -1,7 +1,6 @@
 <script lang="ts">
   import "../app.css";
   import { afterNavigate } from "$app/navigation";
-  import { page } from "$app/state";
   import type { ScrapedItem } from "$lib/api";
   import BottomNav from "$lib/components/BottomNav.svelte";
   import ConfirmDialog from "$lib/components/ConfirmDialog.svelte";
@@ -11,7 +10,7 @@
   import SearchPalette from "$lib/components/SearchPalette.svelte";
   import SkillsWizard from "$lib/components/SkillsWizard.svelte";
   import Toaster from "$lib/components/Toaster.svelte";
-  import TopBar from "$lib/components/TopBar.svelte";
+  import Sidebar from "$lib/components/Sidebar.svelte";
   import { installErrorHandlers } from "$lib/errors";
   import { feed } from "$lib/feed.svelte";
   import { roles } from "$lib/roles.svelte";
@@ -20,15 +19,6 @@
   import { theme } from "$lib/theme.svelte";
 
   let { children } = $props();
-
-  /**
-   * Roles at desktop width is an app pane, not a page: two columns that own
-   * their own scrolling, sized to the window. The shell is held to the window's
-   * height there and the footer steps aside, so whatever chrome is showing
-   * above it — the scan bar, the refresh banner — is subtracted for real
-   * rather than guessed at with a fixed calc.
-   */
-  const paneRoute = $derived(page.url.pathname.startsWith("/internships"));
 
   /** What the palette opened, mounted here so search works from any page. */
   let found = $state<ScrapedItem | null>(null);
@@ -80,56 +70,51 @@
 <svelte:window onkeydown={onKeydown} />
 
 <!--
-  One shell at every width. The top bar sits above the content at md: and up and
-  is simply not rendered below it, where the tab bar owns navigation and each
-  page carries its own title row — so the two navigations are never on screen
-  together and the content column is never squeezed by a rail.
+  An app, not a page. The shell is exactly the window: a sidebar at md: and up,
+  and beside it a column whose views each own their scrolling — a toolbar that
+  stays put over panes that scroll beneath it. Nothing scrolls the window, so
+  there is no footer to reach and no title that slides away.
+
+  Phones have no sidebar; the tab bar below carries navigation, and the column
+  leaves room for it.
+
+  `inert` while the setup form is up: it covers the screen, and without this
+  Tab would walk straight through it into a page that is not there yet.
 -->
-<!-- `inert` while the form is up: it covers the screen, and without this Tab would
-     walk straight through it into a page that is not there yet. -->
 <div
-  class="flex min-h-screen flex-col bg-background font-sans text-foreground {paneRoute
-    ? 'lg:h-dvh lg:min-h-0 lg:overflow-hidden'
-    : ''}"
+  class="flex h-dvh overflow-hidden bg-background font-sans text-[13px] text-foreground"
   inert={setup}
 >
-  <!-- The phone's status bar inset, once, for everything below it: the scan
-       bar and the refresh banner come before any page header and would
-       otherwise slide under the notch. The top bar carries its own at md:. -->
-  <div class="h-[env(safe-area-inset-top)] shrink-0 md:hidden" aria-hidden="true"></div>
-  <TopBar />
-  <ScanBar />
+  <Sidebar />
 
-  {#if feed.error}
-    <div
-      class="flex items-center justify-center gap-2 border-b border-star/30 bg-star-soft px-4 py-2 text-center text-xs font-medium text-star"
-      role="status"
-    >
-      <CircleAlert size={14} class="shrink-0" />
-      <span class="min-w-0">Showing cached results — the last refresh failed ({feed.error})</span>
-      <button
-        onclick={() => feed.clearError()}
-        aria-label="Dismiss"
-        class="-my-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-md hover:bg-star/10"
-      >
-        <X size={13} />
-      </button>
-    </div>
-  {/if}
-
-  {@render children()}
-
-  <footer
-    class="mt-auto border-t border-line py-8 text-center text-sm text-subtle {paneRoute ? 'lg:hidden' : ''}"
+  <div
+    class="flex min-w-0 flex-1 flex-col pt-[env(safe-area-inset-top)] pb-[calc(3.75rem+env(safe-area-inset-bottom))] md:pt-0 md:pb-0"
   >
-    <p class="px-6">
-      {feed.status?.sources.length ?? 0} sources scraped on this device · your data stays on it (company
-      logos load from Google's favicon service)
-    </p>
-  </footer>
+    <ScanBar />
 
-  <!-- Clearance for the fixed tab bar, which would otherwise cover the footer. -->
-  <div class="safe-bottom h-16 md:hidden" aria-hidden="true"></div>
+    {#if feed.error}
+      <div
+        class="flex shrink-0 items-center gap-2 border-b border-star/30 bg-star-soft px-4 py-1.5 text-[12px] font-medium text-star"
+        role="status"
+      >
+        <CircleAlert size={13} class="shrink-0" />
+        <span class="min-w-0 flex-1 truncate"
+          >Showing cached results — the last refresh failed ({feed.error})</span
+        >
+        <button
+          onclick={() => feed.clearError()}
+          aria-label="Dismiss"
+          class="flex h-6 w-6 shrink-0 items-center justify-center rounded-md hover:bg-star/10"
+        >
+          <X size={13} />
+        </button>
+      </div>
+    {/if}
+
+    <main class="flex min-h-0 flex-1 flex-col">
+      {@render children()}
+    </main>
+  </div>
 </div>
 
 <!-- Fixed-position, so wrapping it changes nothing about layout; it only lets the form's

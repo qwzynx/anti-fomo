@@ -3,6 +3,7 @@
   import { afterNavigate, goto } from "$app/navigation";
   import { toast } from "$lib/toast.svelte";
   import EmptyState from "$lib/components/EmptyState.svelte";
+  import PageHeader from "$lib/components/PageHeader.svelte";
   import ResumePreview from "$lib/components/resume/ResumePreview.svelte";
   import TailorPanel from "$lib/components/resume/TailorPanel.svelte";
   import ThemePicker from "$lib/components/resume/ThemePicker.svelte";
@@ -154,25 +155,22 @@
 
 <svelte:head><title>Tailored résumé · Anti-FOMO</title></svelte:head>
 
-<main class="mx-auto w-full max-w-7xl flex-1 px-4 pb-8 sm:px-6 lg:px-8">
-  <div class="pt-4 pb-3">
-    <button
-      onclick={back}
-      class="mb-2 inline-flex items-center gap-1 text-sm font-semibold text-muted hover:text-foreground"
-    >
-      <ArrowLeft size={15} />
-      Back
-    </button>
-    <h1 class="text-2xl leading-tight font-bold">Tailored résumé</h1>
-    <p class="mt-0.5 text-sm text-muted">
-      For <span class="font-semibold text-foreground">{heading}</span>{#if company}
-        at {company}{/if}, from “{resume.name}”. That résumé is untouched — this is a copy of it
-      for this posting.
-    </p>
-  </div>
+<div class="flex h-full min-h-0 flex-col">
+  <PageHeader title="Tailored résumé" subtitle="From “{resume.name}” — that résumé is untouched">
+    {#snippet actions()}
+      <button onclick={back} class="tool"><ArrowLeft size={14} /> Back</button>
+    {/snippet}
+  </PageHeader>
+
+  <div class="pane flex-1">
+  <div class="mx-auto w-full max-w-7xl px-4 py-5 sm:px-6">
+  <p class="mb-4 text-[13px] text-muted">
+    For <span class="font-semibold text-foreground">{heading}</span>{#if company}
+      at {company}{/if}.
+  </p>
 
   {#if error}
-    <p class="mb-3 rounded-xl bg-danger-soft p-3 text-sm text-danger" role="alert">{error}</p>
+    <p class="mb-3 rounded-md bg-danger-soft p-3 text-sm text-danger" role="alert">{error}</p>
   {/if}
 
   {#if !url}
@@ -201,13 +199,13 @@
           <button
             onclick={download}
             disabled={busy}
-            class="inline-flex items-center gap-1.5 rounded-xl bg-brand px-3.5 py-2 text-sm font-semibold text-brand-fg transition-colors hover:bg-brand-hover disabled:opacity-50"
+            class="inline-flex items-center gap-1.5 rounded-md bg-brand px-3.5 py-2 text-sm font-semibold text-brand-fg transition-colors hover:bg-brand-hover disabled:opacity-50"
           >
             {#if busy}<Loader size={15} class="animate-spin" />{:else}<Download size={15} />{/if}
             Save PDF
           </button>
         </div>
-        <div class="rounded-xl bg-line-soft p-3 lg:sticky lg:top-[70px]">
+        <div class="rounded-md bg-line-soft p-3 lg:sticky lg:top-[70px]">
           <ResumePreview pages={view.pages} scale={0.78} label="Résumé tailored to {heading}" />
         </div>
       </div>
@@ -230,7 +228,7 @@
         </div>
 
         {#if tab === "design"}
-          <section class="card p-5">
+          <section class="card p-4">
             <ThemePicker
               theme={view.theme}
               options={resume.themes}
@@ -255,4 +253,6 @@
       </div>
     </div>
   {/if}
-</main>
+  </div>
+  </div>
+</div>

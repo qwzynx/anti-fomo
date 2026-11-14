@@ -91,7 +91,7 @@
       .filter(Boolean)
       .join(" · "),
   );
-  const denseTail = $derived(deadline ?? timeAgo(item.timestamp));
+  const denseTail = $derived(meta ?? deadline ?? timeAgo(item.timestamp));
 
   // A new item means a fresh logo attempt — and every list keys its `{#each}`
   // on `item.url`, so a new item *is* a new component and `logoFailed` starts
@@ -106,52 +106,52 @@
 -->
 <article
   aria-current={selected ? "true" : undefined}
-  class="group relative flex items-center gap-3 border-t border-t-line-soft transition-colors first:border-t-transparent sm:gap-3.5
-         {dense
-    ? 'border-l-[3px] py-2.5 pr-3 pl-2'
-    : 'rounded-xl px-1.5 py-2 sm:py-2.5'}
-         {selected ? 'border-l-brand bg-hero' : 'border-l-transparent hover:bg-line-soft'}
-         {seen && !selected ? 'opacity-70 hover:opacity-100' : ''}"
+  class="group relative flex items-center gap-3 border-b border-line-soft transition-colors last:border-b-0
+         {dense ? 'py-2.5 pr-2 pl-4' : 'px-3 py-2.5 sm:px-4'}
+         {selected ? 'bg-brand-soft/70' : 'hover:bg-hover'}"
 >
+  {#if selected}
+    <span class="absolute inset-y-0 left-0 w-[2px] bg-brand" aria-hidden="true"></span>
+  {/if}
   {#if shape === "logo"}
     {#if logo && !logoFailed}
       <img
         src={logo}
         alt=""
-        width="34"
-        height="34"
+        width="30"
+        height="30"
         loading="lazy"
         decoding="async"
         onerror={() => (logoFailed = true)}
-        class="h-[34px] w-[34px] shrink-0 rounded-[10px] bg-line-soft object-contain p-1"
+        class="h-[30px] w-[30px] shrink-0 rounded-md border border-line-soft bg-white object-contain p-[3px]"
       />
     {:else}
       <div
-        class="flex h-[34px] w-[34px] shrink-0 items-center justify-center rounded-[10px] bg-line-soft text-[13px] font-bold text-muted"
+        class="flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-md bg-line-soft text-[12px] font-semibold text-muted"
       >
         {(parts.secondary ?? parts.primary).charAt(0).toUpperCase()}
       </div>
     {/if}
   {:else if shape === "date" && date}
-    <div class="w-[38px] shrink-0 rounded-[9px] bg-event-soft py-1 text-center">
-      <div class="text-[9px] font-bold tracking-wider text-event uppercase">{date.month}</div>
-      <div class="font-display text-[15px] leading-tight font-bold text-event">{date.day}</div>
+    <div class="w-[30px] shrink-0 rounded-md bg-event-soft py-0.5 text-center">
+      <div class="text-[8.5px] font-bold tracking-wider text-event uppercase">{date.month}</div>
+      <div class="text-[13px] leading-tight font-semibold text-event">{date.day}</div>
     </div>
   {:else if shape === "type"}
     <div
-      class="flex h-[34px] w-[34px] shrink-0 items-center justify-center rounded-[10px] {typeBadgeClass(
+      class="flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-md {typeBadgeClass(
         item.item_type,
       )}"
     >
-      <TypeIcon size={16} strokeWidth={2.5} />
+      <TypeIcon size={14} strokeWidth={2.25} />
     </div>
   {/if}
 
   <div class="min-w-0 flex-1">
-    <h3 class="text-sm leading-snug font-semibold">
+    <h3 class="text-[13px] leading-snug {seen && !selected ? 'font-normal text-muted' : 'font-medium'}">
       <button
         onclick={() => onOpen(item)}
-        class="line-clamp-2 text-left {selected ? 'text-brand-soft-fg' : 'hover:text-brand'}"
+        class="line-clamp-2 text-left {selected ? 'text-foreground' : ''}"
       >
         <span class="absolute inset-0" aria-hidden="true"></span>
         {#if titleRuns}{#each titleRuns as run, i (i)}{#if run.hit}<mark
@@ -160,7 +160,7 @@
       </button>
     </h3>
     {#if dense || subText}
-      <p class="truncate text-xs text-subtle {dense ? 'mt-0.5' : 'mt-px'}">
+      <p class="truncate text-[12px] text-subtle {dense ? 'mt-0.5' : 'mt-px'}">
         {#if dense}
           {denseLead}{denseLead ? " · " : ""}<span
             class={deadline && urgent ? "font-semibold text-danger" : ""}>{denseTail}</span
@@ -172,7 +172,7 @@
     {/if}
     <!-- Below sm the two fixed columns have nowhere to go, so they fold in. -->
     {#if !dense && metaText}
-      <p class="truncate text-xs text-muted sm:hidden">
+      <p class="truncate text-[12px] text-subtle sm:hidden">
         {metaText}{#if item.item_type !== "Event"}{" · "}{timeAgo(item.timestamp)}{/if}{#if deadline}{" · "}<span
             class={urgent ? "font-semibold text-danger" : ""}>{deadline}</span
           >{/if}
@@ -181,8 +181,8 @@
   </div>
 
   {#if !dense && metaText}
-    <div class="hidden w-[150px] shrink-0 sm:block lg:w-[220px]">
-      <p class="truncate text-xs text-muted">{metaText}</p>
+    <div class="hidden w-[150px] shrink-0 sm:block lg:w-[200px]">
+      <p class="truncate text-[12px] text-muted">{metaText}</p>
       {#if deadline}
         <p class="mt-0.5 truncate text-[11px] font-semibold {urgent ? 'text-danger' : 'text-subtle'}">
           {deadline}
@@ -193,7 +193,7 @@
 
   {#if match}
     <span
-      class="shrink-0 rounded-lg px-2 py-1 text-xs font-bold tabular-nums
+      class="shrink-0 rounded px-1.5 py-0.5 text-[11px] font-semibold tabular-nums
              {match.have / match.total >= 0.6
         ? 'bg-brand-soft text-brand-soft-fg'
         : 'bg-line-soft text-subtle'}"
@@ -204,7 +204,7 @@
   {/if}
 
   {#if !dense}
-    <span class="hidden w-[50px] shrink-0 text-right text-xs text-subtle sm:block">
+    <span class="hidden w-[50px] shrink-0 text-right text-[12px] text-subtle tabular-nums sm:block">
       {item.item_type === "Event" ? "" : timeAgo(item.timestamp)}
     </span>
   {/if}
@@ -222,12 +222,12 @@
       aria-pressed={saved}
       aria-label={saved ? "Remove from saved" : "Save this item"}
       title={saved ? "Remove from saved" : "Save"}
-      class="tap h-9 w-9 sm:h-8 sm:w-8 {saved ? 'text-brand hover:text-brand' : ''}"
+      class="tap h-8 w-8 sm:h-7 sm:w-7 {saved ? 'text-brand hover:text-brand' : ''}"
     >
       {#if saved}
-        <BookmarkCheck size={16} strokeWidth={2.5} />
+        <BookmarkCheck size={15} strokeWidth={2.5} />
       {:else}
-        <Bookmark size={16} />
+        <Bookmark size={15} />
       {/if}
     </button>
     {#if dismissable}
@@ -235,9 +235,9 @@
         onclick={() => feed.dismiss(item)}
         aria-label="Hide this item"
         title="Not interested"
-        class="tap h-9 w-9 sm:h-8 sm:w-8 {dense ? 'reveal-on-hover' : ''}"
+        class="tap h-8 w-8 sm:h-7 sm:w-7 {dense ? 'reveal-on-hover' : ''}"
       >
-        <X size={16} />
+        <X size={15} />
       </button>
     {/if}
   </div>

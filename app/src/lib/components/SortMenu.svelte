@@ -96,13 +96,10 @@
     aria-haspopup="menu"
     aria-label="Sort roles by: {value}"
     aria-expanded={open}
-    class="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-full border px-3 text-[13px] font-semibold transition-colors
-           {open
-      ? 'border-brand bg-brand-soft text-brand-soft-fg'
-      : 'border-line bg-surface text-muted hover:border-subtle'}"
+    class="tool tool-outline shrink-0 {open ? 'text-foreground' : ''}"
   >
     <ArrowUpDown size={13} strokeWidth={2.25} class="shrink-0" />
-    {value}
+    <span class="hidden xl:inline">{value}</span>
   </button>
 
   {#if open}
@@ -117,7 +114,7 @@
       tabindex="-1"
       aria-label="Sort roles by"
       onkeydown={onMenuKeydown}
-      class="animate-fade-up card absolute right-0 z-50 mt-2 w-72 origin-top-right overflow-hidden bg-elevated p-1.5 shadow-2xl"
+      class="animate-fade-up absolute right-0 z-50 mt-1.5 w-72 origin-top-right overflow-hidden rounded-lg border border-line bg-elevated p-1 shadow-xl shadow-black/10"
     >
       {#each HUB_SORTS as sort (sort)}
         {@const Icon = iconFor(sort)}
@@ -127,12 +124,12 @@
           aria-checked={active}
           tabindex="-1"
           onclick={() => pick(sort)}
-          class="flex w-full items-start gap-2.5 rounded-xl px-2.5 py-2 text-left transition-colors {active
+          class="flex w-full items-start gap-2.5 rounded-md px-2 py-1.5 text-left transition-colors focus-visible:bg-hover {active
             ? 'bg-brand-soft'
-            : 'hover:bg-line-soft'}"
+            : 'hover:bg-hover'}"
         >
           <span
-            class="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-lg {active
+            class="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded {active
               ? 'bg-brand text-brand-fg'
               : 'bg-line-soft text-subtle'}"
           >

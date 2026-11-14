@@ -57,23 +57,21 @@
   }
 </script>
 
-<div class="border-y border-hero-line bg-hero">
-  <div
-    class="mx-auto flex w-full max-w-6xl flex-col gap-5 px-4 py-5 sm:px-6 lg:flex-row lg:items-start lg:gap-7 lg:px-8"
-  >
+<div class="mb-6 overflow-hidden rounded-xl border border-hero-line bg-hero">
+  <div class="flex flex-col gap-5 p-5 lg:flex-row lg:items-start lg:gap-6">
     <div class="min-w-0 flex-1">
-      <p class="mb-2.5 flex items-center gap-1.5 text-[11px] font-bold tracking-[0.1em] text-star uppercase">
-        <Flame size={14} strokeWidth={2.5} class="shrink-0" />
+      <p class="eyebrow mb-2 flex items-center gap-1.5 !text-star">
+        <Flame size={12} strokeWidth={2.5} class="shrink-0" />
         Your best match today
       </p>
 
-      <h2 class="font-display text-xl leading-tight font-bold tracking-tight text-pretty sm:text-[25px]">
+      <h2 class="text-[19px] leading-snug font-semibold text-pretty">
         <button onclick={() => onOpen(item)} class="text-left hover:text-brand">
           {parts.primary}
         </button>
       </h2>
       {#if parts.secondary}
-        <p class="mt-1 text-[15px] font-medium text-muted">{parts.secondary}</p>
+        <p class="mt-0.5 text-[13px] font-medium text-muted">{parts.secondary}</p>
       {/if}
 
       <div class="mt-3.5 flex flex-wrap gap-1.5">
@@ -82,17 +80,17 @@
                the pin is earned by the first chip only in that case. -->
           {@const isPlace = i === 0 && Boolean(item.location)}
           <span
-            class="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold
-                   {isPlace ? 'bg-job-soft text-job' : 'bg-surface text-muted'}"
+            class="inline-flex items-center gap-1 rounded px-2 py-0.5 text-[12px] font-medium
+                   {isPlace ? 'bg-job-soft text-job' : 'border border-line bg-surface text-muted'}"
           >
             {#if isPlace}<MapPin size={11} strokeWidth={2.5} />{/if}
             {tag}
           </span>
         {/each}
-        <span class="rounded-full bg-surface px-2.5 py-1 text-xs font-semibold text-muted">
+        <span class="rounded border border-line bg-surface px-2 py-0.5 text-[12px] font-medium text-muted">
           via {item.source_platform}
         </span>
-        <span class="rounded-full bg-surface px-2.5 py-1 text-xs font-semibold text-muted">
+        <span class="rounded border border-line bg-surface px-2 py-0.5 text-[12px] font-medium text-muted">
           {timeAgo(item.timestamp)}
         </span>
       </div>
@@ -123,7 +121,7 @@
       <div class="mt-4 flex items-center gap-2">
         <button
           onclick={apply}
-          class="flex h-[46px] flex-1 items-center justify-center gap-2 rounded-xl bg-brand px-5 text-sm font-semibold text-brand-fg transition-colors hover:bg-brand-hover sm:h-[42px] sm:flex-none"
+          class="btn-primary h-9 flex-1 px-4 sm:flex-none"
         >
           {cta}
           <ArrowUpRight size={15} strokeWidth={2.5} class="shrink-0" />
@@ -135,8 +133,7 @@
           onclick={() => feed.toggleSaved(item)}
           aria-pressed={saved}
           aria-label={saved ? "Remove from saved" : "Save this role"}
-          class="flex h-[46px] w-[46px] shrink-0 items-center justify-center gap-2 rounded-xl border border-line bg-surface text-muted transition-colors hover:border-subtle sm:h-[42px] sm:w-auto sm:px-4 sm:text-sm sm:font-semibold
-                 {saved ? 'text-brand' : ''}"
+          class="tool tool-outline h-9 {saved ? 'text-brand' : ''}"
         >
           {#if saved}
             <BookmarkCheck size={16} strokeWidth={2.5} />
@@ -149,7 +146,7 @@
         <button
           onclick={() => feed.dismiss(item)}
           aria-label="Not for me — show the next match"
-          class="flex h-[46px] w-[46px] shrink-0 items-center justify-center rounded-xl border border-line bg-surface text-subtle transition-colors hover:text-foreground sm:h-[42px] sm:w-auto sm:border-transparent sm:bg-transparent sm:px-3 sm:text-sm sm:font-medium"
+          class="tool h-9"
         >
           <X size={16} class="sm:hidden" />
           <span class="hidden sm:inline">Not for me</span>
@@ -159,10 +156,10 @@
 
     <!-- The skill panel gets more room here than it ever had on a card. -->
     {#if showMeter}
-      <div class="hidden w-[248px] shrink-0 rounded-[15px] bg-surface p-4 lg:block">
+      <div class="hidden w-[240px] shrink-0 rounded-lg border border-line bg-surface p-4 lg:block">
         <div class="mb-2.5 flex items-baseline justify-between">
-          <span class="text-[11px] font-bold tracking-wider text-subtle uppercase">You cover</span>
-          <span class="font-display text-xl font-bold text-brand tabular-nums">
+          <span class="eyebrow">You cover</span>
+          <span class="text-lg font-semibold text-brand tabular-nums">
             {have.length}<span class="text-[13px] font-semibold text-subtle">/{required.length}</span>
           </span>
         </div>
@@ -173,12 +170,12 @@
         </div>
         <div class="flex flex-wrap gap-1.5">
           {#each have.slice(0, 6) as skill (skill)}
-            <span class="rounded-[7px] bg-brand-soft px-2 py-0.5 text-[11px] font-semibold text-brand-soft-fg">
+            <span class="rounded bg-brand-soft px-2 py-0.5 text-[11px] font-semibold text-brand-soft-fg">
               {skill}
             </span>
           {/each}
           {#each missing.slice(0, 4) as skill (skill)}
-            <span class="rounded-[7px] border border-dashed border-line px-2 py-0.5 text-[11px] font-medium text-subtle">
+            <span class="rounded border border-dashed border-line px-2 py-0.5 text-[11px] font-medium text-subtle">
               {skill}
             </span>
           {/each}

@@ -8,7 +8,7 @@
   import PageHeader from "$lib/components/PageHeader.svelte";
   import RowSkeleton from "$lib/components/RowSkeleton.svelte";
   import { feed } from "$lib/feed.svelte";
-  import { BookOpen, Briefcase, Calendar, Flame, Inbox, Sparkles } from "$lib/icons";
+  import { BookOpen, Briefcase, Calendar, Flame, Inbox, ListChecks, Sparkles } from "$lib/icons";
   import { closesInDays, eventDate } from "$lib/item";
 
   // Today, not a feed.
@@ -84,6 +84,20 @@
         : `${feed.items.length.toLocaleString()} items cached · nothing new in the last day.`,
   );
 
+  /** The tiles across the top: four numbers worth a glance, each a way in. */
+  const stats = $derived([
+    { label: "New since yesterday", value: fresh, icon: Sparkles, accent: "text-brand", href: "/internships" },
+    { label: "Open roles", value: roles.length, icon: Briefcase, accent: "text-job", href: "/internships" },
+    { label: "Closing this week", value: lastCall.length, icon: Flame, accent: "text-danger", href: "/internships" },
+    {
+      label: "Applications in play",
+      value: feed.activeApplications,
+      icon: ListChecks,
+      accent: "text-event",
+      href: "/saved?stage=active",
+    },
+  ]);
+
   /** Steps a band open, then closes it again once it has shown everything. */
   function more(shown: number, total: number) {
     return shown >= total ? PREVIEW : Math.min(shown + STEP, total);
@@ -107,126 +121,146 @@
   }
 </script>
 
-<main class="w-full flex-1">
-  <div class="mx-auto w-full max-w-6xl px-4 sm:px-6 lg:px-8">
-    <PageHeader title="Today" {subtitle} />
-  </div>
+<div class="flex h-full min-h-0 flex-col">
+  <PageHeader title="Today" {subtitle} />
 
-  {#if feed.loading}
-    <div class="mx-auto w-full max-w-6xl px-4 pt-2 pb-8 sm:px-6 lg:px-8">
-      <RowSkeleton count={8} />
-    </div>
-  {:else if feed.items.length === 0}
-    <div class="mx-auto w-full max-w-6xl px-4 pt-2 pb-8 sm:px-6 lg:px-8">
+  <div class="pane flex-1">
+    {#if feed.loading}
+      <div class="p-2"><RowSkeleton count={10} /></div>
+    {:else if feed.items.length === 0}
       <EmptyState
         icon={Inbox}
         title={feed.refreshing ? "Collecting your feed…" : "Nothing cached yet"}
         body={feed.refreshing
-          ? "Results appear here as each source finishes. You can leave this open, or stop it from the bar above."
+          ? "Results appear here as each source finishes. You can leave this open, or stop it from the sidebar."
           : "Pull the latest listings, stories and events from your sources. It all stays on this device."}
         actionLabel={feed.refreshing ? "Stop" : "Refresh now"}
         onAction={() => (feed.refreshing ? feed.stop() : feed.refresh(true))}
       />
-    </div>
-  {:else}
-    {#if hero}
-      <HeroMatch item={hero} onOpen={(i) => (selected = i)} />
+    {:else}
+      <div class="mx-auto w-full max-w-6xl px-4 py-5 sm:px-6">
+        <!-- At a glance: what is new, what is closing, what you are in the middle of. -->
+        <div class="mb-6 grid grid-cols-2 gap-2.5 lg:grid-cols-4">
+          {#each stats as stat (stat.label)}
+            <a
+              href={stat.href}
+              class="group rounded-lg border border-line bg-surface px-3.5 py-3 transition-colors hover:border-subtle/50"
+            >
+              <p class="flex items-center gap-1.5 text-[12px] text-subtle">
+                <stat.icon size={13} class="shrink-0 {stat.accent}" />
+                {stat.label}
+              </p>
+              <p class="mt-1 text-[22px] leading-none font-semibold tabular-nums">
+                {stat.value.toLocaleString()}
+              </p>
+            </a>
+          {/each}
+        </div>
+
+        <!-- One nudge, and only until it has been answered. Skills go first:
+             it is the one that changes what every role on this page says. -->
+        {#if feed.needsSkillsSetup}
+          <button
+            onclick={() => feed.openSkillsForm()}
+            class="animate-fade-in mb-6 flex w-full items-center gap-2.5 rounded-lg border border-brand/30 bg-brand-soft px-4 py-2.5 text-left text-[13px] text-brand-soft-fg transition-colors hover:border-brand"
+          >
+            <Sparkles size={15} class="shrink-0" />
+            <span>
+              <span class="font-semibold">Tell us what you can build</span> and every role here will show
+              how much of it you already cover.
+            </span>
+          </button>
+        {:else if feed.interests.length === 0}
+          <a
+            href="/settings"
+            class="animate-fade-in mb-6 flex w-full items-center gap-2.5 rounded-lg border border-brand/30 bg-brand-soft px-4 py-2.5 text-[13px] text-brand-soft-fg transition-colors hover:border-brand"
+          >
+            <Sparkles size={15} class="shrink-0" />
+            <span>
+              <span class="font-semibold">Pick your interests</span> to rank all of this around what you
+              actually care about.
+            </span>
+          </a>
+        {/if}
+
+        {#if hero}
+          <HeroMatch item={hero} onOpen={(i) => (selected = i)} />
+        {/if}
+
+        <div class="grid gap-x-6 xl:grid-cols-2">
+          <div class="min-w-0">
+            <!-- First on purpose: the one section whose contents expire. -->
+            {#if lastCall.length > 0}
+              <Band
+                icon={Flame}
+                label="Last call"
+                accent="text-danger"
+                blurb="strong matches closing within a week"
+                actionLabel={bandAction(lastCallShown, lastCall.length)}
+                onAction={() => (lastCallShown = more(lastCallShown, lastCall.length))}
+              >
+                {#each lastCall.slice(0, lastCallShown) as item (item.url)}
+                  <ItemRow
+                    {item}
+                    variant="dense"
+                    meta={item.item_type === "Event" ? countdown(item) : undefined}
+                    onOpen={(i) => (selected = i)}
+                  />
+                {/each}
+              </Band>
+            {/if}
+
+            {#if restOfRoles.length > 0}
+              <Band
+                icon={Briefcase}
+                label="Top roles"
+                accent="text-job"
+                blurb="ranked by how much you cover"
+                actionLabel={roles.length > PREVIEW ? `All ${roles.length.toLocaleString()}` : undefined}
+                href="/internships"
+              >
+                {#each restOfRoles as item (item.url)}
+                  <ItemRow {item} variant="dense" onOpen={(i) => (selected = i)} />
+                {/each}
+              </Band>
+            {/if}
+          </div>
+
+          <div class="min-w-0">
+            {#if events.length > 0}
+              <Band
+                icon={Calendar}
+                label="Happening"
+                accent="text-event"
+                blurb="deadlines first"
+                actionLabel={bandAction(eventsShown, events.length)}
+                onAction={() => (eventsShown = more(eventsShown, events.length))}
+              >
+                {#each events.slice(0, eventsShown) as item (item.url)}
+                  <ItemRow {item} variant="dense" meta={countdown(item)} onOpen={(i) => (selected = i)} />
+                {/each}
+              </Band>
+            {/if}
+
+            {#if reading.length > 0}
+              <Band
+                icon={BookOpen}
+                label="Reading"
+                accent="text-article"
+                blurb="from the sources you follow"
+                actionLabel={bandAction(readingShown, reading.length)}
+                onAction={() => (readingShown = more(readingShown, reading.length))}
+              >
+                {#each reading.slice(0, readingShown) as item (item.url)}
+                  <ItemRow {item} variant="dense" lead="none" onOpen={(i) => (selected = i)} />
+                {/each}
+              </Band>
+            {/if}
+          </div>
+        </div>
+      </div>
     {/if}
-
-    <div class="mx-auto w-full max-w-6xl px-4 pb-8 sm:px-6 lg:px-8">
-      <!-- One nudge, and only until it has been answered. Skills go first:
-           it is the one that changes what every role on this page says. -->
-      {#if feed.needsSkillsSetup}
-        <button
-          onclick={() => feed.openSkillsForm()}
-          class="animate-fade-in mt-4 flex w-full items-center gap-2.5 rounded-xl border border-brand/30 bg-brand-soft px-4 py-3 text-left text-sm text-brand-soft-fg transition-colors hover:border-brand"
-        >
-          <Sparkles size={16} class="shrink-0" />
-          <span>
-            <span class="font-semibold">Tell us what you can build</span> and every role here will show
-            how much of it you already cover.
-          </span>
-        </button>
-      {:else if feed.interests.length === 0}
-        <a
-          href="/settings"
-          class="animate-fade-in mt-4 flex w-full items-center gap-2.5 rounded-xl border border-brand/30 bg-brand-soft px-4 py-3 text-sm text-brand-soft-fg transition-colors hover:border-brand"
-        >
-          <Sparkles size={16} class="shrink-0" />
-          <span>
-            <span class="font-semibold">Pick your interests</span> to rank all of this around what you
-            actually care about.
-          </span>
-        </a>
-      {/if}
-
-      <!-- Above Roles on purpose: it is the one band whose contents expire. A strong match
-           with a deadline this week is the thing this page exists to surface. -->
-      {#if lastCall.length > 0}
-        <Band
-          icon={Flame}
-          label="Last call"
-          accent="text-danger"
-          blurb="strong matches closing within a week"
-          actionLabel={bandAction(lastCallShown, lastCall.length)}
-          onAction={() => (lastCallShown = more(lastCallShown, lastCall.length))}
-        >
-          {#each lastCall.slice(0, lastCallShown) as item (item.url)}
-            <ItemRow
-              {item}
-              meta={item.item_type === "Event" ? countdown(item) : undefined}
-              onOpen={(i) => (selected = i)}
-            />
-          {/each}
-        </Band>
-      {/if}
-
-      {#if restOfRoles.length > 0}
-        <Band
-          icon={Briefcase}
-          label="Roles"
-          accent="text-job"
-          blurb="ranked by how much of the posting you cover"
-          actionLabel={roles.length > PREVIEW ? `See all ${roles.length}` : undefined}
-          href="/internships"
-        >
-          {#each restOfRoles as item (item.url)}
-            <ItemRow {item} onOpen={(i) => (selected = i)} />
-          {/each}
-        </Band>
-      {/if}
-
-      {#if reading.length > 0}
-        <Band
-          icon={BookOpen}
-          label="Reading"
-          accent="text-article"
-          blurb="from the sources you follow"
-          actionLabel={bandAction(readingShown, reading.length)}
-          onAction={() => (readingShown = more(readingShown, reading.length))}
-        >
-          {#each reading.slice(0, readingShown) as item (item.url)}
-            <ItemRow {item} lead="none" onOpen={(i) => (selected = i)} />
-          {/each}
-        </Band>
-      {/if}
-
-      {#if events.length > 0}
-        <Band
-          icon={Calendar}
-          label="Happening"
-          accent="text-event"
-          blurb="deadlines first"
-          actionLabel={bandAction(eventsShown, events.length)}
-          onAction={() => (eventsShown = more(eventsShown, events.length))}
-        >
-          {#each events.slice(0, eventsShown) as item (item.url)}
-            <ItemRow {item} meta={countdown(item)} onOpen={(i) => (selected = i)} />
-          {/each}
-        </Band>
-      {/if}
-    </div>
-  {/if}
-</main>
+  </div>
+</div>
 
 <ItemModal item={selected} onClose={() => (selected = null)} />

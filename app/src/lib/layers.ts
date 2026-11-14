@@ -9,7 +9,13 @@
  * owns Escape, and the page stays locked while any is open.
  */
 
-let stack = $state<number[]>([]);
+/**
+ * Plain, not `$state`: it is read when a key is pressed or a layer opens,
+ * never rendered from, and a reactive stack read *and* written inside the
+ * Modal's own open effect made that effect depend on itself — an update loop
+ * the moment a dialog opened.
+ */
+let stack: number[] = [];
 let nextId = 1;
 
 export const layers = {

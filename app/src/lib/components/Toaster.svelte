@@ -19,7 +19,7 @@
 >
   {#each toast.all as t (t.id)}
     <div
-      class="animate-fade-up pointer-events-auto flex w-full max-w-md items-center gap-3 rounded-xl border px-4 py-3 text-sm shadow-lg shadow-black/10
+      class="animate-fade-up pointer-events-auto flex w-full max-w-md items-center gap-3 rounded-lg border px-3.5 py-2.5 text-[13px] shadow-lg shadow-black/10
              {t.kind === 'error'
         ? 'border-danger/30 bg-danger-soft text-danger'
         : 'border-line bg-elevated text-foreground'}"

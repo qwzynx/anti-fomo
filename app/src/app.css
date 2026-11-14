@@ -1,7 +1,6 @@
 @import "tailwindcss";
 
-/* Fonts are vendored rather than fetched so the app works fully offline.
-   These two variables are what @theme below feeds into --font-sans/--font-display. */
+/* Fonts are vendored rather than fetched so the app works fully offline. */
 @font-face {
   font-family: "Inter";
   font-style: normal;
@@ -10,13 +9,6 @@
   src: url("/fonts/inter-latin.woff2") format("woff2");
 }
 
-@font-face {
-  font-family: "Outfit";
-  font-style: normal;
-  font-weight: 100 900;
-  font-display: swap;
-  src: url("/fonts/outfit-latin.woff2") format("woff2");
-}
 
 /* The résumé faces.
    These are the *same eight .ttf files* `resume/fonts.rs` compiles into the
@@ -90,45 +82,46 @@
 */
 :root {
   --font-inter: "Inter";
-  --font-outfit: "Outfit";
 
-  --background: #f7f8fb;
-  --foreground: #15171d;
+  /* Crisp and neutral: greys with a faint cool cast, one accent, hairlines
+     rather than shadows. The content area is the brightest surface; the
+     sidebar sits one step back from it, the way a desktop app's chrome does. */
+  --background: #ffffff;
+  --foreground: #1b1b1f;
+  --sidebar: #f7f7f8;
+  --hover: #f2f2f4;
 
   --surface: #ffffff;
   --elevated: #ffffff;
-  --line: #e4e6ef;
-  --line-soft: #f1f2f7;
-  --muted: #5c6272;
-  /* ≥4.5:1 on surface and background: it carries 10–12px metadata, which the
-     old #9aa0b0 (2.6:1) left below what WCAG asks of small text. */
-  --subtle: #666e80;
+  --line: #e7e7eb;
+  --line-soft: #f0f0f3;
+  --muted: #5b5b66;
+  /* ≥4.5:1 on every surface it sits on, sidebar included: it carries 11–12px
+     metadata. */
+  --subtle: #686874;
 
-  --brand: #4f46e5;
-  --brand-hover: #4338ca;
+  --brand: #5b57e0;
+  --brand-hover: #4b47d1;
   --brand-fg: #ffffff;
-  --brand-soft: #eef0fe;
-  --brand-soft-fg: #4338ca;
+  --brand-soft: #eeedfc;
+  --brand-soft-fg: #3f3bbf;
 
-  /* The hero band on Today: one tinted full-width strip, not a card floating
-     on grey. Deliberately closer to the page than to the brand, so the band
-     reads as emphasis rather than as an alert. */
-  --hero: #f4f5fe;
-  --hero-line: #e6e8f8;
+  --hero: #f6f6fe;
+  --hero-line: #e6e5f7;
 
   --job: #047857;
-  --job-soft: #d1fae5;
+  --job-soft: #dcfce9;
   --event: #7e22ce;
   --event-soft: #f3e8ff;
   --article: #4338ca;
   --article-soft: #e0e7ff;
-  --star: #b45309;
+  --star: #a14a06;
   --star-soft: #fef3c7;
 
   /* Destructive actions only — the one place the UI is allowed to alarm. */
-  --danger: #b91c1c;
+  --danger: #c0262d;
   --danger-fg: #ffffff;
-  --danger-soft: #fef2f2;
+  --danger-soft: #fdf1f1;
 }
 
 /* Explicit `dark` class strategy: the OS preference is applied on boot, but a
@@ -136,45 +129,49 @@
 @custom-variant dark (&:where(.dark, .dark *));
 
 :root.dark {
-  --background: #09090b;
-  --foreground: #f4f4f5;
+  --background: #111113;
+  --foreground: #ededf0;
+  --sidebar: #0c0c0e;
+  --hover: #1b1b1f;
 
-  /* Cards lift off the page by getting lighter, not by casting a shadow —
-     shadows read as smudges on a near-black background. */
-  --surface: #131316;
+  /* Surfaces lift by getting lighter, not by casting a shadow — shadows read
+     as smudges on a near-black background. */
+  --surface: #151518;
   --elevated: #1c1c20;
-  --line: #27272a;
-  --line-soft: #1f1f23;
-  --muted: #a1a1aa;
-  --subtle: #8a8a94;
+  --line: #27272d;
+  --line-soft: #1e1e23;
+  --muted: #a5a5b0;
+  --subtle: #8c8c98;
 
-  --brand: #6366f1;
-  --brand-hover: #818cf8;
+  --brand: #6c69f0;
+  --brand-hover: #7f7cf7;
   --brand-fg: #ffffff;
-  --brand-soft: #1e1b4b;
-  --brand-soft-fg: #c7d2fe;
+  --brand-soft: #222047;
+  --brand-soft-fg: #c9c7ff;
 
-  --hero: #16161f;
-  --hero-line: #2a2a3d;
+  --hero: #17172a;
+  --hero-line: #2a2a45;
 
   --job: #6ee7b7;
-  --job-soft: #064e3b;
-  --event: #e9d5ff;
-  --event-soft: #4c1d95;
+  --job-soft: #0b3b2c;
+  --event: #e2c9ff;
+  --event-soft: #3a1a66;
   --article: #c7d2fe;
-  --article-soft: #312e81;
+  --article-soft: #262a63;
   --star: #fcd34d;
-  --star-soft: #451a03;
+  --star-soft: #3d2307;
 
   --danger: #f87171;
   --danger-fg: #1c0a0a;
-  --danger-soft: #2a1215;
+  --danger-soft: #2a1416;
 }
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
 
+  --color-sidebar: var(--sidebar);
+  --color-hover: var(--hover);
   --color-surface: var(--surface);
   --color-elevated: var(--elevated);
   --color-line: var(--line);
@@ -204,7 +201,9 @@
   --color-danger-soft: var(--danger-soft);
 
   --font-sans: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
-  --font-display: var(--font-outfit), var(--font-inter), ui-sans-serif, sans-serif;
+  /* One family. Outfit headings read as a marketing site; an app titles its
+     views in the same face as everything else, a weight heavier. */
+  --font-display: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
 }
 
 html,
@@ -216,6 +215,13 @@ body {
   background: var(--background);
   color: var(--foreground);
   font-family: var(--font-sans);
+  font-feature-settings: "cv11", "ss01";
+  -webkit-font-smoothing: antialiased;
+  /* Text in an app is chrome, not a document: it is not selected by a stray
+     drag across a list. Inputs, descriptions and anything marked
+     .selectable opt back in. */
+  user-select: none;
+  -webkit-user-select: none;
   /* The webview should feel like an app, not a web page. */
   overscroll-behavior: none;
   -webkit-tap-highlight-color: transparent;
@@ -225,6 +231,35 @@ h1,
 h2,
 h3 {
   font-family: var(--font-display);
+  letter-spacing: -0.011em;
+}
+
+input,
+textarea,
+[contenteditable],
+.selectable,
+.selectable * {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+/* Thin, quiet scrollbars inside panes — the default ones are web-page chrome. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--subtle) 45%, transparent) transparent;
+}
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--subtle) 40%, transparent);
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background-clip: content-box;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
 }
 
 /* Respect the notch / gesture bar on Android. */
@@ -336,13 +371,13 @@ h3 {
    Defined once as utilities so a card looks the same everywhere and the pages
    read as markup instead of a wall of classes. */
 @utility card {
-  border-radius: 20px;
+  border-radius: 10px;
   border: 1px solid var(--line);
   background: var(--surface);
 }
 
 @utility control {
-  border-radius: 12px;
+  border-radius: 7px;
   border: 1px solid var(--line);
   background: var(--surface);
   padding: --spacing(2) --spacing(3);
@@ -367,8 +402,8 @@ h3 {
 }
 
 @utility chip {
-  border-radius: calc(infinity * 1px);
-  padding: --spacing(1.5) --spacing(3);
+  border-radius: 6px;
+  padding: --spacing(1) --spacing(2.5);
   font-size: var(--text-xs);
   font-weight: 600;
   white-space: nowrap;
@@ -391,12 +426,114 @@ h3 {
   display: flex;
   align-items: center;
   justify-content: center;
-  border-radius: 12px;
+  border-radius: 7px;
   color: var(--subtle);
   transition: background-color 150ms, color 150ms;
 
   &:hover {
-    background: var(--line-soft);
+    background: var(--hover);
     color: var(--foreground);
   }
+}
+
+/* --- App shell primitives ---------------------------------------------------
+   A view is a toolbar over panes that scroll on their own; nothing scrolls the
+   window. These are the pieces every route is built from. */
+
+/* The bar across the top of a view: title on the left, controls on the right. */
+@utility toolbar {
+  display: flex;
+  align-items: center;
+  gap: --spacing(2);
+  min-height: 52px;
+  padding-inline: --spacing(4);
+  border-bottom: 1px solid var(--line);
+  background: var(--background);
+  flex-shrink: 0;
+}
+
+/* A region that owns its scrolling. */
+@utility pane {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+/* A small, square, quiet toolbar button. */
+@utility tool {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: --spacing(1.5);
+  height: 30px;
+  min-width: 30px;
+  padding-inline: --spacing(2);
+  border-radius: 7px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--muted);
+  transition: background-color 120ms, color 120ms, border-color 120ms;
+
+  &:hover {
+    background: var(--hover);
+    color: var(--foreground);
+  }
+  &:disabled {
+    opacity: 0.5;
+    pointer-events: none;
+  }
+}
+
+/* The same, bordered: for a control that holds a value (sort, saved search). */
+@utility tool-outline {
+  border: 1px solid var(--line);
+  background: var(--surface);
+}
+
+/* The primary action in a toolbar. */
+@utility btn-primary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: --spacing(1.5);
+  height: 30px;
+  padding-inline: --spacing(3);
+  border-radius: 7px;
+  font-size: 13px;
+  font-weight: 600;
+  background: var(--brand);
+  color: var(--brand-fg);
+  transition: background-color 120ms;
+
+  &:hover {
+    background: var(--brand-hover);
+  }
+  &:disabled {
+    opacity: 0.5;
+    pointer-events: none;
+  }
+}
+
+/* A small uppercase label over a group: sidebar sections, settings groups. */
+@utility eyebrow {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--subtle);
+}
+
+/* A keyboard hint. */
+@utility kbd {
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  padding-inline: 5px;
+  border-radius: 4px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--subtle);
+  font-family: var(--font-sans);
 }

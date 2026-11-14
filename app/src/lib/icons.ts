@@ -34,6 +34,7 @@ export {
   Filter,
   Flame,
   Gift,
+  Hash,
   GraduationCap,
   Home,
   Hourglass,

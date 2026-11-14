@@ -405,6 +405,15 @@ export const feed = {
     return seenUrls.has(url);
   },
 
+  /** Saved roles with an application still in play: applied, interviewing or an offer. */
+  get activeApplications(): number {
+    let n = 0;
+    for (const [url, a] of applications) {
+      if (savedUrls.has(url) && (a.status === "applied" || a.status === "interviewing" || a.status === "offer")) n++;
+    }
+    return n;
+  },
+
   /** Where an application stands, for a saved role that has one. */
   application(url: string): Application | null {
     return applications.get(url) ?? null;

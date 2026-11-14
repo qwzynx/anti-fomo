@@ -3,59 +3,62 @@
   import { RefreshCw, Search, Square } from "$lib/icons";
   import { search } from "$lib/search.svelte";
 
-  // Every page opens the same way: its name, one line saying what is in it, and
-  // — on a phone, which has no top bar to keep them in — the two controls that
-  // belong to the app rather than to the page.
+  // The bar across the top of every view: what you are looking at, how much of
+  // it there is, and the view's own controls. It is chrome, not a page title —
+  // one line, fixed, with the content scrolling in a pane beneath it.
+  //
+  // On a phone there is no sidebar, so search and refresh live here too.
   let {
     title,
     subtitle,
     actions,
+    children,
   }: {
     title: string;
     subtitle?: string;
-    /** Page-specific controls, shown at every width beside the title. */
+    /** Controls on the right edge. */
     actions?: import("svelte").Snippet;
+    /** Controls that fill the middle, e.g. a search field. */
+    children?: import("svelte").Snippet;
   } = $props();
 </script>
 
-<div class="flex items-start justify-between gap-4 pt-4 pb-3 sm:pt-6 md:pt-6">
-  <div class="min-w-0">
-    <h1 class="font-display text-[26px] leading-tight font-bold tracking-tight sm:text-3xl">
-      {title}
-    </h1>
+<header class="toolbar">
+  <div class="flex min-w-0 items-baseline gap-2.5 {children ? 'shrink-0' : 'flex-1'}">
+    <h1 class="shrink-0 text-[15px] font-semibold">{title}</h1>
     {#if subtitle}
-      <p class="mt-1 text-sm text-muted">{subtitle}</p>
+      <p class="hidden min-w-0 truncate text-[13px] text-subtle sm:block">{subtitle}</p>
     {/if}
   </div>
 
-  <div class="flex shrink-0 items-center gap-1.5">
+  {#if children}
+    <div class="flex min-w-0 flex-1 items-center gap-2">{@render children()}</div>
+  {/if}
+
+  <div class="flex shrink-0 items-center gap-1">
     {#if actions}{@render actions()}{/if}
 
-    <!-- md: and up already has both of these in the top bar. -->
-    <button
-      onclick={() => search.show()}
-      aria-label="Search"
-      class="tap h-11 w-11 bg-background md:hidden"
-    >
-      <Search size={19} />
+    <!-- md: and up has both of these in the sidebar. -->
+    <button onclick={() => search.show()} aria-label="Search" class="tool h-9 w-9 md:hidden">
+      <Search size={17} />
     </button>
     {#if feed.refreshing}
       <button
         onclick={() => feed.stop()}
         disabled={feed.phase === "stopping"}
         aria-label="Stop scraping"
-        class="tap h-11 w-11 bg-background disabled:opacity-60 md:hidden"
+        class="tool h-9 w-9 md:hidden"
       >
-        <Square size={16} class="fill-current" />
+        <Square size={14} class="fill-current" />
       </button>
     {:else}
       <button
         onclick={() => feed.refresh(true)}
         aria-label="Refresh all sources"
-        class="tap h-11 w-11 bg-background md:hidden"
+        class="tool h-9 w-9 md:hidden"
       >
-        <RefreshCw size={19} />
+        <RefreshCw size={16} />
       </button>
     {/if}
   </div>
-</div>
+</header>

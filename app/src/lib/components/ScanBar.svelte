@@ -87,7 +87,7 @@
       feed.applyPending();
       window.scrollTo({ top: 0, behavior: "smooth" });
     }}
-    class="animate-fade-up fixed top-[calc(env(safe-area-inset-top)+0.75rem)] left-1/2 z-30 inline-flex -translate-x-1/2 items-center gap-1.5 rounded-full bg-brand px-4 py-2 text-[13px] font-semibold text-brand-fg shadow-lg shadow-brand/30 transition-colors hover:bg-brand-hover md:top-[70px]"
+    class="animate-fade-up fixed top-[calc(env(safe-area-inset-top)+0.75rem)] left-1/2 z-30 md:left-[calc(50%+116px)] inline-flex -translate-x-1/2 items-center gap-1.5 rounded-full bg-brand px-4 py-2 text-[13px] font-semibold text-brand-fg shadow-lg shadow-brand/30 transition-colors hover:bg-brand-hover md:top-16"
   >
     <ChevronUp size={14} strokeWidth={2.5} />
     Show new results

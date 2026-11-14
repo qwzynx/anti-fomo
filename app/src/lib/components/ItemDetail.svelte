@@ -166,34 +166,18 @@
 </script>
 
 <div class="flex min-h-0 flex-1 flex-col">
-  <div class="flex items-start justify-between gap-4 border-b border-line-soft p-5 sm:p-6">
-    <div class="flex min-w-0 items-center gap-3">
-      {#if logo && !logoFailed}
-        <img
-          src={logo}
-          alt=""
-          width="48"
-          height="48"
-          onerror={() => (logoFailed = true)}
-          class="h-12 w-12 shrink-0 rounded-xl bg-line-soft object-contain p-1.5"
-        />
-      {/if}
-      <div class="min-w-0">
-        <span
-          class="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-bold tracking-wider uppercase {typeBadgeClass(
-            item.item_type,
-          )}"
-        >
-          <TypeIcon size={11} strokeWidth={2.5} />
-          {item.item_type}
-        </span>
-        <h2 id={titleId} class="mt-1.5 text-xl leading-tight font-bold">{parts.primary}</h2>
-        {#if parts.secondary}
-          <p class="text-sm font-medium text-muted">{parts.secondary}</p>
-        {/if}
-      </div>
-    </div>
-    <div class="flex shrink-0 items-center gap-1">
+  <!-- The action bar: what this is on the left, what you can do on the right. -->
+  <div class="flex h-[44px] shrink-0 items-center gap-1 border-b border-line px-3">
+    <span
+      class="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10.5px] font-semibold tracking-wide uppercase {typeBadgeClass(
+        item.item_type,
+      )}"
+    >
+      <TypeIcon size={11} strokeWidth={2.5} />
+      {item.item_type}
+    </span>
+    <span class="ml-1.5 min-w-0 truncate text-[12px] text-subtle">via {item.source_platform}</span>
+    <div class="ml-auto flex shrink-0 items-center gap-0.5">
       {#if dismissable}
         <button
           onclick={() => {
@@ -201,73 +185,84 @@
             onDismissed?.(item);
           }}
           aria-label="Hide this from your feed"
-          title="Hide"
-          class="flex h-10 w-10 items-center justify-center rounded-full text-subtle transition-colors hover:bg-line-soft hover:text-foreground"
+          title="Hide (x)"
+          class="tool"
         >
-          <EyeOff size={18} />
+          <EyeOff size={15} />
         </button>
       {/if}
       <button
         onclick={() => feed.toggleSaved(item)}
         aria-pressed={saved}
         aria-label={saved ? "Remove from saved" : "Save this item"}
-        title={saved ? "Saved" : "Save"}
-        class="flex h-10 w-10 items-center justify-center rounded-full transition-colors hover:bg-line-soft
-               {saved ? 'text-brand' : 'text-subtle hover:text-foreground'}"
+        title={saved ? "Saved (s)" : "Save (s)"}
+        class="tool {saved ? 'text-brand hover:text-brand' : ''}"
       >
         {#if saved}
-          <BookmarkCheck size={18} strokeWidth={2.5} />
+          <BookmarkCheck size={15} strokeWidth={2.5} />
         {:else}
-          <Bookmark size={18} />
+          <Bookmark size={15} />
         {/if}
       </button>
       {#if onClose}
-        <button
-          onclick={onClose}
-          aria-label="Close"
-          class="flex h-10 w-10 items-center justify-center rounded-full text-subtle transition-colors hover:bg-line-soft hover:text-foreground"
-        >
-          <X size={18} />
+        <button onclick={onClose} aria-label="Close" class="tool">
+          <X size={16} />
         </button>
       {/if}
     </div>
   </div>
 
-  <div class="min-h-0 flex-1 overflow-y-auto p-5 sm:p-6">
-    <!-- Where and when, then what the source itself is. The two used to be one
-         all-caps line that ran the width of the pane and shouted a full
-         timestamp at a reader who wanted "3 hours ago". -->
-    <p class="text-sm text-muted">{meta}</p>
-    <p class="mb-4 text-xs text-subtle">{sourceBlurb(item)}</p>
-
-    {#if deadline || pay}
-      <div class="mb-4 flex flex-wrap gap-2">
-        {#if deadline}
-          <div class="min-w-[140px] flex-1 rounded-xl p-3 {urgent ? 'bg-danger-soft' : 'bg-line-soft'}">
-            <p
-              class="flex items-center gap-1.5 text-[11px] font-bold tracking-wide uppercase {urgent
-                ? 'text-danger'
-                : 'text-subtle'}"
-            >
-              <Hourglass size={12} />
-              Deadline
-            </p>
-            <p class="mt-1 text-sm font-semibold {urgent ? 'text-danger' : 'text-foreground'}">
-              {deadline}
-            </p>
-          </div>
-        {/if}
-        {#if pay}
-          <div class="min-w-[140px] flex-1 rounded-xl bg-line-soft p-3">
-            <p class="flex items-center gap-1.5 text-[11px] font-bold tracking-wide text-subtle uppercase">
-              <Banknote size={12} />
-              Compensation
-            </p>
-            <p class="mt-1 text-sm font-semibold text-foreground">{pay}</p>
-          </div>
+  <div class="pane selectable flex-1 px-5 py-5 sm:px-6">
+    <div class="mb-4 flex items-start gap-3">
+      {#if logo && !logoFailed}
+        <img
+          src={logo}
+          alt=""
+          width="40"
+          height="40"
+          onerror={() => (logoFailed = true)}
+          class="h-10 w-10 shrink-0 rounded-lg border border-line-soft bg-white object-contain p-1"
+        />
+      {/if}
+      <div class="min-w-0">
+        <h2 id={titleId} class="text-[19px] leading-snug font-semibold">{parts.primary}</h2>
+        {#if parts.secondary}
+          <p class="mt-0.5 text-[13px] font-medium text-muted">{parts.secondary}</p>
         {/if}
       </div>
-    {/if}
+    </div>
+
+    <!-- The facts, as a property list: the way an app shows a record, not
+         three coloured boxes. -->
+    <dl class="mb-5 grid grid-cols-[auto_1fr] gap-x-6 gap-y-1.5 text-[13px]">
+      {#if locations.length > 0}
+        <dt class="text-subtle">Location</dt>
+        <dd class="min-w-0">
+          {locations.join(" · ")}
+          {#if item.location_tags && item.location_tags.length > 0}
+            <span class="ml-1 text-subtle">({item.location_tags.join(", ")})</span>
+          {/if}
+        </dd>
+      {/if}
+      <dt class="text-subtle">Posted</dt>
+      <dd>{timeAgo(item.timestamp)}</dd>
+      {#if deadline}
+        <dt class="text-subtle">Deadline</dt>
+        <dd class="flex items-center gap-1.5 font-medium {urgent ? 'text-danger' : ''}">
+          <Hourglass size={12} class="shrink-0" />{deadline}
+        </dd>
+      {/if}
+      {#if pay}
+        <dt class="text-subtle">Pay</dt>
+        <dd class="flex items-center gap-1.5 font-medium"><Banknote size={12} class="shrink-0 text-subtle" />{pay}</dd>
+      {/if}
+      {#if item.seniority}
+        <dt class="text-subtle">Level</dt>
+        <dd>{item.seniority}</dd>
+      {/if}
+      <dt class="text-subtle">Source</dt>
+      <dd class="text-muted">{sourceBlurb(item)}</dd>
+    </dl>
 
     {#if isOpportunity}
       <ApplicationTracker {item} />
@@ -275,8 +270,8 @@
 
     {#if item.matched_interests && item.matched_interests.length > 0}
       <div class="mb-4 flex flex-wrap items-center gap-1.5">
-        <Sparkles size={14} class="text-brand" />
-        <span class="text-xs font-semibold text-muted">Matches your interests:</span>
+        <Sparkles size={13} class="text-brand" />
+        <span class="text-[12px] font-medium text-muted">Matches your interests</span>
         {#each item.matched_interests as interest (interest)}
           <span
             class="rounded-md bg-brand-soft px-2 py-0.5 text-[11px] font-semibold text-brand-soft-fg"
@@ -291,29 +286,6 @@
          self-gating: an article never renders it. -->
     {#if item.required_skills && item.required_skills.length > 0}
       <SkillMatch {item} />
-    {/if}
-
-    {#if locations.length > 1 || (item.location_tags?.length ?? 0) > 0}
-      <div class="mb-4 rounded-xl bg-line-soft p-4">
-        <p
-          class="mb-1 flex items-center gap-1.5 text-xs font-bold tracking-wide text-subtle uppercase"
-        >
-          <MapPin size={12} />
-          Locations
-        </p>
-        <p class="text-sm text-foreground">{locations.join(" · ")}</p>
-        {#if item.location_tags && item.location_tags.length > 0}
-          <div class="mt-2 flex flex-wrap gap-1.5">
-            {#each item.location_tags as tag (tag)}
-              <span
-                class="rounded-md bg-surface px-2 py-0.5 text-[11px] font-semibold text-muted shadow-sm"
-              >
-                {tag}
-              </span>
-            {/each}
-          </div>
-        {/if}
-      </div>
     {/if}
 
     <JobSections item={full} />
@@ -335,7 +307,7 @@
          Held back while the fetch is in flight: the note below says the page
          could not be read, and saying that before we have looked is a lie. -->
     {#if !enriched && !pending}
-      <p class="text-[15px] leading-relaxed whitespace-pre-line text-muted">
+      <p class="text-[14px] leading-relaxed whitespace-pre-line text-muted">
         {full.content_text ||
           "No further details were scraped for this item — open the source for the full picture."}
       </p>
@@ -353,7 +325,7 @@
     {#if chips.length > 0}
       <div class="mt-6 flex flex-wrap gap-2">
         {#each chips as chip (chip)}
-          <span class="rounded-full bg-line-soft px-3 py-1 text-xs font-medium text-muted">
+          <span class="rounded bg-line-soft px-2 py-0.5 text-[12px] font-medium text-muted">
             {chip}
           </span>
         {/each}
@@ -361,7 +333,7 @@
     {/if}
   </div>
 
-  <div class="shrink-0 border-t border-line-soft p-4">
+  <div class="shrink-0 border-t border-line px-4 py-3">
     {#if openFailed}
       <p class="mb-2 text-center text-xs font-medium text-muted" role="alert">
         Could not hand this link to your browser. Open it directly: {item.url}
@@ -370,10 +342,10 @@
     <div class="flex gap-2">
       <button
         onclick={() => open(item.url)}
-        class="flex flex-1 items-center justify-center gap-1.5 rounded-xl bg-brand py-3 text-center font-semibold text-brand-fg transition-all hover:bg-brand-hover hover:shadow-lg hover:shadow-brand/25"
+        class="btn-primary h-9 flex-1"
       >
         {cta}
-        <ArrowUpRight size={17} strokeWidth={2.5} />
+        <ArrowUpRight size={15} strokeWidth={2.5} />
       </button>
       <!-- Only where there is something to tailor against. Self-gating on
            `required_skills` the same way the skills panel above does, so an
@@ -382,9 +354,9 @@
         <a
           href="/resume/tailor?url={encodeURIComponent(item.url)}"
           onclick={onClose}
-          class="flex shrink-0 items-center justify-center gap-1.5 rounded-xl border border-line px-4 py-3 text-center font-semibold transition-colors hover:border-brand hover:text-brand"
+          class="tool tool-outline h-9 px-3 font-semibold text-foreground"
         >
-          <FileText size={16} strokeWidth={2.2} />
+          <FileText size={14} strokeWidth={2.2} />
           <span class="hidden sm:inline">Tailor résumé</span>
           <span class="sm:hidden">Résumé</span>
         </a>

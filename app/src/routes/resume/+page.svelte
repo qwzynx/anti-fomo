@@ -179,7 +179,7 @@
 
 <svelte:head><title>Résumé · Anti-FOMO</title></svelte:head>
 
-<main class="mx-auto w-full max-w-7xl flex-1 px-4 pb-8 sm:px-6 lg:px-8">
+<div class="flex h-full min-h-0 flex-col">
   <PageHeader
     title="Résumé"
     subtitle="Write it once. Every role you open can tailor a copy of it to what that posting asks for."
@@ -189,7 +189,7 @@
         <button
           onclick={downloadPdf}
           disabled={busy === "pdf" || !view}
-          class="inline-flex items-center gap-1.5 rounded-xl bg-brand px-3.5 py-2 text-sm font-semibold text-brand-fg transition-colors hover:bg-brand-hover disabled:opacity-50"
+          class="inline-flex items-center gap-1.5 rounded-md bg-brand px-3.5 py-2 text-sm font-semibold text-brand-fg transition-colors hover:bg-brand-hover disabled:opacity-50"
         >
           {#if busy === "pdf"}<Loader size={15} class="animate-spin" />{:else}<Download size={15} />{/if}
           Save PDF
@@ -198,8 +198,11 @@
     {/snippet}
   </PageHeader>
 
+  <div class="pane flex-1">
+  <div class="mx-auto w-full max-w-7xl px-4 py-5 sm:px-6">
+
   {#if resume.error && resume.exists}
-    <p class="mt-3 rounded-xl bg-danger-soft p-3 text-sm text-danger" role="alert">
+    <p class="mt-3 rounded-md bg-danger-soft p-3 text-sm text-danger" role="alert">
       {resume.error}
     </p>
   {/if}
@@ -270,7 +273,7 @@
         </div>
 
         {#if tab === "design"}
-          <section class="card p-5">
+          <section class="card p-4">
             {#if resume.theme}
               <ThemePicker
                 theme={resume.theme}
@@ -286,14 +289,14 @@
                 <button
                   onclick={exportJson}
                   disabled={busy === "json"}
-                  class="inline-flex items-center gap-1.5 rounded-xl border border-line px-3 py-2 text-sm font-semibold hover:border-brand disabled:opacity-50"
+                  class="inline-flex items-center gap-1.5 rounded-md border border-line px-3 py-2 text-sm font-semibold hover:border-brand disabled:opacity-50"
                 >
                   {#if busy === "json"}<Loader size={14} class="animate-spin" />{:else}<Download size={14} />{/if}
                   Export resume.json
                 </button>
                 <button
                   onclick={() => (importing = !importing)}
-                  class="inline-flex items-center gap-1.5 rounded-xl border border-line px-3 py-2 text-sm font-semibold hover:border-brand"
+                  class="inline-flex items-center gap-1.5 rounded-md border border-line px-3 py-2 text-sm font-semibold hover:border-brand"
                 >
                   <Upload size={14} />
                   Import
@@ -315,8 +318,8 @@
             </div>
           </section>
 
-          <section class="card mt-5 border-danger/30 p-5">
-            <h2 class="mb-1 text-lg font-bold">Start over</h2>
+          <section class="card mt-4 border-danger/30 p-4">
+            <h2 class="mb-1 text-[14px] font-semibold">Start over</h2>
             <p class="mb-4 text-sm text-muted">
               Empties every section — contact details, experience, projects, skills — and leaves
               the blank headings behind. The design is kept. This cannot be undone, so export a
@@ -326,15 +329,15 @@
             <button
               onclick={resetResume}
               disabled={busy === "reset"}
-              class="inline-flex items-center gap-1.5 rounded-xl border border-danger/40 px-4 py-2 text-sm font-semibold text-danger transition-colors hover:bg-danger hover:text-danger-fg disabled:opacity-50"
+              class="inline-flex items-center gap-1.5 rounded-md border border-danger/40 px-4 py-2 text-sm font-semibold text-danger transition-colors hover:bg-danger hover:text-danger-fg disabled:opacity-50"
             >
               <RotateCcw size={15} />
               {busy === "reset" ? "Erasing…" : "Reset résumé"}
             </button>
           </section>
         {:else}
-          <section class="card mb-5 p-5">
-            <h2 class="mb-3 text-lg font-bold">You</h2>
+          <section class="card mb-4 p-4">
+            <h2 class="mb-3 text-[14px] font-semibold">You</h2>
             <div class="grid gap-3 sm:grid-cols-2">
               <Field
                 label="Full name" autocomplete="name"
@@ -403,13 +406,13 @@
           </section>
 
           {#each doc.sections as section (section.id || section.kind)}
-            <section class="card mb-5 p-5">
+            <section class="card mb-4 p-4">
               <div class="mb-3 flex items-baseline justify-between gap-3">
                 <input
                   bind:value={section.title}
                   oninput={touch}
                   aria-label="Section name"
-                  class="-mx-1 min-w-0 flex-1 rounded-md border-0 bg-transparent px-1 text-lg font-bold hover:bg-line-soft focus-visible:bg-line-soft"
+                  class="-mx-1 min-w-0 flex-1 rounded-md border-0 bg-transparent px-1 text-[14px] font-semibold hover:bg-line-soft focus-visible:bg-line-soft"
                 />
                 <span class="shrink-0 text-xs text-subtle">
                   {section.entries.length}
@@ -458,7 +461,7 @@
           <span class="text-xs text-subtle">{pageLabel}</span>
         </div>
         {#if view}
-          <div class="max-h-[calc(100dvh-140px)] overflow-y-auto rounded-xl bg-line-soft p-3">
+          <div class="max-h-[calc(100dvh-140px)] overflow-y-auto rounded-md bg-line-soft p-3">
             <ResumePreview pages={view.pages} scale={0.62} label="Your résumé" />
           </div>
           {#if view.pages.length > (resume.theme?.max_pages ?? 1)}
@@ -468,7 +471,7 @@
             </p>
           {/if}
         {:else}
-          <div class="flex h-64 items-center justify-center rounded-xl bg-line-soft">
+          <div class="flex h-64 items-center justify-center rounded-md bg-line-soft">
             <Loader size={20} class="animate-spin text-subtle" />
           </div>
         {/if}
@@ -480,4 +483,6 @@
       </aside>
     </div>
   {/if}
-</main>
+  </div>
+  </div>
+</div>

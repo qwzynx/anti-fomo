@@ -399,9 +399,9 @@
 <svelte:window onkeydown={onKeydown} />
 
 {#snippet facet(label: string, options: readonly string[], current: string[], onToggle: (v: string) => void)}
-  <div class="flex flex-col gap-2">
-    <p class="text-[11px] font-bold tracking-wider text-subtle uppercase">{label}</p>
-    <div class="flex flex-wrap gap-1.5">
+  <div class="flex flex-col gap-1.5">
+    <p class="eyebrow">{label}</p>
+    <div class="flex flex-wrap gap-1">
       {#each options as option (option)}
         {@const active = current.includes(option)}
         <button
@@ -409,7 +409,7 @@
           aria-pressed={active}
           class="chip {active
             ? 'bg-brand text-brand-fg'
-            : 'border border-line bg-surface text-muted hover:border-subtle'}"
+            : 'border border-line bg-surface text-muted hover:border-subtle/60 hover:text-foreground'}"
         >
           {option}
         </button>
@@ -419,134 +419,113 @@
 {/snippet}
 
 <!--
-  Below lg this is an ordinary scrolling page. At lg the layout holds the shell
-  to the window's height (see `paneRoute` there) and this fills what is left,
-  so the two columns own the scrolling and the detail pane's Apply button
-  always sits on screen rather than hanging off the bottom.
+  A view in three bands: the toolbar (search, saved searches, sort), a strip of
+  filter chips, and the results. At lg the results are two panes side by side
+  — the list and the posting — each scrolling on its own, the way a mail client
+  shows a message beside its inbox. Below lg the list takes the width and a
+  posting opens as a sheet.
 -->
-<main
-  class="mx-auto flex w-full max-w-7xl flex-1 flex-col px-4 pb-8 sm:px-6 lg:min-h-0 lg:overflow-hidden lg:px-8 lg:pb-3"
->
-  <div class="shrink-0">
-    <PageHeader title="Roles" {subtitle} />
-  </div>
-
-  <div class="shrink-0 pb-3">
-    <!-- The search field leads the bar: the first thing anyone does on a job board. -->
-    <div class="mb-2.5 flex items-center gap-2">
-      <label
-        class="flex h-10 min-w-0 flex-1 items-center gap-2.5 rounded-xl border border-line bg-surface px-3 transition-colors focus-within:border-brand"
-      >
-        <Search size={16} class="shrink-0 text-subtle" />
-        <input
-          bind:this={searchInput}
-          value={draft}
-          oninput={(e) => onDraft(e.currentTarget.value)}
-          type="search"
-          placeholder="Search roles, companies, skills"
-          aria-label="Search roles"
-          title={'Every word must match. "exact phrase" · -exclude · company:name'}
-          autocomplete="off"
-          spellcheck="false"
-          class="h-full min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-subtle [&::-webkit-search-cancel-button]:hidden"
-        />
-        {#if draft}
-          <button
-            onclick={clearQuery}
-            aria-label="Clear search"
-            class="-mr-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-subtle hover:bg-line-soft hover:text-foreground"
-          >
-            <X size={14} />
-          </button>
-        {:else}
-          <kbd
-            class="hidden shrink-0 rounded-md border border-line px-1.5 py-0.5 text-[11px] font-semibold text-subtle lg:block"
-            title="Press / to search">/</kbd
-          >
-        {/if}
-      </label>
+<div class="flex h-full min-h-0 flex-col">
+  <PageHeader title="Roles" subtitle={subtitle}>
+    <label
+      class="flex h-8 w-full max-w-md min-w-0 items-center gap-2 rounded-md border border-line bg-surface px-2.5 transition-colors focus-within:border-brand"
+    >
+      <Search size={14} class="shrink-0 text-subtle" />
+      <input
+        bind:this={searchInput}
+        value={draft}
+        oninput={(e) => onDraft(e.currentTarget.value)}
+        type="search"
+        placeholder="Search roles, companies, skills"
+        aria-label="Search roles"
+        title={'Every word must match. "exact phrase" · -exclude · company:name'}
+        autocomplete="off"
+        spellcheck="false"
+        class="h-full min-w-0 flex-1 bg-transparent text-[13px] outline-none placeholder:text-subtle [&::-webkit-search-cancel-button]:hidden"
+      />
+      {#if draft}
+        <button
+          onclick={clearQuery}
+          aria-label="Clear search"
+          class="-mr-1 flex h-6 w-6 shrink-0 items-center justify-center rounded text-subtle hover:bg-hover hover:text-foreground"
+        >
+          <X size={13} />
+        </button>
+      {:else}
+        <span class="kbd hidden lg:inline-flex" title="Press / to search">/</span>
+      {/if}
+    </label>
+    {#snippet actions()}
       <SavedSearches {items} />
       <SortMenu bind:value={f.sort} />
-    </div>
+    {/snippet}
+  </PageHeader>
 
-    <div class="flex items-center gap-2">
-      <div
-        class="scrollbar-hide -mx-4 min-w-0 flex-1 overflow-x-auto px-4 sm:mx-0 sm:overflow-visible sm:px-0"
+  <!-- The filter strip. What is on is filled and carries a cross; nothing that
+       is on ever hides in the Filters drawer. -->
+  <div class="shrink-0 border-b border-line">
+    <div class="scrollbar-hide flex items-center gap-1.5 overflow-x-auto px-4 py-2 lg:flex-wrap">
+      <button
+        onclick={() => (moreOpen = !moreOpen)}
+        aria-expanded={moreOpen}
+        aria-controls="roles-filters"
+        class="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md border px-2.5 text-[12px] font-medium transition-colors
+               {moreOpen || activeFilters > 0
+          ? 'border-brand/40 bg-brand-soft text-brand-soft-fg'
+          : 'border-line bg-surface text-muted hover:text-foreground'}"
       >
-        <div class="flex items-center gap-2 sm:flex-wrap">
-          {#each quickChips as chip (chip.key)}
-            <button
-              onclick={chip.onToggle}
-              aria-pressed={chip.active}
-              class="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-full px-3 text-[13px] transition-colors
-                     {chip.active
-                ? 'bg-brand font-semibold text-brand-fg'
-                : 'border border-line bg-surface font-medium text-muted hover:border-subtle'}"
-            >
-              {chip.label}
-              {#if chip.active}
-                <X size={12} strokeWidth={2.5} class="shrink-0" />
-              {/if}
-            </button>
-          {/each}
-
-          <button
-            onclick={() => (moreOpen = !moreOpen)}
-            aria-expanded={moreOpen}
-            aria-controls="roles-filters"
-            class="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-full border px-3 text-[13px] font-semibold transition-colors
-                   {moreOpen
-              ? 'border-brand bg-brand-soft text-brand-soft-fg'
-              : 'border-line bg-surface text-muted hover:border-subtle'}"
-          >
-            <Filter size={13} strokeWidth={2.25} class="shrink-0" />
-            Filters
-            {#if activeFilters > 0}
-              <span
-                class="rounded-full px-1.5 text-[11px] font-bold tabular-nums
-                       {moreOpen ? 'bg-brand-soft-fg/15' : 'bg-line text-muted'}"
-              >
-                {activeFilters}
-              </span>
-            {/if}
-            <ChevronDown
-              size={13}
-              strokeWidth={2.25}
-              class="shrink-0 transition-transform {moreOpen ? 'rotate-180' : ''}"
-            />
-          </button>
-
-          {#if narrowed}
-            <button onclick={clearAll} class="shrink-0 text-[13px] font-semibold text-brand hover:underline">
-              Clear all
-            </button>
+        <Filter size={12} strokeWidth={2.25} class="shrink-0" />
+        Filters
+        {#if activeFilters > 0}
+          <span class="tabular-nums">{activeFilters}</span>
+        {/if}
+        <ChevronDown size={12} strokeWidth={2.25} class="shrink-0 transition-transform {moreOpen ? 'rotate-180' : ''}" />
+      </button>
+      <span class="mx-0.5 h-4 w-px shrink-0 bg-line" aria-hidden="true"></span>
+      {#each quickChips as chip (chip.key)}
+        <button
+          onclick={chip.onToggle}
+          aria-pressed={chip.active}
+          class="inline-flex h-7 shrink-0 items-center gap-1 rounded-md px-2.5 text-[12px] transition-colors
+                 {chip.active
+            ? 'bg-brand font-semibold text-brand-fg'
+            : 'border border-line bg-surface font-medium text-muted hover:border-subtle/60 hover:text-foreground'}"
+        >
+          {chip.label}
+          {#if chip.active}
+            <X size={11} strokeWidth={2.5} class="shrink-0 opacity-80" />
           {/if}
-        </div>
-      </div>
+        </button>
+      {/each}
+      {#if narrowed}
+        <button onclick={clearAll} class="ml-1 shrink-0 text-[12px] font-medium text-subtle hover:text-foreground">
+          Clear all
+        </button>
+      {/if}
     </div>
 
     {#if moreOpen}
       <div
         id="roles-filters"
-        class="animate-fade-in mt-3 grid max-h-[50vh] gap-4 overflow-y-auto rounded-xl border border-line bg-surface p-4 lg:grid-cols-2"
+        class="pane animate-fade-in grid max-h-[45vh] gap-4 border-t border-line-soft bg-sidebar px-4 py-3 lg:grid-cols-3"
       >
         {@render facet("Type", TYPES.filter((t) => t !== "All"), f.type === "All" ? [] : [f.type], (v) => (f.type = f.type === v ? "All" : (v as TypeFilter)))}
         {@render facet("Level", levels, f.seniority, (v) => (f.seniority = toggle(f.seniority, v)))}
-        {@render facet("Specialty", SPECIALTIES, f.specialties, (v) => (f.specialties = toggle(f.specialties, v)))}
         {@render facet("Work mode", MODALITIES.filter((m) => m !== "All"), f.modality === "All" ? [] : [f.modality], (v) => (f.modality = f.modality === v ? "All" : (v as Modality)))}
+        {@render facet("Specialty", SPECIALTIES, f.specialties, (v) => (f.specialties = toggle(f.specialties, v)))}
         {@render facet("Location", locations, f.locations, (v) => (f.locations = toggle(f.locations, v)))}
+        {@render facet("Posted within", FRESHNESS.map((fr) => fr.label), [f.freshness], (v) => (f.freshness = v as FreshnessLabel))}
         {@render facet("Pay at least (per year)", PAY_FLOORS.map(formatK), f.minPay === null ? [] : [formatK(f.minPay)], (v) => {
           const n = PAY_FLOORS.find((p) => formatK(p) === v) ?? null;
           f.minPay = f.minPay === n ? null : n;
         })}
         {@render facet("Pay", ["States pay"], f.payDisclosed ? ["States pay"] : [], () => (f.payDisclosed = !f.payDisclosed))}
         {@render facet("Deadline", DEADLINES.filter((d) => d !== "Any"), f.deadline === "Any" ? [] : [f.deadline], (v) => (f.deadline = f.deadline === v ? "Any" : (v as DeadlineFilter)))}
-        {@render facet("Posted within", FRESHNESS.map((fr) => fr.label), [f.freshness], (v) => (f.freshness = v as FreshnessLabel))}
         {@render facet("Discipline", HUB_DISCIPLINES, [f.discipline], (v) => (f.discipline = v))}
         <div class="lg:col-span-2">
           {@render facet("Source", allSources, f.sources, (v) => (f.sources = toggle(f.sources, v)))}
         </div>
-        <p class="text-xs text-subtle lg:col-span-2">
+        <p class="text-[12px] text-subtle lg:col-span-3">
           Level and pay only match postings that state them. Pay is compared per year, in the
           posting's own currency.
         </p>
@@ -554,17 +533,15 @@
     {/if}
   </div>
 
-  {#if feed.loading}
-    <div class="card overflow-hidden p-2">
-      <RowSkeleton count={8} />
-    </div>
-  {:else if result.length > 0}
-    <!-- The two columns split the pane's height and scroll independently. -->
-    <div
-      class="lg:grid lg:min-h-0 lg:flex-1 lg:grid-cols-[minmax(0,25.25rem)_minmax(0,1fr)] lg:gap-5"
-    >
-      <div bind:this={listEl} class="card overflow-hidden lg:h-full lg:overflow-y-auto">
-        <div>
+  <div class="min-h-0 flex-1">
+    {#if feed.loading}
+      <div class="p-2"><RowSkeleton count={10} /></div>
+    {:else if result.length > 0}
+      <div class="flex h-full min-h-0">
+        <div
+          bind:this={listEl}
+          class="pane w-full lg:w-[400px] lg:shrink-0 lg:border-r lg:border-line"
+        >
           {#each visible as item (item.url)}
             <ItemRow
               {item}
@@ -574,49 +551,49 @@
               {marks}
             />
           {/each}
+          <InfiniteScroll {shown} total={result.length} noun="roles" onMore={() => (shown += PAGE)} />
         </div>
-        <InfiniteScroll {shown} total={result.length} noun="roles" onMore={() => (shown += PAGE)} />
-      </div>
 
-      {#if wide && selected}
-        <aside class="card flex h-full flex-col overflow-hidden bg-elevated">
-          {#key selected.url}
-            <ItemDetail item={selected} />
-          {/key}
-        </aside>
-      {/if}
-    </div>
-    {#if wide}
-      <p class="mt-2 hidden shrink-0 text-center text-[11px] text-subtle lg:block">
-        <kbd class="font-sans font-semibold">j</kbd>/<kbd class="font-sans font-semibold">k</kbd> move ·
-        <kbd class="font-sans font-semibold">o</kbd> open ·
-        <kbd class="font-sans font-semibold">s</kbd> save ·
-        <kbd class="font-sans font-semibold">x</kbd> hide ·
-        <kbd class="font-sans font-semibold">/</kbd> search
-      </p>
+        {#if wide}
+          <section class="flex min-w-0 flex-1 flex-col bg-background" aria-label="Posting">
+            {#if selected}
+              {#key selected.url}
+                <ItemDetail item={selected} />
+              {/key}
+            {/if}
+            <p class="shrink-0 border-t border-line px-4 py-1.5 text-[11px] text-subtle">
+              <span class="kbd">j</span> <span class="kbd">k</span> move
+              <span class="kbd ml-2">o</span> open
+              <span class="kbd ml-2">s</span> save
+              <span class="kbd ml-2">x</span> hide
+              <span class="kbd ml-2">/</span> search
+            </p>
+          </section>
+        {/if}
+      </div>
+    {:else if items.length === 0}
+      <EmptyState
+        icon={Briefcase}
+        title={feed.refreshing ? "Collecting roles…" : "No roles cached yet"}
+        body={feed.refreshing
+          ? "Roles appear here as each source finishes."
+          : "Refresh to pull the latest openings from all sources."}
+        actionLabel={feed.refreshing ? "Stop" : "Refresh now"}
+        onAction={() => (feed.refreshing ? feed.stop() : feed.refresh(true))}
+      />
+    {:else}
+      <EmptyState
+        icon={Search}
+        title="No roles match"
+        body={!parsed.empty && activeFilters === 0
+          ? `Nothing matches “${roles.filters.query.trim()}”. Try fewer words, or a shorter one — words match at their start, so “eng” finds “engineer”.`
+          : "Nothing fits every filter at once. Try dropping the location, level or pay."}
+        actionLabel="Clear search and filters"
+        onAction={clearAll}
+      />
     {/if}
-  {:else if items.length === 0}
-    <EmptyState
-      icon={Briefcase}
-      title={feed.refreshing ? "Collecting roles…" : "No roles cached yet"}
-      body={feed.refreshing
-        ? "Roles appear here as each source finishes."
-        : "Refresh to pull the latest openings from all sources."}
-      actionLabel={feed.refreshing ? "Stop" : "Refresh now"}
-      onAction={() => (feed.refreshing ? feed.stop() : feed.refresh(true))}
-    />
-  {:else}
-    <EmptyState
-      icon={Search}
-      title="No roles match"
-      body={!parsed.empty && activeFilters === 0
-        ? `Nothing matches “${roles.filters.query.trim()}”. Try fewer words, or a shorter one — words match at their start, so “eng” finds “engineer”.`
-        : "Nothing fits every filter at once. Try dropping the location, level or pay."}
-      actionLabel="Clear search and filters"
-      onAction={clearAll}
-    />
-  {/if}
-</main>
+  </div>
+</div>
 
 <!-- Only below lg: at desktop widths the pane above is already showing this. -->
 {#if !wide}
