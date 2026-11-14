@@ -228,7 +228,10 @@ export const resume = {
       // newer than the one just read back, so it stays, still dirty, and the
       // save `touch` already scheduled writes it — and adopts *that* answer,
       // ids and all, once nothing has moved under it.
-      if (created) list = await api.listResumes();
+      // The switcher lists names, so a new row or a rename has to reach it.
+      if (created || list.find((r) => r.id === savedId)?.name !== name) {
+        list = await api.listResumes();
+      }
       await relayout();
     } catch (e) {
       fail(e, "could not save the résumé");
@@ -253,6 +256,10 @@ export const resume = {
 
   /** Starts a new, empty résumé and saves it, so it has an id immediately. */
   async create(newName = "My résumé") {
+    // Write what is being edited first: the pending save would otherwise fire
+    // after the swap below and store the *new* blank document instead.
+    if (dirty) await this.save();
+    clearTimeout(saveTimer);
     started = true;
     id = null;
     name = newName;
@@ -278,9 +285,21 @@ export const resume = {
   },
 
   async remove(which: string) {
+    if (which === id) {
+      // Nothing pending may land on a row that is about to not exist.
+      clearTimeout(saveTimer);
+      clearTimeout(relayoutTimer);
+    }
     await api.deleteResume(which);
     list = await api.listResumes();
     if (which === id) await this.load();
+  },
+
+  /** Switches the builder to another résumé, writing the current one first. */
+  async open(which: string) {
+    if (which === id) return;
+    if (dirty) await this.save();
+    await this.load(which);
   },
 
   async makeDefault(which: string) {
@@ -288,14 +307,15 @@ export const resume = {
     list = await api.listResumes();
   },
 
+  /**
+   * Imports a resume.json as a new résumé and opens it. It does not become
+   * the default: the switcher reaches every row, so an import no longer has
+   * to take over the default to stay findable — which it used to, quietly
+   * demoting the résumé the reader had been tailoring from.
+   */
   async importJson(json: string, importName?: string) {
+    if (dirty) await this.save();
     const newId = await api.importJsonResume(json, importName);
-    // An import creates a *row*, and `get_resume` with no id answers with the
-    // default one — so without this the builder would open the freshly
-    // imported résumé now and the old one on the next visit, which looks
-    // exactly like the import having been thrown away. There is no résumé
-    // picker in the UI, so any row that is not the default is unreachable.
-    await api.setDefaultResume(newId);
     started = true;
     await this.load(newId);
     return newId;

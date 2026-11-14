@@ -115,6 +115,15 @@
       <Field label="From" bind:value={entry.start} oninput={onChange} placeholder="May 2025" />
       <Field label="To" bind:value={entry.end} oninput={onChange} placeholder="Aug 2025" />
     </div>
+    <Field
+      label="Link"
+      type="url"
+      autocomplete="off"
+      bind:value={() => entry.link ?? "", (v) => (entry.link = v.trim() ? v.trim() : null)}
+      oninput={onChange}
+      placeholder={kind === "projects" ? "github.com/you/project" : "company.com"}
+      hint="Optional. Makes the name a clickable link in the PDF."
+    />
     <div class="sm:col-span-2">
       <!-- `detail` is nullable in the model — an absent detail line and an
            empty one mean the same thing on paper, and storing "" would put a

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { page } from "$app/state";
-  import { goto } from "$app/navigation";
+  import { afterNavigate, goto } from "$app/navigation";
+  import { toast } from "$lib/toast.svelte";
   import EmptyState from "$lib/components/EmptyState.svelte";
   import ResumePreview from "$lib/components/resume/ResumePreview.svelte";
   import TailorPanel from "$lib/components/resume/TailorPanel.svelte";
@@ -33,8 +34,22 @@
   let item = $state.raw<api.ScrapedItem | null>(null);
   let loading = $state(true);
   let busy = $state(false);
-  let notice = $state<string | null>(null);
   let error = $state<string | null>(null);
+
+  /**
+   * Whether this screen was reached from inside the app. Opened any other way
+   * — a reload, a deep link — there is no history entry to go back to, and
+   * `history.back()` did nothing at all.
+   */
+  let cameFromApp = $state(false);
+  afterNavigate(({ from }) => {
+    cameFromApp = from !== null;
+  });
+
+  function back() {
+    if (cameFromApp) history.back();
+    else void goto("/resume");
+  }
   let tab = $state<"tailor" | "design">("tailor");
   let token = 0;
 
@@ -75,21 +90,37 @@
   async function relayout() {
     if (!resume.id) return;
     const mine = ++token;
-    const next = await api.layoutResume({ id: resume.id, url, theme: variant?.theme ?? undefined });
-    if (mine === token) view = next;
+    try {
+      const next = await api.layoutResume({ id: resume.id, url, theme: variant?.theme ?? undefined });
+      if (mine === token) view = next;
+    } catch (e) {
+      if (mine === token) toast.error("lay out the tailored résumé", e);
+    }
   }
 
   /** Saves the override and lays out again, so the page reflects the toggle. */
   async function applyVariant(next: ResumeVariant) {
     if (!resume.id) return;
+    const previous = variant;
     variant = next;
-    await api.saveResumeVariant(url, resume.id, next);
+    try {
+      await api.saveResumeVariant(url, resume.id, next);
+    } catch (e) {
+      variant = previous;
+      toast.error("save that change", e);
+      return;
+    }
     await relayout();
   }
 
   async function reset() {
     if (!resume.id) return;
-    await api.clearResumeVariant(url, resume.id);
+    try {
+      await api.clearResumeVariant(url, resume.id);
+    } catch (e) {
+      toast.error("reset the tailoring", e);
+      return;
+    }
     variant = emptyVariant();
     await relayout();
   }
@@ -97,15 +128,19 @@
   async function download() {
     if (!view) return;
     busy = true;
-    const outcome = await saveResumePdf({
-      id: resume.id ?? undefined,
-      url,
-      theme: variant?.theme ?? undefined,
-      filename: view.filename,
-      reveal: true,
-    });
-    notice = outcomeMessage(outcome);
-    busy = false;
+    try {
+      const outcome = await saveResumePdf({
+        id: resume.id ?? undefined,
+        url,
+        theme: variant?.theme ?? undefined,
+        filename: view.filename,
+        reveal: true,
+      });
+      const message = outcomeMessage(outcome);
+      if (message) outcome.ok ? toast.success(message) : toast.error("save the PDF", message);
+    } finally {
+      busy = false;
+    }
   }
 
   $effect(() => {
@@ -122,7 +157,7 @@
 <main class="mx-auto w-full max-w-7xl flex-1 px-4 pb-8 sm:px-6 lg:px-8">
   <div class="pt-4 pb-3">
     <button
-      onclick={() => history.back()}
+      onclick={back}
       class="mb-2 inline-flex items-center gap-1 text-sm font-semibold text-muted hover:text-foreground"
     >
       <ArrowLeft size={15} />
@@ -131,15 +166,13 @@
     <h1 class="text-2xl leading-tight font-bold">Tailored résumé</h1>
     <p class="mt-0.5 text-sm text-muted">
       For <span class="font-semibold text-foreground">{heading}</span>{#if company}
-        at {company}{/if}. Your résumé is untouched — this is a copy of it for this posting.
+        at {company}{/if}, from “{resume.name}”. That résumé is untouched — this is a copy of it
+      for this posting.
     </p>
   </div>
 
   {#if error}
     <p class="mb-3 rounded-xl bg-danger-soft p-3 text-sm text-danger" role="alert">{error}</p>
-  {/if}
-  {#if notice}
-    <p class="mb-3 rounded-xl bg-line-soft p-3 text-sm text-muted" role="status">{notice}</p>
   {/if}
 
   {#if !url}

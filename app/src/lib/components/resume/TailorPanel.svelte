@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Check, CircleAlert, Plus, RotateCcw, Target } from "$lib/icons";
+  import { Check, CircleAlert, Pencil, Plus, RotateCcw, Target } from "$lib/icons";
   import type { ResumeDoc, ResumeEntry, ResumeVariant, ResumeView } from "$lib/api";
 
   /**
@@ -38,6 +38,46 @@
     onVariant: (next: ResumeVariant) => void;
     onReset: () => void;
   } = $props();
+
+  // --- rewording, for this posting only ---
+  //
+  // Nothing is ever reworded for you — there is no model here — but you may
+  // reword a bullet yourself for one employer: their name for the stack, the
+  // metric they care about. The master résumé is untouched; Revert drops the
+  // override.
+
+  let editing = $state<string | null>(null);
+  let draftText = $state("");
+
+  function startEdit(id: string, current: string) {
+    editing = id;
+    draftText = current;
+  }
+
+  function finishEdit(id: string, original: string) {
+    const next = draftText.trim();
+    const text = { ...variant.text };
+    if (!next || next === original.trim()) delete text[id];
+    else text[id] = next;
+    editing = null;
+    onVariant({ ...variant, text });
+  }
+
+  function revertText(id: string) {
+    const text = { ...variant.text };
+    delete text[id];
+    onVariant({ ...variant, text });
+  }
+
+  let headlineTimer: ReturnType<typeof setTimeout> | undefined;
+  function onHeadline(value: string) {
+    clearTimeout(headlineTimer);
+    headlineTimer = setTimeout(() => {
+      const next = value.trim();
+      const headline = !next || next === (doc.contact.headline ?? "").trim() ? null : next;
+      if (headline !== variant.headline) onVariant({ ...variant, headline });
+    }, 500);
+  }
 
   const onPage = $derived(new Set(view.bullets));
   const onPageEntries = $derived(new Set(view.entries));
@@ -200,6 +240,22 @@
       {/if}
     </div>
 
+    <label class="mb-4 block">
+      <span class="mb-1 block text-[11px] font-bold tracking-wide text-subtle uppercase">
+        Headline for this posting
+      </span>
+      <input
+        value={variant.headline ?? ""}
+        oninput={(e) => onHeadline(e.currentTarget.value)}
+        placeholder={doc.contact.headline || "e.g. Backend engineer · distributed systems"}
+        maxlength="120"
+        class="control control-focus w-full text-sm"
+      />
+      <span class="mt-1 block text-[11px] text-subtle">
+        Empty uses the headline on your résumé.
+      </span>
+    </label>
+
     <p class="mb-3 text-xs text-muted">
       Everything in your résumé, whether or not it made this page. Switch off what this
       employer has no use for and the trim gets those lines back for what they do.
@@ -272,6 +328,33 @@
                       ? 'border-line-soft bg-surface'
                       : 'border-dashed border-line bg-transparent'}"
                   >
+                    {#if editing === bullet.id}
+                      <textarea
+                        bind:value={draftText}
+                        rows="3"
+                        aria-label="Reworded bullet for this posting"
+                        onkeydown={(e) => {
+                          if (e.key === "Escape") {
+                            e.stopPropagation();
+                            editing = null;
+                          } else if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                            finishEdit(bullet.id, bullet.text);
+                          }
+                        }}
+                        class="control control-focus mb-1.5 block w-full resize-y text-[13px] leading-snug"
+                      ></textarea>
+                      <div class="flex items-center gap-1.5">
+                        <button
+                          onclick={() => finishEdit(bullet.id, bullet.text)}
+                          class="chip bg-brand px-3 py-1 text-[11px] text-brand-fg">Done</button
+                        >
+                        <button
+                          onclick={() => (editing = null)}
+                          class="chip border border-line px-3 py-1 text-[11px] text-muted">Cancel</button
+                        >
+                        <span class="ml-auto text-[10px] text-subtle">Only for this posting</span>
+                      </div>
+                    {:else}
                     <div class="flex items-start gap-2">
                       <p
                         class="min-w-0 flex-1 text-[13px] leading-snug {shown
@@ -279,8 +362,29 @@
                           : 'text-subtle line-through decoration-1'}"
                       >
                         {variant.text[bullet.id] ?? bullet.text}
+                        {#if variant.text[bullet.id] !== undefined}
+                          <span class="ml-1 text-[10px] font-semibold text-brand">reworded</span>
+                        {/if}
                       </p>
                       <div class="flex shrink-0 gap-1">
+                        <button
+                          onclick={() => startEdit(bullet.id, variant.text[bullet.id] ?? bullet.text)}
+                          disabled={entryOff}
+                          aria-label="Reword this bullet for this posting"
+                          title="Reword for this posting"
+                          class="chip border border-line px-2 py-1 text-subtle hover:border-brand disabled:opacity-40"
+                        >
+                          <Pencil size={11} />
+                        </button>
+                        {#if variant.text[bullet.id] !== undefined}
+                          <button
+                            onclick={() => revertText(bullet.id)}
+                            title="Back to the wording on your résumé"
+                            class="chip border border-line px-2 py-1 text-[11px] text-subtle hover:border-brand"
+                          >
+                            Revert
+                          </button>
+                        {/if}
                         <!-- Pin and hide are toggles back to auto, so there is
                              always a way back to what Rust would have chosen. -->
                         <button
@@ -288,7 +392,7 @@
                           aria-pressed={state === "in"}
                           disabled={entryOff}
                           title="Always keep this bullet"
-                          class="chip px-2 py-0.5 text-[10px] disabled:opacity-40 {state === 'in'
+                          class="chip px-2.5 py-1 text-[11px] disabled:opacity-40 {state === 'in'
                             ? 'bg-brand text-brand-fg'
                             : 'border border-line text-subtle hover:border-brand'}"
                         >
@@ -299,7 +403,7 @@
                           aria-pressed={state === "out"}
                           disabled={entryOff}
                           title="Leave this bullet off"
-                          class="chip px-2 py-0.5 text-[10px] disabled:opacity-40 {state === 'out'
+                          class="chip px-2.5 py-1 text-[11px] disabled:opacity-40 {state === 'out'
                             ? 'bg-danger text-danger-fg'
                             : 'border border-line text-subtle hover:border-brand'}"
                         >
@@ -307,6 +411,7 @@
                         </button>
                       </div>
                     </div>
+                    {/if}
 
                     {#if why.length > 0 || echo.length > 0}
                       <!-- Two kinds of evidence, drawn apart. A skill chip

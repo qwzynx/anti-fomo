@@ -5,6 +5,9 @@
   import EntryEditor from "$lib/components/resume/EntryEditor.svelte";
   import ImportPanel from "$lib/components/resume/ImportPanel.svelte";
   import ResumePreview from "$lib/components/resume/ResumePreview.svelte";
+  import ResumeSwitcher from "$lib/components/resume/ResumeSwitcher.svelte";
+  import { confirm } from "$lib/confirm.svelte";
+  import { toast } from "$lib/toast.svelte";
   import ThemePicker from "$lib/components/resume/ThemePicker.svelte";
   import {
     Download,
@@ -33,11 +36,18 @@
    */
 
   let tab = $state<"content" | "design">("content");
-  let notice = $state<string | null>(null);
   let importing = $state(false);
   let importText = $state("");
-  let busy = $state(false);
-  let confirmingReset = $state(false);
+  /** What is running, so each button spins for its own job and not the others'. */
+  let busy = $state<null | "pdf" | "json" | "import" | "reset" | "create">(null);
+
+  /** A file saved, or why not. A cancelled dialog says nothing. */
+  function report(outcome: Parameters<typeof outcomeMessage>[0]) {
+    const message = outcomeMessage(outcome);
+    if (!message) return;
+    if (outcome.ok) toast.success(message);
+    else toast.error("save the file", message);
+  }
 
   // Once per session, not once per visit: coming back to the builder must show
   // the document as the user left it, including edits the debounced save has
@@ -94,48 +104,76 @@
 
   async function downloadPdf() {
     if (!view) return;
-    busy = true;
-    // Flush any pending debounce first, or the file could be a beat behind the
-    // preview the user is looking at.
-    await resume.save();
-    const outcome = await saveResumePdf({
-      id: resume.id ?? undefined,
-      theme: resume.theme ?? undefined,
-      filename: view.filename,
-      reveal: true,
-    });
-    notice = outcomeMessage(outcome);
-    busy = false;
+    busy = "pdf";
+    try {
+      // Flush any pending debounce first, or the file could be a beat behind
+      // the preview the user is looking at.
+      await resume.save();
+      report(
+        await saveResumePdf({
+          id: resume.id ?? undefined,
+          theme: resume.theme ?? undefined,
+          filename: view.filename,
+          reveal: true,
+        }),
+      );
+    } finally {
+      busy = null;
+    }
   }
 
   async function exportJson() {
-    busy = true;
-    await resume.save();
-    notice = outcomeMessage(await saveResumeJson(resume.id ?? undefined, resume.name));
-    busy = false;
+    busy = "json";
+    try {
+      await resume.save();
+      report(await saveResumeJson(resume.id ?? undefined, resume.name));
+    } finally {
+      busy = null;
+    }
   }
 
-  /** Empties the résumé. Guarded by the two-step confirm in the Design tab. */
+  /** Empties the résumé, after asking. */
   async function resetResume() {
-    busy = true;
-    await resume.reset();
-    confirmingReset = false;
-    notice = "Reset. The résumé is empty.";
-    busy = false;
+    const ok = await confirm({
+      title: `Erase everything in “${resume.name}”?`,
+      body: "Every section is emptied — contact details, experience, projects, skills. The design is kept. This cannot be undone, so export a resume.json first if anything here is worth keeping.",
+      confirmLabel: "Erase résumé",
+      danger: true,
+    });
+    if (!ok) return;
+    busy = "reset";
+    try {
+      await resume.reset();
+      toast.info("Erased. The headings are still there to fill in again.");
+    } finally {
+      busy = null;
+    }
   }
 
   async function runImport() {
     if (!importText.trim()) return;
-    busy = true;
+    busy = "import";
     try {
       await resume.importJson(importText);
       importing = false;
       importText = "";
-      notice = "Imported.";
+      toast.success(`Imported as “${resume.name}”`);
     } catch (e) {
-      notice = e instanceof Error ? e.message : String(e);
+      toast.error("import that résumé", e);
+    } finally {
+      busy = null;
     }
-    busy = false;
+  }
+
+  async function startNew() {
+    busy = "create";
+    try {
+      await resume.create();
+    } catch (e) {
+      toast.error("start a résumé", e);
+    } finally {
+      busy = null;
+    }
   }
 </script>
 
@@ -150,27 +188,38 @@
       {#if resume.exists}
         <button
           onclick={downloadPdf}
-          disabled={busy || !view}
+          disabled={busy === "pdf" || !view}
           class="inline-flex items-center gap-1.5 rounded-xl bg-brand px-3.5 py-2 text-sm font-semibold text-brand-fg transition-colors hover:bg-brand-hover disabled:opacity-50"
         >
-          {#if busy}<Loader size={15} class="animate-spin" />{:else}<Download size={15} />{/if}
+          {#if busy === "pdf"}<Loader size={15} class="animate-spin" />{:else}<Download size={15} />{/if}
           Save PDF
         </button>
       {/if}
     {/snippet}
   </PageHeader>
 
-  {#if resume.error}
+  {#if resume.error && resume.exists}
     <p class="mt-3 rounded-xl bg-danger-soft p-3 text-sm text-danger" role="alert">
       {resume.error}
     </p>
   {/if}
-  {#if notice}
-    <p class="mt-3 rounded-xl bg-line-soft p-3 text-sm text-muted" role="status">{notice}</p>
-  {/if}
 
   {#if resume.loading}
-    <div class="mt-10 flex justify-center"><Loader size={22} class="animate-spin text-subtle" /></div>
+    <div class="mt-10 flex justify-center" aria-busy="true" aria-label="Loading the résumé">
+      <Loader size={22} class="animate-spin text-subtle" />
+    </div>
+  {:else if !resume.exists && resume.error}
+    <!-- A read that failed is not "no résumé yet": offering to start one here
+         would create a second row beside the one that could not be read. -->
+    <div class="mt-4">
+      <EmptyState
+        icon={FileText}
+        title="The résumé could not be loaded"
+        body={resume.error}
+        actionLabel="Try again"
+        onAction={() => void resume.load()}
+      />
+    </div>
   {:else if !resume.exists}
     <div class="mt-4">
       <EmptyState
@@ -178,8 +227,8 @@
         title="No résumé yet"
         body="Start an empty one and fill in your experience, or bring in what you already have — a resume.json, or the CVs and notes sitting in a chat thread."
         actionLabel="Start a résumé"
-        onAction={() => void resume.create()}
-        {busy}
+        onAction={() => void startNew()}
+        busy={busy === "create"}
       />
       <div class="mt-3 text-center">
         <button
@@ -192,7 +241,7 @@
       </div>
       {#if importing}
         <div class="card mx-auto mt-4 max-w-2xl p-5">
-          <ImportPanel bind:text={importText} {busy} onImport={runImport} />
+          <ImportPanel bind:text={importText} busy={busy === "import"} onImport={runImport} />
         </div>
       {/if}
     </div>
@@ -201,6 +250,7 @@
       <!-- Editor -->
       <div class="min-w-0">
         <div class="mb-4 flex flex-wrap items-center gap-2">
+          <ResumeSwitcher />
           {#each [{ id: "content", label: "Content", icon: FileText }, { id: "design", label: "Design", icon: Palette }] as const as t (t.id)}
             {@const Icon = t.icon}
             <button
@@ -235,10 +285,10 @@
               <div class="flex flex-wrap gap-2">
                 <button
                   onclick={exportJson}
-                  disabled={busy}
+                  disabled={busy === "json"}
                   class="inline-flex items-center gap-1.5 rounded-xl border border-line px-3 py-2 text-sm font-semibold hover:border-brand disabled:opacity-50"
                 >
-                  <Download size={14} />
+                  {#if busy === "json"}<Loader size={14} class="animate-spin" />{:else}<Download size={14} />{/if}
                   Export resume.json
                 </button>
                 <button
@@ -256,7 +306,7 @@
                 <div class="mt-3">
                   <ImportPanel
                     bind:text={importText}
-                    {busy}
+                    busy={busy === "import"}
                     onImport={runImport}
                     hint="Imports as a separate résumé and opens it. Export the one you have first if you want it back."
                   />
@@ -273,33 +323,14 @@
               resume.json first if there is anything in here worth keeping.
             </p>
 
-            {#if confirmingReset}
-              <div class="flex flex-wrap items-center gap-2">
-                <button
-                  onclick={resetResume}
-                  disabled={busy}
-                  class="inline-flex items-center gap-1.5 rounded-xl bg-danger px-4 py-2 text-sm font-semibold text-danger-fg transition-colors hover:opacity-90 disabled:opacity-50"
-                >
-                  <Trash2 size={15} />
-                  {busy ? "Erasing…" : "Yes, erase this résumé"}
-                </button>
-                <button
-                  onclick={() => (confirmingReset = false)}
-                  disabled={busy}
-                  class="rounded-xl border border-line px-4 py-2 text-sm font-semibold text-muted transition-colors hover:border-brand hover:text-brand disabled:opacity-50"
-                >
-                  Cancel
-                </button>
-              </div>
-            {:else}
-              <button
-                onclick={() => (confirmingReset = true)}
-                class="inline-flex items-center gap-1.5 rounded-xl border border-danger/40 px-4 py-2 text-sm font-semibold text-danger transition-colors hover:bg-danger hover:text-danger-fg"
-              >
-                <RotateCcw size={15} />
-                Reset résumé
-              </button>
-            {/if}
+            <button
+              onclick={resetResume}
+              disabled={busy === "reset"}
+              class="inline-flex items-center gap-1.5 rounded-xl border border-danger/40 px-4 py-2 text-sm font-semibold text-danger transition-colors hover:bg-danger hover:text-danger-fg disabled:opacity-50"
+            >
+              <RotateCcw size={15} />
+              {busy === "reset" ? "Erasing…" : "Reset résumé"}
+            </button>
           </section>
         {:else}
           <section class="card mb-5 p-5">

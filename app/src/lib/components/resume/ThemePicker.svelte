@@ -11,9 +11,11 @@
    * decides which elements take colour (`accent_roles` in Rust), so no colour
    * can end up behind body text.
    *
-   * The swatches are the app's own accent tokens, resolved from CSS rather than
-   * hard-coded, so a palette change in `app.css` reaches this row too. The hex
-   * field is the escape hatch for anything else.
+   * The swatches are fixed print colours. They used to be read from the app's
+   * own accent tokens at runtime, which in dark mode resolved to the pastel
+   * variants — light mint and lilac that vanish on white paper. A résumé is
+   * printed, so its palette does not follow the app's theme. The colour field
+   * is the escape hatch for anything else.
    */
   let {
     theme,
@@ -25,20 +27,20 @@
     onChange: (next: ResumeTheme) => void;
   } = $props();
 
-  /** Named after the tokens in `app.css`, read at runtime so they stay in step. */
-  const SWATCH_TOKENS = ["--brand", "--job", "--event", "--star", "--article"] as const;
-
-  let swatches = $state<Rgb[]>([]);
-
-  $effect(() => {
-    const styles = getComputedStyle(document.documentElement);
-    const parsed = SWATCH_TOKENS.map((token) => parseColor(styles.getPropertyValue(token))).filter(
-      (c): c is Rgb => c !== null,
-    );
-    // Black last: a résumé in plain black ink is a legitimate choice, not an
-    // absence of one, and the Classic theme ignores the accent entirely.
-    swatches = [...parsed, { r: 24, g: 24, b: 27 }];
-  });
+  /**
+   * Dark enough to read as text on white at résumé sizes (all ≥ 7:1). Black
+   * last: plain ink is a legitimate choice, not an absence of one, and the
+   * Classic version ignores the accent entirely.
+   */
+  const SWATCHES: { name: string; rgb: Rgb }[] = [
+    { name: "Indigo", rgb: { r: 67, g: 56, b: 202 } },
+    { name: "Navy", rgb: { r: 30, g: 58, b: 138 } },
+    { name: "Teal", rgb: { r: 15, g: 94, b: 89 } },
+    { name: "Green", rgb: { r: 6, g: 95, b: 70 } },
+    { name: "Burgundy", rgb: { r: 136, g: 19, b: 55 } },
+    { name: "Plum", rgb: { r: 107, g: 33, b: 168 } },
+    { name: "Black", rgb: { r: 24, g: 24, b: 27 } },
+  ];
 
   /** `#rrggbb`, `#rgb` and `rgb(r g b)` — whatever the token happens to hold. */
   function parseColor(raw: string): Rgb | null {
@@ -65,24 +67,29 @@
 
   const same = (a: Rgb, b: Rgb) => a.r === b.r && a.g === b.g && a.b === b.b;
 
-  /** Picking a version keeps the colour and the sizing the user already set. */
+  /**
+   * Picking a version keeps the colour, page, margins and page limit the user
+   * set — and their text-size *adjustment*. Each version has its own base
+   * size (Inter is set half a point under the serif to hold the same amount on
+   * a page), so the raw number is not what carries over: a reader who went one
+   * step larger on Classic gets one step larger on Modern.
+   */
   function pickVersion(option: ResumeThemeOption) {
+    const current = options.find((o) => o.id === theme.id);
+    const adjustment = current ? theme.base_size - current.theme.base_size : 0;
+    const [lo, hi] = BOUNDS.base_size;
     onChange({
       ...option.theme,
       accent: theme.accent,
       page: theme.page,
-      base_size: option.theme.base_size,
+      base_size: Math.min(hi, Math.max(lo, +(option.theme.base_size + adjustment).toFixed(2))),
       margin: theme.margin,
       max_pages: theme.max_pages,
     });
   }
 
-  /**
-   * What the steppers stay inside. Below 8pt a résumé stops being readable on
-   * paper and above 14pt it stops being a résumé; a quarter inch of margin is
-   * where printers start clipping, an inch and a half is wasted page.
-   */
-  const BOUNDS = { base_size: [8, 14], margin: [18, 108] } as const;
+  /** What the steppers stay inside: `Theme::sanitized` in Rust, which clamps anything outside. */
+  const BOUNDS = { base_size: [9, 12], margin: [36, 90] } as const;
 
   const step = (field: "base_size" | "margin", delta: number) => {
     const [lo, hi] = BOUNDS[field];
@@ -153,10 +160,11 @@
     <p class="mb-2 text-xs font-semibold tracking-wide text-subtle uppercase">Colour</p>
     {#if usesAccent(theme)}
       <div class="flex flex-wrap items-center gap-2">
-        {#each swatches as swatch (toHex(swatch))}
+        {#each SWATCHES as { name, rgb: swatch } (name)}
           <button
             onclick={() => onChange({ ...theme, accent: swatch })}
-            aria-label="Use {toHex(swatch)}"
+            aria-label={name}
+            title={name}
             aria-pressed={same(theme.accent, swatch)}
             class="h-8 w-8 rounded-full ring-offset-2 ring-offset-surface transition-shadow {same(
               theme.accent,
