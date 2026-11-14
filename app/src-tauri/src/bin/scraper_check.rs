@@ -14,6 +14,12 @@ use anti_fomo_lib::scrapers;
 async fn main() {
     let client = scrapers::build_client().expect("http client");
 
+    // `SOURCE=Workable,Himalayas` checks just those — a new source is verified
+    // alone, without the half minute the rest take.
+    let only: Option<Vec<String>> = std::env::var("SOURCE")
+        .ok()
+        .map(|v| v.split(',').map(|s| s.trim().to_string()).collect());
+
     println!("{:<22} {:>6}  STATUS", "SOURCE", "ITEMS");
     println!("{}", "-".repeat(70));
 
@@ -21,6 +27,9 @@ async fn main() {
 
     for scraper in scrapers::all_scrapers() {
         let name = scraper.source_name();
+        if only.as_ref().is_some_and(|o| !o.iter().any(|n| n == name)) {
+            continue;
+        }
         let started = std::time::Instant::now();
         match scraper.fetch(&client).await {
             Ok(items) => {
@@ -45,7 +54,21 @@ async fn main() {
 
     // Phase two: the real pipeline, so dedupe and ranking are exercised too.
     println!("{}", "-".repeat(70));
-    let items = scrapers::fetch_all().await;
+    let items = match &only {
+        Some(names) => {
+            let names: Vec<&str> = names.iter().map(String::as_str).collect();
+            scrapers::fetch_selected(&names, |_, _, _| {}).await.0
+        }
+        None => scrapers::fetch_all().await,
+    };
+    let stored = items
+        .iter()
+        .filter(|i| {
+            !scrapers::reads_whole_boards(&i.source_platform)
+                || anti_fomo_lib::rank::worth_storing(i)
+        })
+        .count();
+    println!("  of which worth storing: {stored} of {}", items.len());
 
     let mut by_type: BTreeMap<&str, usize> = BTreeMap::new();
     let mut undated = 0usize;

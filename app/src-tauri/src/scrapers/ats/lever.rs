@@ -54,6 +54,9 @@ struct Posting {
 struct Categories {
     #[serde(default)]
     location: Option<String>,
+    /// "Full-time", "Internship", "Contract"… the employer's own label.
+    #[serde(default)]
+    commitment: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -84,16 +87,30 @@ impl Scraper for LeverBoards {
     }
 
     async fn fetch(&self, client: &reqwest::Client) -> Result<Vec<Item>> {
-        Ok(fan_out(
+        crate::scrapers::collect_batches(self, client).await
+    }
+
+    async fn fetch_batches(
+        &self,
+        client: &reqwest::Client,
+        sink: crate::scrapers::Sink<'_>,
+    ) -> Result<()> {
+        fan_out(
             client,
             |b| matches!(b, Board::Lever(_)),
             |e, c| Box::pin(fetch_board(e, c)),
+            super::CONCURRENCY,
+            sink,
         )
-        .await)
+        .await;
+        Ok(())
     }
 }
 
-async fn fetch_board(employer: &'static Employer, client: reqwest::Client) -> Result<Vec<Item>> {
+pub async fn fetch_board(
+    employer: &'static Employer,
+    client: reqwest::Client,
+) -> Result<Vec<Item>> {
     let Board::Lever(slug) = employer.board else {
         return Ok(Vec::new());
     };
@@ -128,10 +145,19 @@ fn to_item(company: &str, posting: Posting) -> Item {
         _ => company.to_string(),
     };
 
+    let intern = posting
+        .categories
+        .as_ref()
+        .and_then(|c| c.commitment.as_deref())
+        .is_some_and(|c| c.to_ascii_lowercase().contains("intern"));
     let mut item = Item::new(
         posting.text.trim(),
         "Lever",
-        ItemType::Job,
+        if intern {
+            ItemType::Internship
+        } else {
+            ItemType::Job
+        },
         posting.hosted_url.clone(),
     )
     .with_company(company)
@@ -197,6 +223,7 @@ mod tests {
             created_at: Some(1_711_403_416_463),
             categories: Some(Categories {
                 location: Some("Toronto".into()),
+                commitment: None,
             }),
             description: Some("<p>We build things.</p>".into()),
             lists: vec![
@@ -258,5 +285,15 @@ mod tests {
         };
         let item = to_item("Acme", posting);
         assert!(item.timestamp < Utc::now() - chrono::Duration::days(29));
+    }
+
+    #[test]
+    fn the_commitment_marks_an_internship() {
+        let posting: Posting = serde_json::from_str(
+            r#"{"text":"Engineer","hostedUrl":"https://jobs.lever.co/acme/1",
+                "categories":{"location":"Toronto","commitment":"Internship"}}"#,
+        )
+        .unwrap();
+        assert_eq!(to_item("Acme", posting).item_type, ItemType::Internship);
     }
 }

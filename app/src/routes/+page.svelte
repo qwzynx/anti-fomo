@@ -120,11 +120,12 @@
     <div class="mx-auto w-full max-w-6xl px-4 pt-2 pb-8 sm:px-6 lg:px-8">
       <EmptyState
         icon={Inbox}
-        title="Nothing cached yet"
-        body="Pull the latest listings, stories and events from your sources. It all stays on this device."
-        actionLabel="Refresh now"
-        busy={feed.refreshing}
-        onAction={() => feed.refresh(true)}
+        title={feed.refreshing ? "Collecting your feed…" : "Nothing cached yet"}
+        body={feed.refreshing
+          ? "Results appear here as each source finishes. You can leave this open, or stop it from the bar above."
+          : "Pull the latest listings, stories and events from your sources. It all stays on this device."}
+        actionLabel={feed.refreshing ? "Stop" : "Refresh now"}
+        onAction={() => (feed.refreshing ? feed.stop() : feed.refresh(true))}
       />
     </div>
   {:else}

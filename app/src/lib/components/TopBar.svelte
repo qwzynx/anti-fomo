@@ -2,7 +2,7 @@
   import { page } from "$app/state";
   import { timeAgo } from "$lib/api";
   import { feed } from "$lib/feed.svelte";
-  import { Monitor, Moon, RefreshCw, Search, Sparkles, Sun } from "$lib/icons";
+  import { Monitor, Moon, RefreshCw, Search, Sparkles, Square, Sun } from "$lib/icons";
   import { NAV, TOOLS } from "$lib/nav";
   import { search } from "$lib/search.svelte";
   import { theme } from "$lib/theme.svelte";
@@ -103,21 +103,34 @@
     </div>
 
     <div class="flex shrink-0 items-center gap-1.5">
-      <!-- The rail's status footer, reduced to the part you would act on. -->
-      <button
-        onclick={() => feed.refresh(true)}
-        disabled={feed.refreshing}
-        aria-label={feed.refreshing ? "Refreshing sources" : "Refresh all sources"}
-        title="Refresh all sources"
-        class="flex h-[34px] items-center gap-2 rounded-[10px] border border-line px-3 text-xs font-semibold text-muted transition-colors hover:border-subtle disabled:opacity-60"
-      >
-        <span
-          class="h-1.5 w-1.5 shrink-0 rounded-full {feed.status?.stale ? 'bg-star' : 'bg-job'}"
-          aria-hidden="true"
-        ></span>
-        <span class="hidden lg:inline">{synced}</span>
-        <RefreshCw size={13} class="shrink-0 {feed.refreshing ? 'animate-spin' : ''}" />
-      </button>
+      <!-- The rail's status footer, reduced to the part you would act on. While a scrape
+           runs it becomes the way to stop it. -->
+      {#if feed.refreshing}
+        <button
+          onclick={() => feed.stop()}
+          disabled={feed.phase === "stopping"}
+          aria-label="Stop scraping"
+          title="Stop scraping — what was found stays"
+          class="flex h-[34px] items-center gap-2 rounded-[10px] border border-line px-3 text-xs font-semibold text-muted transition-colors hover:border-subtle disabled:opacity-60"
+        >
+          <Square size={12} class="shrink-0 fill-current" />
+          <span class="hidden lg:inline">{feed.phase === "stopping" ? "Stopping…" : "Stop"}</span>
+        </button>
+      {:else}
+        <button
+          onclick={() => feed.refresh(true)}
+          aria-label="Refresh all sources"
+          title="Refresh all sources"
+          class="flex h-[34px] items-center gap-2 rounded-[10px] border border-line px-3 text-xs font-semibold text-muted transition-colors hover:border-subtle"
+        >
+          <span
+            class="h-1.5 w-1.5 shrink-0 rounded-full {feed.status?.stale ? 'bg-star' : 'bg-job'}"
+            aria-hidden="true"
+          ></span>
+          <span class="hidden lg:inline">{synced}</span>
+          <RefreshCw size={13} class="shrink-0" />
+        </button>
+      {/if}
 
       <button
         onclick={() => theme.cycle()}

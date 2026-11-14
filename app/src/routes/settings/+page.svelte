@@ -12,6 +12,7 @@
     Moon,
     Newspaper,
     RefreshCw,
+    Square,
     RotateCcw,
     Sparkles,
     Sun,
@@ -236,14 +237,33 @@
           {/if}
         </p>
       </div>
-      <button
-        onclick={() => feed.refresh(true)}
-        disabled={feed.refreshing}
-        class="inline-flex shrink-0 items-center gap-1.5 rounded-xl bg-brand px-4 py-2 text-sm font-semibold text-brand-fg transition-colors hover:bg-brand-hover disabled:opacity-50"
-      >
-        <RefreshCw size={15} class={feed.refreshing ? "animate-spin" : ""} />
-        {feed.refreshing ? "Refreshing…" : "Refresh now"}
-      </button>
+      <div class="flex shrink-0 flex-col items-end gap-1.5">
+        {#if feed.refreshing}
+          <button
+            onclick={() => feed.stop()}
+            disabled={feed.phase === "stopping"}
+            class="inline-flex items-center gap-1.5 rounded-xl border border-line px-4 py-2 text-sm font-semibold text-foreground transition-colors hover:border-subtle disabled:opacity-50"
+          >
+            <Square size={13} class="fill-current" />
+            {feed.phase === "stopping" ? "Stopping…" : "Stop scraping"}
+          </button>
+        {:else}
+          <button
+            onclick={() => feed.refresh(true)}
+            class="inline-flex items-center gap-1.5 rounded-xl bg-brand px-4 py-2 text-sm font-semibold text-brand-fg transition-colors hover:bg-brand-hover"
+          >
+            <RefreshCw size={15} />
+            Scrape everything
+          </button>
+          <button
+            onclick={() => feed.refresh(false)}
+            class="text-xs font-semibold text-subtle transition-colors hover:text-foreground"
+            title="Only the sources whose last run is out of date"
+          >
+            Only what's due
+          </button>
+        {/if}
+      </div>
     </div>
 
     <p class="mb-2 text-xs font-bold tracking-wide text-subtle uppercase">Collect</p>

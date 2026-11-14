@@ -10,13 +10,17 @@ use chrono::{DateTime, Utc};
 use serde::Deserialize;
 
 use super::super::employers::{Board, Employer};
-use super::fan_out;
+use super::{fan_out, keep_best};
 use crate::models::{Item, ItemType};
 use crate::scrapers::Scraper;
 
 /// The API's own page cap.
 const PAGE: usize = 100;
 const MAX_PER_EMPLOYER: usize = 300;
+/// Postings read per board before choosing the best of them. Bosch lists five
+/// thousand; the first three hundred in the API's order are not the three
+/// hundred this app is about, so a wider window is read and `keep_best` picks.
+const MAX_READ: usize = 1000;
 
 pub struct SmartRecruitersBoards;
 
@@ -37,6 +41,28 @@ struct Posting {
     location: Option<Location>,
     #[serde(default)]
     released_date: Option<String>,
+    /// `{"id": "internship", "label": "Internship"}`. Structured, and far
+    /// better evidence than a title.
+    #[serde(default)]
+    experience_level: Option<Labelled>,
+    #[serde(default)]
+    type_of_employment: Option<Labelled>,
+}
+
+#[derive(Deserialize)]
+struct Labelled {
+    #[serde(default)]
+    id: String,
+    #[serde(default)]
+    label: String,
+}
+
+impl Labelled {
+    fn says_intern(&self) -> bool {
+        let id = self.id.to_ascii_lowercase();
+        let label = self.label.to_ascii_lowercase();
+        id.contains("intern") || label.contains("intern")
+    }
 }
 
 #[derive(Deserialize)]
@@ -73,23 +99,37 @@ impl Scraper for SmartRecruitersBoards {
     }
 
     async fn fetch(&self, client: &reqwest::Client) -> Result<Vec<Item>> {
-        Ok(fan_out(
+        crate::scrapers::collect_batches(self, client).await
+    }
+
+    async fn fetch_batches(
+        &self,
+        client: &reqwest::Client,
+        sink: crate::scrapers::Sink<'_>,
+    ) -> Result<()> {
+        fan_out(
             client,
             |b| matches!(b, Board::SmartRecruiters(_)),
             |e, c| Box::pin(fetch_board(e, c)),
+            super::CONCURRENCY,
+            sink,
         )
-        .await)
+        .await;
+        Ok(())
     }
 }
 
-async fn fetch_board(employer: &'static Employer, client: reqwest::Client) -> Result<Vec<Item>> {
+pub async fn fetch_board(
+    employer: &'static Employer,
+    client: reqwest::Client,
+) -> Result<Vec<Item>> {
     let Board::SmartRecruiters(slug) = employer.board else {
         return Ok(Vec::new());
     };
     let mut items = Vec::new();
     let mut offset = 0;
 
-    while items.len() < MAX_PER_EMPLOYER {
+    while items.len() < MAX_READ {
         let url = format!(
             "https://api.smartrecruiters.com/v1/companies/{slug}/postings?limit={PAGE}&offset={offset}"
         );
@@ -120,8 +160,7 @@ async fn fetch_board(employer: &'static Employer, client: reqwest::Client) -> Re
         }
         offset += PAGE;
     }
-    items.truncate(MAX_PER_EMPLOYER);
-    Ok(items)
+    Ok(keep_best(items, MAX_PER_EMPLOYER))
 }
 
 fn to_item(company: &str, slug: &str, posting: Posting) -> Item {
@@ -142,11 +181,24 @@ fn to_item(company: &str, slug: &str, posting: Posting) -> Item {
         Some(l) => format!("{company} · {l}"),
         None => company.to_string(),
     };
-    Item::new(posting.name.trim(), "SmartRecruiters", ItemType::Job, url)
-        .with_company(company)
-        .with_location(location)
-        .with_timestamp(timestamp)
-        .with_content(content)
+    let intern = [&posting.experience_level, &posting.type_of_employment]
+        .into_iter()
+        .flatten()
+        .any(Labelled::says_intern);
+    Item::new(
+        posting.name.trim(),
+        "SmartRecruiters",
+        if intern {
+            ItemType::Internship
+        } else {
+            ItemType::Job
+        },
+        url,
+    )
+    .with_company(company)
+    .with_location(location)
+    .with_timestamp(timestamp)
+    .with_content(content)
 }
 
 #[cfg(test)]
@@ -168,10 +220,20 @@ mod tests {
                     remote: Some(false),
                 }),
                 released_date: Some("2026-08-01T00:00:00.000Z".into()),
+                experience_level: Some(Labelled {
+                    id: "internship".into(),
+                    label: "Internship".into(),
+                }),
+                type_of_employment: None,
             },
         );
         assert_eq!(item.location.as_deref(), Some("Toronto, Ontario, Canada"));
         assert!(!crate::scrapers::details::route(&item.url, None).is_empty());
+        assert_eq!(
+            item.item_type,
+            ItemType::Internship,
+            "experienceLevel says internship"
+        );
     }
 
     #[test]

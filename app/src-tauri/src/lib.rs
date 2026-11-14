@@ -32,6 +32,8 @@ pub struct AppState {
     /// database while holding this, and nothing takes them the other way
     /// round.
     pub(crate) ranked: Mutex<Option<commands::Ranked>>,
+    /// How a running refresh is stopped. See [`commands::stop_refresh`].
+    pub(crate) scan: commands::ScanControl,
 }
 
 /// WebKitGTK's DMABUF renderer crashes the webview on several Wayland driver
@@ -78,6 +80,7 @@ pub fn run() {
                 refreshing: AtomicBool::new(false),
                 generation: AtomicU64::new(0),
                 ranked: Mutex::new(None),
+                scan: commands::ScanControl::default(),
             });
 
             // Refresh in the background so the window opens immediately on the
@@ -99,6 +102,7 @@ pub fn run() {
             commands::get_item_detail,
             commands::feed_status,
             commands::refresh,
+            commands::stop_refresh,
             commands::get_scrape_prefs,
             commands::set_scrape_prefs,
             commands::get_onboarding_state,

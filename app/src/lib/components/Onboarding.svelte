@@ -13,6 +13,7 @@
     Minus,
     Newspaper,
     Sparkles,
+    Square,
     X,
     type IconComponent,
   } from "$lib/icons";
@@ -81,6 +82,8 @@
   let phase = $state<"asking" | "scraping" | "done" | "failed">("asking");
   let failure = $state<string | null>(null);
   let found = $state<number | null>(null);
+  /** The reader ended the scrape early; what was collected stays. */
+  let stopped = $state(false);
   let wanted = $state({
     internships: feed.prefs.internships,
     jobs: feed.prefs.jobs,
@@ -115,6 +118,12 @@
       .map((source) => ({ source, result: feed.progress.find((p) => p.source === source.name) })),
   );
   const finished = $derived(rows.filter((r) => r.result).length);
+  /**
+   * There is already something to read. The scrape does not have to be over:
+   * the feed fills as sources finish, and the reader may go in while the slow
+   * employer boards are still running.
+   */
+  const openable = $derived(scraping && (feed.scanRows > 0 || feed.internships.length > 0));
 
   async function start() {
     step = SCRAPE_STEP;
@@ -129,7 +138,9 @@
         region,
         levels,
       );
-      found = await feed.scrapeNow();
+      const outcome = await feed.scrapeNow();
+      found = outcome.rows;
+      stopped = outcome.status === "stopped";
       phase = "done";
     } catch (e) {
       failure = String(e);
@@ -346,15 +357,23 @@
         </h1>
         <p class="mb-5 text-[15px] leading-relaxed text-muted" aria-live="polite">
           {#if phase === "done"}
-            {found === null
-              ? "Your feed is ready."
-              : `${found.toLocaleString()} items collected.`}
+            {#if stopped}
+              Stopped. {found === null ? "What was found" : `${found.toLocaleString()} items`} stays,
+              and starting again carries on with the sources that had not finished.
+            {:else}
+              {found === null
+                ? "Your feed is ready."
+                : `${found.toLocaleString()} items collected.`}
+            {/if}
             Everything is stored on this device.
           {:else if phase === "failed"}
             {failure}
           {:else}
             {finished} of {rows.length} sources done. Employer boards are the slow ones — the feed
             fills in as they finish.
+            {#if openable}
+              You can open Today now; the rest keeps loading.
+            {/if}
           {/if}
         </p>
 
@@ -439,6 +458,27 @@
         >
           {reopened ? "Save and refresh" : "Start collecting"} <ChevronRight size={15} />
         </button>
+      {:else if scraping}
+        <span class="flex items-center gap-2">
+          <button
+            type="button"
+            onclick={() => feed.stop()}
+            disabled={feed.phase === "stopping"}
+            class="inline-flex items-center gap-1.5 rounded-xl border border-line px-4 py-2.5 text-sm font-semibold text-muted transition-colors hover:border-subtle hover:text-foreground disabled:opacity-50"
+          >
+            <Square size={12} class="fill-current" />
+            {feed.phase === "stopping" ? "Stopping…" : "Stop"}
+          </button>
+          {#if openable}
+            <button
+              type="button"
+              onclick={() => feed.finishSetup()}
+              class="inline-flex items-center gap-1.5 rounded-xl bg-brand px-5 py-2.5 text-sm font-semibold text-brand-fg transition-colors hover:bg-brand-hover"
+            >
+              {reopened ? "Done" : "Open Today"} <ChevronRight size={15} />
+            </button>
+          {/if}
+        </span>
       {:else if phase === "done"}
         <button
           type="button"

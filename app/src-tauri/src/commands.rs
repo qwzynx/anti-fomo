@@ -1,5 +1,5 @@
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use chrono::{DateTime, TimeZone, Utc};
 use futures::stream::{self, StreamExt};
@@ -44,7 +44,7 @@ const DETAIL_CANDIDATES: usize = DETAIL_BUDGET * 8;
 /// *work a read does*, not on what exists. Past it, rows are cut by
 /// [`rank::fit`] — what the scrape alone can say about them — rather than by
 /// age or by whichever source happened to be scraped last.
-const OPPORTUNITY_CEILING: usize = 24_000;
+const OPPORTUNITY_CEILING: usize = 40_000;
 /// How many last calls `get_last_call` hands back. The band on Today shows a
 /// handful; the rest is there for a "see all", and this keeps the payload small
 /// whatever the cache holds.
@@ -227,6 +227,8 @@ pub(crate) struct Ranked {
     /// not the moment of the read, so a row and its detail pane agree.
     now: DateTime<Utc>,
     items: Arc<Vec<Item>>,
+    /// When the pass finished, for [`Freshness::WhileScanning`].
+    built: std::time::Instant,
 }
 
 /// Which hour a moment falls in.
@@ -354,17 +356,49 @@ pub(crate) fn invalidate(state: &AppState) {
 /// The visible cache, scored and ordered, recomputed when the data or the
 /// profile has moved under it — or the hour has turned. For the list commands.
 fn ranked_items(state: &AppState, major: Option<String>) -> CmdResult<Arc<Vec<Item>>> {
-    Ok(ranked_view(state, major, true)?.items)
+    Ok(ranked_view(state, major, Freshness::for_list(state))?.items)
+}
+
+/// How out of date a ranked cache a reader will accept.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Freshness {
+    /// Same data and same hour. The default for the list commands.
+    Exact,
+    /// A scrape is writing: every batch moves the generation, and an exact
+    /// answer would be a full ranking pass per batch. A cache a few seconds
+    /// old is accepted instead, so the list refreshes at the pace the
+    /// frontend polls and not at the pace the sources finish.
+    WhileScanning,
+    /// Any cache for this profile. For the detail pane and the enrichment
+    /// queue, which are about one row or about order, not about the list.
+    Any,
+}
+
+/// How old a cache a list read accepts while a scrape is running.
+const SCAN_STALENESS: std::time::Duration = std::time::Duration::from_secs(4);
+
+impl Freshness {
+    fn for_list(state: &AppState) -> Freshness {
+        if state.refreshing.load(Ordering::SeqCst) {
+            Freshness::WhileScanning
+        } else {
+            Freshness::Exact
+        }
+    }
 }
 
 /// [`ranked_items`] plus what it was ranked against.
 ///
-/// `hourly` says whether a cache from an earlier hour is good enough. The list
-/// commands want the answer that matches the clock; the detail pane and the
+/// `freshness` says how old a cache is good enough. The list commands want the
+/// answer that matches the data and the clock; the detail pane and the
 /// enrichment queue do not, and must not pay for it: the first click after the
-/// hour turned would otherwise stall for the whole ranking pass to show a
-/// posting that is already on screen.
-fn ranked_view(state: &AppState, major: Option<String>, hourly: bool) -> CmdResult<RankedView> {
+/// hour turned — or after a scrape wrote a batch — would otherwise stall for
+/// the whole ranking pass to show a posting that is already on screen.
+fn ranked_view(
+    state: &AppState,
+    major: Option<String>,
+    freshness: Freshness,
+) -> CmdResult<RankedView> {
     // Read before taking the cache lock, so a write that lands mid-rank leaves
     // a generation the *next* read will not accept rather than one it will.
     let generation = state.generation.load(Ordering::SeqCst);
@@ -376,10 +410,16 @@ fn ranked_view(state: &AppState, major: Option<String>, hourly: bool) -> CmdResu
     // feed and the hub would each start their own identical 1.2 s pass.
     let mut slot = state.ranked.lock().unwrap();
     if let Some(cached) = slot.as_ref() {
-        if cached.generation == generation
-            && cached.profile == profile
-            && (!hourly || cached.bucket == bucket)
-        {
+        let acceptable = cached.profile == profile
+            && match freshness {
+                Freshness::Exact => cached.generation == generation && cached.bucket == bucket,
+                Freshness::WhileScanning => {
+                    (cached.generation == generation && cached.bucket == bucket)
+                        || cached.built.elapsed() < SCAN_STALENESS
+                }
+                Freshness::Any => true,
+            };
+        if acceptable {
             return Ok(RankedView {
                 items: Arc::clone(&cached.items),
                 bars: cached.bars,
@@ -411,6 +451,7 @@ fn ranked_view(state: &AppState, major: Option<String>, hourly: bool) -> CmdResu
         bars,
         now,
         items: Arc::clone(&items),
+        built: std::time::Instant::now(),
     });
     Ok(RankedView { items, bars, now })
 }
@@ -531,7 +572,7 @@ fn item_detail(state: &AppState, url: &str) -> CmdResult<Option<Item>> {
     // the breakdown, both of which are stripped when it is built.
     // Any age: the pane is showing a row the list already drew, and rebuilding
     // for the hour boundary here would put the whole ranking pass behind a click.
-    let view = ranked_view(state, None, false)?;
+    let view = ranked_view(state, None, Freshness::Any)?;
     let cached = view.items.iter().find(|i| i.url == url).cloned();
 
     let mut items = {
@@ -635,6 +676,7 @@ impl Drop for RefreshGuard {
         let state = self.0.state::<AppState>();
         state.refreshing.store(false, Ordering::SeqCst);
         let _ = self.0.emit("feed:refreshing", false);
+        let _ = self.0.emit("feed:phase", "idle");
     }
 }
 
@@ -679,21 +721,196 @@ fn onboarded(state: &AppState) -> bool {
         .is_some()
 }
 
-/// Scrapes what the reader asked for and what is due, and persists the
-/// results. Returns the number of items written, or `None` when nothing ran —
-/// because the reader has not been asked yet, because nothing was due, or
-/// because another refresh was already under way.
+/// What a refresh did, for the UI. `status` tells "nothing ran" (not asked yet,
+/// or another refresh was already under way) from a run that finished and a
+/// run the reader stopped, which the old `Option<usize>` could not.
+#[derive(Serialize, Clone, Default)]
+pub struct RefreshOutcome {
+    /// "skipped" | "ran" | "stopped"
+    pub status: &'static str,
+    pub sources_done: usize,
+    pub sources_total: usize,
+    /// Rows written by this run's scrape, before the description phase.
+    pub rows: usize,
+}
+
+/// Stopping a scrape, which is two things: a flag that says "do not start the
+/// next phase", and the handle that abandons the one in flight. Both are
+/// needed — a stop that lands between phases has nothing to abort and must
+/// still be honoured.
+#[derive(Default)]
+pub(crate) struct ScanControl {
+    stop: std::sync::atomic::AtomicBool,
+    handle: Mutex<Option<futures::future::AbortHandle>>,
+}
+
+impl ScanControl {
+    /// A new run: forget any earlier stop.
+    fn begin(&self) {
+        self.stop.store(false, Ordering::SeqCst);
+        *self.handle.lock().unwrap() = None;
+    }
+
+    /// Registers the phase about to run. A stop that already arrived aborts it
+    /// at once, so the request cannot be lost in the gap between phases.
+    fn arm(&self, handle: futures::future::AbortHandle) {
+        let mut slot = self.handle.lock().unwrap();
+        if self.stop.load(Ordering::SeqCst) {
+            handle.abort();
+        }
+        *slot = Some(handle);
+    }
+
+    fn disarm(&self) {
+        *self.handle.lock().unwrap() = None;
+    }
+
+    fn request_stop(&self) {
+        self.stop.store(true, Ordering::SeqCst);
+        if let Some(handle) = self.handle.lock().unwrap().as_ref() {
+            handle.abort();
+        }
+    }
+
+    fn stop_requested(&self) -> bool {
+        self.stop.load(Ordering::SeqCst)
+    }
+}
+
+/// Stops the running refresh, whichever phase it is in. Everything already
+/// written stays; sources that had not finished stay due, so the next Start
+/// picks up exactly where this one left off. A no-op when nothing is running.
+#[tauri::command]
+pub fn stop_refresh(app: AppHandle) -> bool {
+    let state = app.state::<AppState>();
+    if !state.refreshing.load(Ordering::SeqCst) {
+        return false;
+    }
+    state.scan.request_stop();
+    let _ = app.emit("feed:phase", "stopping");
+    true
+}
+
+/// What the scrape phase produced.
+#[derive(Default)]
+struct ScrapeRun {
+    rows: usize,
+    done: usize,
+    outcomes: Vec<scrapers::SourceOutcome>,
+    /// Scopes of the sources that finished well, for the sweep.
+    alive: std::collections::HashSet<db::Scope>,
+    stopped: bool,
+}
+
+/// Runs the producer (the sources) and the consumer (the writes) together.
+///
+/// Each source's rows are written as they arrive, so the feed fills while the
+/// scrape is still going. The producer is wrapped in `Abortable`: stopping
+/// drops it, which abandons every request in flight, and the channel closes.
+/// The consumer is *not* abortable — it drains whatever was already sent, so a
+/// stop never cancels a write halfway.
+async fn scrape(app: &AppHandle, plan: Vec<&'static str>, run_start: DateTime<Utc>) -> ScrapeRun {
+    use futures::future::{AbortHandle, Abortable};
+    use std::collections::{HashMap, HashSet};
+
+    let state = app.state::<AppState>();
+    let total = plan.len();
+    let (tx, mut rx) = futures::channel::mpsc::unbounded();
+    let (handle, registration) = AbortHandle::new_pair();
+    state.scan.arm(handle);
+
+    let producer = Abortable::new(
+        async {
+            scrapers::fetch_stream(&plan, tx).await;
+        },
+        registration,
+    );
+
+    let consumer = async {
+        let mut run = ScrapeRun::default();
+        let mut alive: HashMap<&'static str, HashSet<db::Scope>> = HashMap::new();
+        while let Some(msg) = rx.next().await {
+            match msg {
+                scrapers::Msg::Batch { source, items } => {
+                    let result = {
+                        let app = app.clone();
+                        tauri::async_runtime::spawn_blocking(move || {
+                            let state = app.state::<AppState>();
+                            persist_batch(state.inner(), items, run_start)
+                        })
+                        .await
+                    };
+                    match result {
+                        Ok(Ok(saved)) => {
+                            run.rows += saved.rows;
+                            let trimmer = app.clone();
+                            let _ = tauri::async_runtime::spawn_blocking(move || {
+                                let state = trimmer.state::<AppState>();
+                                trim_when_over(
+                                    state.inner(),
+                                    (OPPORTUNITY_CEILING as f64 * SCAN_SLACK) as usize,
+                                )
+                            })
+                            .await;
+                            alive.entry(source).or_default().extend(saved.alive);
+                            let _ = app.emit("feed:updated", run.rows);
+                        }
+                        Ok(Err(e)) => log::warn!("{source}: could not store rows: {e}"),
+                        Err(e) => log::warn!("{source}: store task failed: {e}"),
+                    }
+                }
+                scrapers::Msg::Done(outcome) => {
+                    if matches!(outcome.health, scrapers::Health::Failed(_)) {
+                        // Its rows stay, but it vouches for nothing: a source
+                        // that errored part-way has not shown what is gone.
+                        alive.remove(outcome.source);
+                    }
+                    {
+                        let state = app.state::<AppState>();
+                        let mut conn = state.db.lock().unwrap();
+                        if let Err(e) = db::record_runs(&mut conn, &[run_of(&outcome, Utc::now())])
+                        {
+                            log::warn!("{}: could not record the run: {e}", outcome.source);
+                        }
+                    }
+                    run.done += 1;
+                    let _ = app.emit("feed:progress", Progress::of(&outcome, run.done, total));
+                    run.outcomes.push(outcome);
+                }
+            }
+        }
+        (run, alive)
+    };
+
+    let (aborted, (mut run, alive)) = futures::join!(producer, consumer);
+    state.scan.disarm();
+    run.stopped = aborted.is_err();
+    // A stopped run vouches for nothing. A posting listed by two sources may
+    // have been seen only by the one that did not get to run, and a miss
+    // charged for that would be a miss the posting did not earn.
+    if !run.stopped {
+        run.alive = alive.into_values().flatten().collect();
+    }
+    run
+}
+
+/// Scrapes what the reader asked for and what is due, writing each source's
+/// rows as it finishes, and then reads the descriptions of the best of what is
+/// stored. Everything is stoppable ([`stop_refresh`]).
 ///
 /// `force` is the Refresh button: it overrides how recently a source ran, and
 /// nothing else. A source the reader switched off stays off.
 #[tauri::command]
-pub async fn refresh(app: AppHandle, force: bool) -> CmdResult<Option<usize>> {
+pub async fn refresh(app: AppHandle, force: bool) -> CmdResult<RefreshOutcome> {
     let state = app.state::<AppState>();
 
     // The app asks before it fetches. The launch refresh and every button hit
     // this same gate, so there is no path to a request that skips the question.
     if !onboarded(&state) {
-        return Ok(None);
+        return Ok(RefreshOutcome {
+            status: "skipped",
+            ..Default::default()
+        });
     }
     // Two windows, or a manual tap landing on top of the launch refresh,
     // should not scrape twice.
@@ -702,9 +919,21 @@ pub async fn refresh(app: AppHandle, force: bool) -> CmdResult<Option<usize>> {
         .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
         .is_err()
     {
-        return Ok(None);
+        return Ok(RefreshOutcome {
+            status: "skipped",
+            ..Default::default()
+        });
     }
     let _release = RefreshGuard(app.clone());
+    state.scan.begin();
+    // Announced whether or not anything is due: an enrichment-only run is still
+    // a run, and the reader should be able to see it and stop it.
+    let _ = app.emit("feed:refreshing", true);
+    let _ = app.emit("feed:phase", "scraping");
+
+    // Boards the cache has taught us, and the ones that have given up, before
+    // the plan: the scrapers read them when they start.
+    load_boards(&state);
 
     let plan = {
         let prefs = current_prefs(&state);
@@ -715,67 +944,64 @@ pub async fn refresh(app: AppHandle, force: bool) -> CmdResult<Option<usize>> {
         prefs::due(&scrapers::sources(), &runs, &prefs, Utc::now(), force)
     };
 
-    let mut scraped = None;
-    let mut persisted = true;
+    let _ = app.emit("feed:plan", plan.len());
+    let mut outcome = RefreshOutcome {
+        status: "ran",
+        sources_total: plan.len(),
+        ..Default::default()
+    };
+
     if !plan.is_empty() {
-        let _ = app.emit("feed:refreshing", true);
+        let run_start = Utc::now();
+        let run = scrape(&app, plan, run_start).await;
+        outcome.sources_done = run.done;
+        outcome.rows = run.rows;
 
-        let (items, outcomes) = scrapers::fetch_selected(&plan, |outcome, done, total| {
-            let _ = app.emit("feed:progress", Progress::of(outcome, done, total));
-        })
-        .await;
+        // Every source that ran failed: that is the network, not an empty
+        // world, so keep the cached items rather than blanking the feed.
+        if !run.stopped && all_failed(&run.outcomes, run.rows) {
+            // The network, not the boards: nothing they said counts.
+            scrapers::boards::discard_reports();
+            return Err("every source failed (offline?)".to_string());
+        }
 
-        // The kinds the reader switched off are dropped here, before anything
-        // is stored: a scraper cannot tell an internship from a job until the
-        // title has been read, so the request was made, but the row never
-        // reaches the cache, the ranker or the description budget.
-        let prefs = current_prefs(&state);
-        let items: Vec<Item> = items.into_iter().filter(|i| prefs.admits(i)).collect();
-
-        // Writing 18,000 upserts is not something to do on the async runtime's
-        // thread — it would stall every other task on it for the duration.
-        let result = {
+        let stopped = run.stopped;
+        let finalized = {
             let app = app.clone();
             tauri::async_runtime::spawn_blocking(move || {
                 let state = app.state::<AppState>();
-                persist(state.inner(), items, outcomes)
+                finalize(state.inner(), run_start, &run.alive, !run.stopped)
             })
             .await
             .map_err(err)?
         };
-
-        // Announced as soon as the scrape lands rather than after enrichment.
-        // Enrichment is up to 600 HTTP requests and takes seconds; the feed is
-        // already usable the moment `persist` returns, and holding the event
-        // back meant a refresh looked like it had done nothing until the end.
-        if let Ok(count) = &result {
-            let _ = app.emit("feed:updated", *count);
+        if let Err(e) = finalized {
+            log::warn!("end-of-run housekeeping failed: {e}");
         }
-        persisted = result.is_ok();
-        scraped = Some(result);
+        let _ = app.emit("feed:updated", outcome.rows);
+        if stopped {
+            outcome.status = "stopped";
+        }
     }
 
     // Worth doing whenever there is a cache to enrich, *including* when nothing
     // was due: the backlog is thousands of postings and 600 are fetched a go,
     // so a launch inside the freshness window is exactly when to make progress
     // on it. Deliberately inside the `refreshing` flag so a second refresh
-    // cannot start on top of it. This phase emits its own update when it lands.
-    if persisted {
+    // cannot start on top of it. This phase emits its own updates as it lands.
+    if !state.scan.stop_requested() {
+        let _ = app.emit("feed:phase", "details");
         match enrich_details(&app).await {
             Ok(0) => {}
-            Ok(n) => {
-                log::info!("fetched {n} job descriptions");
-                let _ = app.emit("feed:updated", n);
-            }
+            Ok(n) => log::info!("fetched {n} job descriptions"),
             // Enrichment is an enhancement; a failure leaves the scrape intact.
             Err(e) => log::warn!("description enrichment failed: {e}"),
         }
     }
-
-    match scraped {
-        Some(result) => result.map(Some),
-        None => Ok(None),
+    if state.scan.stop_requested() {
+        outcome.status = "stopped";
     }
+    Ok(outcome)
 }
 
 /// Which postings to fetch descriptions for, in the order to fetch them: the
@@ -851,7 +1077,7 @@ async fn enrich_details(app: &AppHandle) -> CmdResult<usize> {
                 let conn = state.db.lock().unwrap();
                 db::urls_with_details(&conn).map_err(err)?
             };
-            let view = ranked_view(&state, None, false)?;
+            let view = ranked_view(&state, None, Freshness::Any)?;
             Ok(detail_candidates(&view.items, &attempted, Utc::now()))
         })
         .await
@@ -893,22 +1119,50 @@ async fn enrich_details(app: &AppHandle) -> CmdResult<usize> {
     // `buffer_unordered` rather than `join_all`: the queue is 200 URLs and
     // opening 200 connections at once is neither polite nor faster. Note this
     // avoids `tokio::sync::Semaphore`, whose feature is not enabled here.
-    let fetched: Vec<(String, models::JobDetail)> = stream::iter(queue)
-        .map(|(url, chain)| {
-            let client = client.clone();
-            async move {
-                let detail = details::fetch(&client, &chain).await;
-                (url, detail)
+    //
+    // Fetched details are written in small groups as they arrive rather than
+    // all at the end: a stop abandons the requests in flight, and everything
+    // read so far is already stored.
+    use futures::future::{AbortHandle, Abortable};
+    let (tx, mut rx) = futures::channel::mpsc::unbounded::<(String, models::JobDetail)>();
+    let (handle, registration) = AbortHandle::new_pair();
+    state.scan.arm(handle);
+    let producer = Abortable::new(
+        async move {
+            stream::iter(queue)
+                .map(|(url, chain)| {
+                    let client = client.clone();
+                    async move {
+                        let detail = details::fetch(&client, &chain).await;
+                        (url, detail)
+                    }
+                })
+                .buffer_unordered(DETAIL_CONCURRENCY)
+                .for_each(|fetched| {
+                    let _ = tx.unbounded_send(fetched);
+                    futures::future::ready(())
+                })
+                .await;
+        },
+        registration,
+    );
+    let consumer = async {
+        let mut written = 0usize;
+        let mut group: Vec<(String, models::JobDetail)> = Vec::new();
+        while let Some(fetched) = rx.next().await {
+            group.push(fetched);
+            if group.len() >= DETAIL_FLUSH {
+                written += flush_details(app, std::mem::take(&mut group)).await?;
             }
-        })
-        .buffer_unordered(DETAIL_CONCURRENCY)
-        .collect()
-        .await;
-
-    let written = {
-        let mut conn = state.db.lock().unwrap();
-        db::save_details(&mut conn, &fetched).map_err(err)? + unsupported.len()
+        }
+        if !group.is_empty() {
+            written += flush_details(app, group).await?;
+        }
+        CmdResult::Ok(written)
     };
+    let (_, written) = futures::join!(producer, consumer);
+    state.scan.disarm();
+    let written = written? + unsupported.len();
 
     // The skill memo is keyed on URL and would otherwise keep serving the
     // answer it computed before these descriptions existed.
@@ -917,108 +1171,162 @@ async fn enrich_details(app: &AppHandle) -> CmdResult<usize> {
     Ok(written)
 }
 
-/// Split out so the connection lock is never held across an await point.
-fn persist(
-    state: &AppState,
-    items: Vec<Item>,
-    outcomes: Vec<scrapers::SourceOutcome>,
-) -> CmdResult<usize> {
-    // Recorded before anything else, and whatever came of the scrape: the
-    // ledger is what stops a source that failed from being skipped as fresh,
-    // and what stops one that worked from being asked again too soon.
-    let now = Utc::now();
-    let runs: Vec<db::SourceRun> = outcomes
-        .iter()
-        .map(|o| {
-            let failed = matches!(o.health, scrapers::Health::Failed(_));
-            db::SourceRun {
-                source: o.source.to_string(),
-                category: o.category.as_str().to_string(),
-                last_run_at: now,
-                ok: !failed,
-                last_ok_at: (!failed).then_some(now),
-                last_count: o.count as i64,
-                last_error: match &o.health {
-                    scrapers::Health::Ok => None,
-                    scrapers::Health::Dormant(note) => Some(note.clone()),
-                    scrapers::Health::Failed(e) => Some(e.clone()),
-                },
-            }
-        })
-        .collect();
-    {
-        let mut conn = state.db.lock().unwrap();
-        db::record_runs(&mut conn, &runs).map_err(err)?;
-    }
+/// Details written per transaction while a description pass is running.
+const DETAIL_FLUSH: usize = 50;
 
-    // Every source that ran failed: that is the network, not an empty world, so
-    // keep the cached items rather than blanking the feed. (A source that ran
-    // and had nothing to say is not a failure — a reader who wants only
-    // internships can legitimately get no rows back from a run.)
-    if items.is_empty()
+async fn flush_details(
+    app: &AppHandle,
+    group: Vec<(String, models::JobDetail)>,
+) -> CmdResult<usize> {
+    let handle = app.clone();
+    let written = tauri::async_runtime::spawn_blocking(move || -> CmdResult<usize> {
+        let state = handle.state::<AppState>();
+        let mut conn = state.db.lock().unwrap();
+        let n = db::save_details(&mut conn, &group).map_err(err)?;
+        drop(conn);
+        invalidate(state.inner());
+        Ok(n)
+    })
+    .await
+    .map_err(err)??;
+    let _ = app.emit("feed:updated", written);
+    Ok(written)
+}
+
+/// The ledger row for one source finishing.
+fn run_of(o: &scrapers::SourceOutcome, now: DateTime<Utc>) -> db::SourceRun {
+    let failed = matches!(o.health, scrapers::Health::Failed(_));
+    db::SourceRun {
+        source: o.source.to_string(),
+        category: o.category.as_str().to_string(),
+        last_run_at: now,
+        ok: !failed,
+        last_ok_at: (!failed).then_some(now),
+        last_count: o.count as i64,
+        last_error: match &o.health {
+            scrapers::Health::Ok => None,
+            scrapers::Health::Dormant(note) => Some(note.clone()),
+            scrapers::Health::Failed(e) => Some(e.clone()),
+        },
+    }
+}
+
+/// Every source that ran failed, and nothing was stored. A source that ran and
+/// had nothing to say is not a failure — a reader who wants only internships
+/// can legitimately get no rows back from a run.
+fn all_failed(outcomes: &[scrapers::SourceOutcome], rows: usize) -> bool {
+    rows == 0
         && !outcomes.is_empty()
         && outcomes
             .iter()
             .all(|o| matches!(o.health, scrapers::Health::Failed(_)))
-    {
-        return Err("every source failed (offline?)".to_string());
-    }
+}
 
-    // The ceiling is applied at ingest rather than in the sweep: every row a
-    // scrape returns shares one `last_seen_at`, so a sweep has nothing to tell
-    // them apart by, and whatever it evicted would be back on the next refresh.
-    let items = rank::cap_opportunities(items, &current_profile(state, None), OPPORTUNITY_CEILING);
-    let count = items.len();
+/// Rows written per lock hold, so a reader never waits on the whole of a
+/// large batch.
+const WRITE_CHUNK: usize = 500;
 
-    // A re-scrape can change the text behind a URL we have already extracted
-    // skills for, so the memo has to go with it.
-    skills::clear_memo();
+struct SavedBatch {
+    rows: usize,
+    /// The scopes this batch vouches for, once its source finishes well.
+    alive: std::collections::HashSet<db::Scope>,
+}
+
+/// Stores one piece of a scrape: dedupe within it, drop what the reader does
+/// not want, upsert, and keep any description the source sent along.
+///
+/// **Never sweeps.** Whether a posting is gone is a question about the whole
+/// run — a URL two sources list is owned by one of them, and sweeping after
+/// the first would charge it a miss the second was about to clear — so the
+/// sweep waits for [`finalize`]. Split out so the connection lock is never held
+/// across an await point.
+fn persist_batch(
+    state: &AppState,
+    items: Vec<Item>,
+    run_start: DateTime<Utc>,
+) -> CmdResult<SavedBatch> {
+    let prefs = current_prefs(state);
+    let items: Vec<Item> = scrapers::finish(items)
+        .into_iter()
+        .filter(|i| prefs.admits(i))
+        // An employer's board is everything it has open. Keep what this app is
+        // for: early-career in any field, technical at any level.
+        .filter(|i| !scrapers::reads_whole_boards(&i.source_platform) || rank::worth_storing(i))
+        .collect();
+    let alive = scrapers::alive_scopes(&items);
 
     // Lever and Ashby return the whole posting in the same response as the
     // listing. Those descriptions are harvested here rather than left on the
     // enrichment queue — several thousand requests for text already in hand —
     // and they go into `job_details`, not onto the row: `save_items`
     // overwrites `content_text` every refresh and would erase them.
-    let seeded: Vec<(String, models::JobDetail)> = items
-        .iter()
-        .filter_map(|item| {
-            let detail = models::JobDetail {
-                description: item.description.clone(),
-                requirements: item.requirements.clone(),
-                responsibilities: item.responsibilities.clone(),
-                perks: item.perks.clone(),
-                tagged_skills: item.tagged_skills.clone(),
-                closes_at: item.closes_at,
-                salary_min: item.salary_min,
-                salary_max: item.salary_max,
-                salary_currency: item.salary_currency.clone(),
-                salary_period: item.salary_period.clone(),
-                status: models::DetailStatus::Ok,
-            };
-            detail.has_text().then(|| (item.url.clone(), detail))
-        })
-        .collect();
+    let seeded = |chunk: &[Item]| -> Vec<(String, models::JobDetail)> {
+        chunk
+            .iter()
+            .filter_map(|item| {
+                let detail = models::JobDetail {
+                    description: item.description.clone(),
+                    requirements: item.requirements.clone(),
+                    responsibilities: item.responsibilities.clone(),
+                    perks: item.perks.clone(),
+                    tagged_skills: item.tagged_skills.clone(),
+                    closes_at: item.closes_at,
+                    salary_min: item.salary_min,
+                    salary_max: item.salary_max,
+                    salary_currency: item.salary_currency.clone(),
+                    salary_period: item.salary_period.clone(),
+                    status: models::DetailStatus::Ok,
+                };
+                detail.has_text().then(|| (item.url.clone(), detail))
+            })
+            .collect()
+    };
 
-    // Stamped before anything is written and handed to the sweep afterwards:
-    // "not seen by this scrape" is exactly "stamped earlier than this".
-    let run_start = Utc::now();
-    let alive = scrapers::alive_scopes(&items);
+    for chunk in items.chunks(WRITE_CHUNK) {
+        let details = seeded(chunk);
+        let mut conn = state.db.lock().unwrap();
+        db::save_items_ranked(&mut conn, chunk, run_start, scrapers::source_order())
+            .map_err(err)?;
+        if !details.is_empty() {
+            db::save_details(&mut conn, &details).map_err(err)?;
+        }
+    }
+    invalidate(state);
+    Ok(SavedBatch {
+        rows: items.len(),
+        alive,
+    })
+}
+
+/// The end of a run, once, whether it finished or was stopped: retention, the
+/// ceiling, the housekeeping that returns space to the disk.
+///
+/// `alive` is empty for a stopped run, so only what the calendar decides —
+/// a deadline long past, an event over — is removed and no posting is charged
+/// a miss for a source that never got to answer.
+fn finalize(
+    state: &AppState,
+    run_start: DateTime<Utc>,
+    alive: &std::collections::HashSet<db::Scope>,
+    complete: bool,
+) -> CmdResult<()> {
+    trim_to_ceiling(state)?;
+    if let Err(e) = learn_boards(state) {
+        log::warn!("could not update the board list: {e}");
+    }
+    // A re-scrape can change the text behind a URL we have already extracted
+    // skills for, so the memo has to go with it.
+    skills::clear_memo();
 
     let mut conn = state.db.lock().unwrap();
-    db::save_items_at(&mut conn, &items, run_start).map_err(err)?;
-    if !seeded.is_empty() {
-        db::save_details(&mut conn, &seeded).map_err(err)?;
-    }
     // Postings leave when they stop being offered, not when they get old: see
-    // `db::sweep`. This used to be a blanket 60 days on `timestamp`, which
-    // deleted the oldest postings still open and, for Devpost, a hackathon
-    // the day it was saved. Run even when this scrape returned no rows: what
-    // closes, ends or ages out does so by the date, not by what was fetched.
+    // `db::sweep`. Run even when this scrape returned no rows: what closes,
+    // ends or ages out does so by the date, not by what was fetched.
     let swept = db::sweep(
         &mut conn,
         Utc::now(),
         run_start,
-        &alive,
+        alive,
         scrapers::START_DATED,
         &db::Retention::default(),
     )
@@ -1034,10 +1342,151 @@ fn persist(
     // and it is deliberately the last thing after them rather than a step of
     // its own: the pages have to be free before there is anything to return.
     db::incremental_vacuum(&conn).map_err(err)?;
-    db::set_setting(&conn, KEY_LAST_REFRESH, &Utc::now().to_rfc3339()).map_err(err)?;
+    if complete {
+        db::set_setting(&conn, KEY_LAST_REFRESH, &Utc::now().to_rfc3339()).map_err(err)?;
+    }
     drop(conn);
     invalidate(state);
-    Ok(count)
+    Ok(())
+}
+
+/// Reads the learned boards and the health records out of `settings` and hands
+/// them to the scrapers.
+fn load_boards(state: &AppState) {
+    let learned: Vec<scrapers::boards::Found> =
+        json_setting(state, scrapers::boards::KEY_DISCOVERED);
+    let health: std::collections::HashMap<String, scrapers::boards::BoardHealth> =
+        json_setting(state, scrapers::boards::KEY_HEALTH);
+    scrapers::boards::set_learned(&learned);
+    scrapers::boards::set_skipped(&health, Utc::now());
+    // Whatever a run that never filed its answers left behind is not evidence.
+    scrapers::boards::discard_reports();
+}
+
+/// At the end of a run: file what each board reported, and read the boards
+/// out of every posting URL now in the cache. The next refresh fetches them.
+fn learn_boards(state: &AppState) -> CmdResult<()> {
+    use scrapers::boards::{self, BoardHealth, Found};
+    let now = Utc::now();
+    // Read under the lock, worked out without it: the URL pass is tens of
+    // thousands of strings and a reader must not wait behind it.
+    let (stored_health, stored_learned, urls) = {
+        let conn = state.db.lock().unwrap();
+        (
+            db::get_setting(&conn, boards::KEY_HEALTH).ok().flatten(),
+            db::get_setting(&conn, boards::KEY_DISCOVERED)
+                .ok()
+                .flatten(),
+            db::opportunity_urls(&conn).map_err(err)?,
+        )
+    };
+    let mut health: std::collections::HashMap<String, BoardHealth> = stored_health
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default();
+    let mut learned: Vec<Found> = stored_learned
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default();
+
+    boards::record_reports(&mut health, now);
+    let fresh = boards::discover(urls.iter().map(String::as_str), &learned);
+    if !fresh.is_empty() {
+        log::info!("learned {} new boards from the cache", fresh.len());
+    }
+    learned.extend(fresh);
+    learned.truncate(boards::MAX_DISCOVERED);
+    // A board nobody has tried in a month has no use for its record.
+    health.retain(|_, h| {
+        h.last_try
+            .is_some_and(|at| now - at < chrono::Duration::days(30))
+    });
+
+    {
+        let conn = state.db.lock().unwrap();
+        db::set_setting(
+            &conn,
+            boards::KEY_HEALTH,
+            &serde_json::to_string(&health).map_err(err)?,
+        )
+        .map_err(err)?;
+        db::set_setting(
+            &conn,
+            boards::KEY_DISCOVERED,
+            &serde_json::to_string(&learned).map_err(err)?,
+        )
+        .map_err(err)?;
+    }
+    boards::set_learned(&learned);
+    boards::set_skipped(&health, now);
+    Ok(())
+}
+
+/// Holds the opportunity count to [`OPPORTUNITY_CEILING`], dropping the rows
+/// the scrape alone says least about ([`rank::fit`]) rather than the oldest or
+/// whichever source happened to be written last. Starred postings are never
+/// dropped.
+fn trim_to_ceiling(state: &AppState) -> CmdResult<()> {
+    trim_when_over(state, OPPORTUNITY_CEILING)
+}
+
+/// While a scrape is running the store can hold far more than the ceiling — the
+/// ceiling is applied at the end, over the whole run — and measured against the
+/// real app it peaked near fifty thousand roles, with a hub payload to match.
+/// So a piece that takes the store past a tenth over the ceiling trims it back,
+/// by the same measure, rather than waiting for the end.
+const SCAN_SLACK: f64 = 1.1;
+
+fn trim_when_over(state: &AppState, limit: usize) -> CmdResult<()> {
+    let over = {
+        let conn = state.db.lock().unwrap();
+        db::opportunity_count(&conn).map_err(err)? > limit
+    };
+    if !over {
+        return Ok(());
+    }
+    let profile = current_profile(state, None);
+    // The read and the scoring are the long part; the lock is held for neither
+    // the scoring nor the delete's preparation, so readers are not queued behind
+    // a pass over fifty thousand rows.
+    let all = {
+        let conn = state.db.lock().unwrap();
+        db::load_items(&conn).map_err(err)?
+    };
+    let every: Vec<String> = all.iter().map(|i| i.url.clone()).collect();
+    let kept: std::collections::HashSet<String> =
+        rank::cap_opportunities(all, &profile, OPPORTUNITY_CEILING)
+            .into_iter()
+            .map(|i| i.url)
+            .collect();
+    let dropped: Vec<String> = every
+        .into_iter()
+        .filter(|url| !kept.contains(url))
+        .collect();
+    let mut conn = state.db.lock().unwrap();
+    let n = db::delete_unsaved(&mut conn, &dropped).map_err(err)?;
+    log::info!("ceiling: dropped {n} lowest-fit postings");
+    Ok(())
+}
+
+/// One scrape stored in a single call: the pieces and the end of the run
+/// together. What the tests exercise, and what the batch path does in steps.
+#[cfg(test)]
+fn persist(
+    state: &AppState,
+    items: Vec<Item>,
+    outcomes: Vec<scrapers::SourceOutcome>,
+) -> CmdResult<usize> {
+    let run_start = Utc::now();
+    let runs: Vec<db::SourceRun> = outcomes.iter().map(|o| run_of(o, run_start)).collect();
+    {
+        let mut conn = state.db.lock().unwrap();
+        db::record_runs(&mut conn, &runs).map_err(err)?;
+    }
+    if all_failed(&outcomes, items.len()) {
+        return Err("every source failed (offline?)".to_string());
+    }
+    let saved = persist_batch(state, items, run_start)?;
+    finalize(state, run_start, &saved.alive, true)?;
+    Ok(saved.rows)
 }
 
 // --- user actions on items ---
@@ -1890,6 +2339,7 @@ mod tests {
                 refreshing: AtomicBool::new(false),
                 generation: AtomicU64::new(0),
                 ranked: Mutex::new(None),
+                scan: ScanControl::default(),
             },
             path,
             keep,
@@ -1911,13 +2361,17 @@ mod tests {
     }
 
     fn posting(title: &str, company: &str) -> Item {
-        Item::new(
+        let mut item = Item::new(
             title,
             "Greenhouse",
             ItemType::Job,
             format!("https://x.test/{title}"),
         )
-        .with_company(company)
+        .with_company(company);
+        // Early-career, so the ingest filter has nothing to say about it: these
+        // tests are about what happens to a row once it is stored.
+        item.seniority = Some("Junior".into());
+        item
     }
 
     fn titles(state: &AppState) -> Vec<String> {
@@ -2070,6 +2524,153 @@ mod tests {
             ["acme-a", "other-b"],
             "Other's missing posting goes; Acme's silent board is not held against it"
         );
+    }
+
+    // --- a scrape that arrives in pieces ---
+
+    fn listed(source: &'static str, title: &str, url: &str) -> Item {
+        let mut item = Item::new(title, source, ItemType::Job, url).with_company("Acme");
+        item.seniority = Some("Junior".into());
+        item
+    }
+
+    fn age_everything(t: &TestState, days: i64, missed: i64) {
+        let conn = t.state.db.lock().unwrap();
+        conn.execute(
+            "UPDATE items SET last_seen_at = ?1, missed = ?2",
+            rusqlite::params![
+                (Utc::now() - chrono::Duration::days(days)).to_rfc3339(),
+                missed
+            ],
+        )
+        .unwrap();
+    }
+
+    /// The case that rules out sweeping after each source: Simplify owns a URL
+    /// the employer's board also lists. Simplify has dropped it and has two
+    /// misses banked, so a sweep run when only Simplify has reported would
+    /// delete it a moment before Greenhouse vouches for it.
+    #[test]
+    fn a_posting_two_sources_list_survives_whichever_finishes_first() {
+        for greenhouse_first in [false, true] {
+            let t = test_state();
+            persist(
+                &t.state,
+                vec![listed("Simplify", "role", "https://acme.test/1")],
+                vec![],
+            )
+            .unwrap();
+            age_everything(&t, 3, 2);
+
+            let run_start = Utc::now();
+            // Simplify answered with a different posting; Greenhouse still lists
+            // the old one.
+            let simplify = vec![listed("Simplify", "other", "https://acme.test/2")];
+            let board = vec![listed("Greenhouse", "role", "https://acme.test/1")];
+            let mut alive = std::collections::HashSet::new();
+            let batches = if greenhouse_first {
+                [board, simplify]
+            } else {
+                [simplify, board]
+            };
+            for batch in batches {
+                let saved = persist_batch(&t.state, batch, run_start).unwrap();
+                alive.extend(saved.alive);
+            }
+            finalize(&t.state, run_start, &alive, true).unwrap();
+
+            assert!(
+                titles(&t.state).contains(&"role".to_string()),
+                "greenhouse_first={greenhouse_first}: a posting a source still lists was swept"
+            );
+        }
+    }
+
+    #[test]
+    fn a_stopped_run_charges_nobody_a_miss() {
+        let t = test_state();
+        persist(
+            &t.state,
+            vec![posting("a", "Acme"), posting("b", "Acme")],
+            vec![outcome(
+                "Greenhouse",
+                Category::Opportunities,
+                2,
+                Health::Ok,
+            )],
+        )
+        .unwrap();
+        age_everything(&t, 3, 2);
+        t.state
+            .db
+            .lock()
+            .unwrap()
+            .execute("DELETE FROM settings WHERE key = ?1", [KEY_LAST_REFRESH])
+            .unwrap();
+
+        // The stop landed after Acme's board answered without `b`. A complete
+        // run would charge b its third miss; a stopped one carries no scopes.
+        let run_start = Utc::now();
+        persist_batch(&t.state, vec![posting("a", "Acme")], run_start).unwrap();
+        let none = std::collections::HashSet::new();
+        finalize(&t.state, run_start, &none, false).unwrap();
+
+        assert_eq!(titles(&t.state), ["a", "b"]);
+        let conn = t.state.db.lock().unwrap();
+        assert!(
+            db::get_setting(&conn, KEY_LAST_REFRESH).unwrap().is_none(),
+            "a stopped run is not a completed refresh"
+        );
+    }
+
+    #[test]
+    fn a_source_switched_off_mid_run_lands_no_more_rows() {
+        let t = test_state();
+        let run_start = Utc::now();
+        persist_batch(
+            &t.state,
+            vec![listed("Greenhouse", "before", "https://acme.test/before")],
+            run_start,
+        )
+        .unwrap();
+        {
+            let conn = t.state.db.lock().unwrap();
+            let off = ScrapePrefs {
+                disabled_sources: vec!["Greenhouse".into()],
+                ..ScrapePrefs::default()
+            };
+            db::set_setting(&conn, prefs::KEY, &serde_json::to_string(&off).unwrap()).unwrap();
+        }
+        persist_batch(
+            &t.state,
+            vec![listed("Greenhouse", "after", "https://acme.test/after")],
+            run_start,
+        )
+        .unwrap();
+        assert_eq!(titles(&t.state), ["before"]);
+    }
+
+    #[test]
+    fn a_stop_request_aborts_the_phase_in_flight_and_survives_the_gap_between_phases() {
+        use futures::future::{AbortHandle, Abortable};
+        let control = ScanControl::default();
+        control.begin();
+
+        // A stop that arrives first is not lost: the next phase starts aborted.
+        control.request_stop();
+        let (handle, registration) = AbortHandle::new_pair();
+        control.arm(handle);
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let ended = runtime.block_on(Abortable::new(
+            futures::future::pending::<()>(),
+            registration,
+        ));
+        assert!(ended.is_err());
+        assert!(control.stop_requested());
+
+        // And a new run forgets it.
+        control.begin();
+        assert!(!control.stop_requested());
     }
 
     // --- onboarding ---
@@ -2297,7 +2898,7 @@ mod tests {
             .as_deref()
             .is_some_and(|n| n.contains("dormant")));
 
-        let view = ranked_view(&t.state, None, true).unwrap();
+        let view = ranked_view(&t.state, None, Freshness::Exact).unwrap();
         let kept = |kind: ItemType| view.items.iter().filter(|i| i.item_type == kind).count();
         let devpost: Vec<&Item> = view
             .items

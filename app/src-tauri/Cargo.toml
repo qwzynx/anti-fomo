@@ -51,6 +51,11 @@ required-features = ["dev-tools"]
 # Coverage check for description enrichment: how many cached postings a handler
 # can serve, and what enrichment does to skill extraction.
 [[bin]]
+name = "board_check"
+path = "src/bin/board_check.rs"
+required-features = ["dev-tools"]
+
+[[bin]]
 name = "detail_check"
 path = "src/bin/detail_check.rs"
 required-features = ["dev-tools"]

@@ -61,6 +61,7 @@ export {
   SlidersHorizontal,
   Smartphone,
   Sparkles,
+  Square,
   Sun,
   Tag,
   Target,

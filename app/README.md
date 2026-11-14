@@ -1,7 +1,7 @@
 # Anti-FOMO
 
-Internships, tech news and events from seventeen public sources, scraped on your
-own device and ranked into one feed. Runs on Linux, Windows and Android from a
+Internships, jobs, tech news and events from some thirty public sources and
+thousands of employer boards, scraped on your own device and ranked into one feed. Runs on Linux, Windows and Android from a
 single Rust + Svelte codebase.
 
 There is no server, no account and no hosting bill. The scraping, ranking and
@@ -90,15 +90,30 @@ On launch, the sources the reader asked for that are *due* run concurrently via
 window — news 30 minutes, roles 6 hours, events 12 hours — or 15 minutes after a
 failure; the Refresh button ignores the window but never the reader's choices.
 A failing source logs and yields nothing rather than taking the refresh down
-with it, and is reported per source as it finishes (`feed:progress`). Results are deduplicated by
-URL, classified by keyword, tagged with location facets, ranked, and written to
-SQLite at the platform app-data directory. The UI reads only from that
-database, which is why the feed works offline.
+with it, and is reported per source as it finishes (`feed:progress`).
 
-A full refresh lands roughly 19,000 items, about 18,700 of them roles (measured
-2026-11-12, all sources on). Per-source limits are set against what each
-endpoint actually serves rather than guessed, and the sources that page (Job
-Bank, Devpost) are walked until they run dry.
+**Rows are stored as they arrive, so the feed can be browsed while a scrape is
+still running.** Every source hands over its rows in pieces (an ATS family does
+so every forty boards) and each piece is deduplicated by URL, classified by
+keyword, tagged with location facets and upserted at once into SQLite at the
+platform app-data directory. The UI reloads at most every three seconds while a
+scrape is writing, and holds an update behind a "Show new results" pill if the
+reader has scrolled down a list, so rows never move under them. The UI reads
+only from that database, which is why the feed works offline.
+
+**A scrape can be stopped** (`stop_refresh`, the Stop button in the top bar, the
+bar under it, Settings and the setup form). Stopping drops the in-flight
+requests and keeps everything already written; the sources that had not
+finished have no ledger row, so they are still due and the next Start runs
+exactly those. A stopped run charges no posting a miss and does not count as a
+completed refresh.
+
+A full refresh reads about 84,000 roles from some 2,100 employer boards and
+keeps the ones the app is for — early-career roles in any field and technical
+roles at any level — up to a ceiling of 40,000 (cold rank 1.3 s, hub payload
+19.6 MB, measured 2026-11-13 with `perf_check`). Per-source limits are set
+against what each endpoint actually serves rather than guessed, and the sources
+that page (Job Bank, Devpost) are walked until they run dry.
 
 **What is kept is decided by whether it is still on offer, not by its age.** A
 role open for ninety days is the one still hiring. A posting leaves when its
@@ -126,10 +141,22 @@ employers on the tier list first, software roles first, then by fit.
 
 | Source | Technique |
 | --- | --- |
-| Pitt CSC Repo | HTML tables in the repo README |
-| Simplify | HTML tables in the repo README |
-| New Grad Positions | HTML tables in the repo README (full-time, not interns) |
-| Job Bank Canada | HTML search results from the federal job board |
+| Pitt CSC Repo | `listings.json` from the repo (dormant: reported, not failed) |
+| Simplify | `listings.json` from the repo |
+| New Grad Positions | `listings.json` from the repo (full-time, not interns) |
+| Job Bank Canada | six searches of the federal job board's HTML results |
+| Himalayas | key-less search API: intern, co-op, student, junior and new grad queries for Canada and the US |
+| HN Who's Hiring | the latest monthly thread, read through Algolia |
+| Greenhouse, Lever, Ashby, SmartRecruiters, Workable, Recruitee, Breezy | each employer's own public board API, one scraper per ATS family |
+| Workday | each tenant's `cxs` search endpoint |
+
+Employer boards come from three places (`scrapers/boards.rs`): the curated
+`EMPLOYERS` table (hand-checked, with prestige tiers), a bundled list of about
+two thousand boards that were probed live (`boards.json`), and boards learned
+from the posting URLs already in the cache. A board that is gone (404/410) or empty
+on three separate days is skipped for a week; transient errors never count. `board_check` re-probes all of
+them. Lever's `commitment`, Ashby's `employmentType`, SmartRecruiters'
+`experienceLevel` and Recruitee's type codes mark internships directly.
 
 **Events**
 
@@ -291,7 +318,8 @@ for the one posting the pane is showing.
 | `get_item_detail(url)` | one posting in full — description, sections, score breakdown |
 | `get_saved()` | starred items, newest star first |
 | `feed_status()` | last refresh, counts, staleness, per-source health |
-| `refresh(force)` | items written, or `null` if nothing ran (not yet onboarded, nothing due, or one already running) |
+| `refresh(force)` | a `RefreshOutcome` (`skipped` / `ran` / `stopped`, sources done, rows written), resolving when the whole run, descriptions included, has ended. Events: `feed:refreshing`, `feed:phase`, `feed:plan`, `feed:progress`, `feed:updated` |
+| `stop_refresh()` | stops the running refresh; what was written stays. False when nothing was running |
 | `get_onboarding_state()` | `"needed"` (first launch), `"offered"` (existing install), or `"done"` |
 | `complete_onboarding(prefs, interests, homeRegion, seniority)` | saves the setup form's answers; the caller then starts the scrape |
 | `skip_onboarding()` | dismisses the form for an existing install |
@@ -323,7 +351,8 @@ for the one posting the pane is showing.
 ```bash
 npm run check                        # svelte-check
 cargo test --lib                     # unit tests (location, ranking, résumé layout, db)
-cargo run --features dev-tools --bin scraper_check        # live per-source item counts
+cargo run --features dev-tools --bin scraper_check        # live per-source item counts (SOURCE=Workable,Himalayas for some)
+cargo run --features dev-tools --bin board_check          # probes every employer board (ATS=lever,ashby for some)
 cargo run --features dev-tools --bin resume_check         # résumé PDFs, incl. text extraction
 cargo run --release --features dev-tools --bin perf_check -- /path/to/copy.db
 ```

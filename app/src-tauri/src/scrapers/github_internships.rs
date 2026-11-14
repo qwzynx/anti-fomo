@@ -77,14 +77,14 @@ pub struct GithubInternships {
 
 pub const PITT_CSC: GithubInternships = GithubInternships {
     name: "Pitt CSC Repo",
-    url: "https://raw.githubusercontent.com/pittcsc/Summer2026-Internships/dev/.github/scripts/listings.json",
+    url: "https://raw.githubusercontent.com/pittcsc/Summer2027-Internships/dev/.github/scripts/listings.json",
     title_style: TitleStyle::CompanyOnly,
     item_type: ItemType::Internship,
 };
 
 pub const SIMPLIFY: GithubInternships = GithubInternships {
     name: "Simplify",
-    url: "https://raw.githubusercontent.com/SimplifyJobs/Summer2026-Internships/dev/.github/scripts/listings.json",
+    url: "https://raw.githubusercontent.com/SimplifyJobs/Summer2027-Internships/dev/.github/scripts/listings.json",
     title_style: TitleStyle::RoleAtCompany,
     item_type: ItemType::Internship,
 };

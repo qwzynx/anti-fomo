@@ -60,16 +60,30 @@ impl Scraper for GreenhouseBoards {
     }
 
     async fn fetch(&self, client: &reqwest::Client) -> Result<Vec<Item>> {
-        Ok(fan_out(
+        crate::scrapers::collect_batches(self, client).await
+    }
+
+    async fn fetch_batches(
+        &self,
+        client: &reqwest::Client,
+        sink: crate::scrapers::Sink<'_>,
+    ) -> Result<()> {
+        fan_out(
             client,
             |b| matches!(b, Board::Greenhouse(_)),
             |e, c| Box::pin(fetch_board(e, c)),
+            super::CONCURRENCY,
+            sink,
         )
-        .await)
+        .await;
+        Ok(())
     }
 }
 
-async fn fetch_board(employer: &'static Employer, client: reqwest::Client) -> Result<Vec<Item>> {
+pub async fn fetch_board(
+    employer: &'static Employer,
+    client: reqwest::Client,
+) -> Result<Vec<Item>> {
     let Board::Greenhouse(slug) = employer.board else {
         return Ok(Vec::new());
     };

@@ -17,12 +17,15 @@ use crate::models::{company_from_title, Item};
 use crate::rank::{classify_item, classify_seniority};
 
 pub mod ats;
+pub mod boards;
 pub mod daily_dev;
 pub mod details;
 pub mod devpost;
 pub mod employers;
 pub mod github_internships;
 pub mod hacker_news;
+pub mod himalayas;
+pub mod hn_hiring;
 pub mod hn_top_links;
 pub mod job_bank;
 pub mod jsonld;
@@ -35,10 +38,38 @@ pub mod tldr;
 /// doesn't look like a browser.
 pub const USER_AGENT: &str = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
 
+/// Where a scraper hands over rows as it gets them.
+pub type Sink<'a> = &'a mut (dyn FnMut(Vec<Item>) + Send);
+
 #[async_trait]
 pub trait Scraper: Send + Sync {
     fn source_name(&self) -> &'static str;
     async fn fetch(&self, client: &reqwest::Client) -> Result<Vec<Item>>;
+
+    /// [`fetch`](Scraper::fetch), but delivering the rows in pieces as they
+    /// arrive. A source that is one request has one piece and need not
+    /// override this; one that is a hundred requests (an ATS family, a paged
+    /// listing) should, so the reader can browse the first boards while the
+    /// last are still being fetched.
+    ///
+    /// **A piece is a promise.** Whatever has been handed to `sink` is stored,
+    /// so a source must not stream rows it would then fail to stand behind:
+    /// an `Err` after some pieces still stores them, but the run is recorded
+    /// as failed and none of the source's scopes are treated as seen.
+    async fn fetch_batches(&self, client: &reqwest::Client, sink: Sink<'_>) -> Result<()> {
+        sink(self.fetch(client).await?);
+        Ok(())
+    }
+}
+
+/// Everything a streaming scraper produces, gathered up: what `fetch` is for a
+/// source whose real implementation is `fetch_batches`.
+pub async fn collect_batches(scraper: &dyn Scraper, client: &reqwest::Client) -> Result<Vec<Item>> {
+    let mut all = Vec::new();
+    scraper
+        .fetch_batches(client, &mut |batch| all.extend(batch))
+        .await?;
+    Ok(all)
 }
 
 pub fn build_client() -> Result<reqwest::Client> {
@@ -108,6 +139,8 @@ pub fn registry() -> Vec<(Category, Box<dyn Scraper>)> {
         (Opportunities, Box::new(github_internships::SIMPLIFY)),
         (Opportunities, Box::new(github_internships::NEW_GRAD)),
         (Opportunities, Box::new(job_bank::JOB_BANK)),
+        (Opportunities, Box::new(himalayas::Himalayas)),
+        (Opportunities, Box::new(hn_hiring::HnHiring)),
         (Opportunities, Box::new(ats::workday::WorkdayBoards)),
         (Opportunities, Box::new(ats::greenhouse::GreenhouseBoards)),
         (Opportunities, Box::new(ats::lever::LeverBoards)),
@@ -116,6 +149,9 @@ pub fn registry() -> Vec<(Category, Box<dyn Scraper>)> {
             Opportunities,
             Box::new(ats::smartrecruiters::SmartRecruitersBoards),
         ),
+        (Opportunities, Box::new(ats::workable::WorkableBoards)),
+        (Opportunities, Box::new(ats::recruitee::RecruiteeBoards)),
+        (Opportunities, Box::new(ats::breezy::BreezyBoards)),
         // Events
         (Events, Box::new(luma::Luma)),
         (Events, Box::new(devpost::Devpost)),
@@ -195,10 +231,22 @@ pub enum Liveness {
 /// item it produces.
 pub fn liveness(source: &str) -> Liveness {
     match source {
-        "Greenhouse" | "Lever" | "Ashby" | "SmartRecruiters" => Liveness::Boards,
+        "Greenhouse" | "Lever" | "Ashby" | "SmartRecruiters" | "Workable" | "Recruitee"
+        | "Breezy" => Liveness::Boards,
         "Pitt CSC Repo" | "Simplify" | "New Grad Positions" | "Devpost" => Liveness::Listing,
         _ => Liveness::Sampled,
     }
+}
+
+/// Sources that read whole employer boards — everything an employer has open,
+/// most of it nothing this app is for. These are the rows
+/// [`rank::worth_storing`](crate::rank::worth_storing) judges; a list that was
+/// curated for interns, or a search for developers, has already chosen.
+pub fn reads_whole_boards(source: &str) -> bool {
+    matches!(
+        source,
+        "Greenhouse" | "Lever" | "Ashby" | "SmartRecruiters" | "Workable" | "Recruitee" | "Breezy"
+    )
 }
 
 /// Sources whose `timestamp` is the day the event *starts*, so it can stand in
@@ -240,88 +288,172 @@ pub async fn fetch_all() -> Vec<Item> {
     fetch_selected(&names, |_, _, _| {}).await.0
 }
 
-/// Runs the named sources concurrently and reports each as it finishes.
+/// What a running scrape sends to whoever is listening.
+pub enum Msg {
+    /// Rows from a source that is still running. Not yet deduped or classified:
+    /// run them through [`finish`].
+    Batch {
+        source: &'static str,
+        items: Vec<Item>,
+    },
+    /// The source has finished, one way or another. After this it sends nothing.
+    Done(SourceOutcome),
+}
+
+/// The registry order of every source, for the write-time ownership rule.
+pub fn source_order() -> &'static [&'static str] {
+    static ORDER: std::sync::OnceLock<Vec<&'static str>> = std::sync::OnceLock::new();
+    ORDER.get_or_init(|| sources().into_iter().map(|(_, name)| name).collect())
+}
+
+/// Runs the named sources concurrently and sends each one's rows as they
+/// arrive, then a [`Msg::Done`].
 ///
-/// `on_done` is told the outcome and how many of the selected sources have now
-/// finished, which is what lets a first scrape show a list filling in rather
-/// than a spinner for the half minute the slowest board takes. The results are
-/// put back into registry order before they are merged, because completion
-/// order is arbitrary and dedupe keeps the *first* copy of a URL: it has to
-/// keep the same one whichever source happened to answer first.
+/// This is the producer half of a scrape. It owns every in-flight request, so
+/// **dropping it is how a scrape is stopped**: the futures go, and reqwest
+/// abandons the connections with them. It never writes anything itself, which
+/// is what makes that safe — a stop cannot land in the middle of a write.
 ///
-/// A source that fails yields nothing and is reported as failed; it never
-/// takes the others down.
-pub async fn fetch_selected(
-    names: &[&str],
-    mut on_done: impl FnMut(&SourceOutcome, usize, usize),
-) -> (Vec<Item>, Vec<SourceOutcome>) {
-    let selected: Vec<(usize, Category, Box<dyn Scraper>)> = registry()
+/// A source that fails sends a failed `Done` and nothing else; it never takes
+/// the others down. The channel closes when this returns.
+pub async fn fetch_stream(names: &[&str], tx: futures::channel::mpsc::UnboundedSender<Msg>) {
+    let selected: Vec<(Category, Box<dyn Scraper>)> = registry()
         .into_iter()
-        .enumerate()
-        .filter(|(_, (_, scraper))| names.contains(&scraper.source_name()))
-        .map(|(at, (category, scraper))| (at, category, scraper))
+        .filter(|(_, scraper)| names.contains(&scraper.source_name()))
         .collect();
-    let total = selected.len();
 
     let client = match build_client() {
         Ok(client) => client,
         Err(e) => {
             log::error!("could not build HTTP client: {e}");
-            let outcomes = selected
-                .iter()
-                .map(|(_, category, scraper)| SourceOutcome {
+            for (category, scraper) in &selected {
+                let _ = tx.unbounded_send(Msg::Done(SourceOutcome {
                     source: scraper.source_name(),
                     category: *category,
                     count: 0,
                     health: Health::Failed(format!("could not build HTTP client: {e}")),
-                })
-                .collect();
-            return (Vec::new(), outcomes);
+                }));
+            }
+            return;
         }
     };
 
     let mut pending: FuturesUnordered<_> = selected
         .into_iter()
-        .map(|(at, category, scraper)| {
+        .map(|(category, scraper)| {
             let client = client.clone();
+            let tx = tx.clone();
             async move {
                 let source = scraper.source_name();
-                (at, category, source, scraper.fetch(&client).await)
+                let mut count = 0usize;
+                let mut result;
+                let mut attempt = 0;
+                loop {
+                    result = {
+                        let tx = tx.clone();
+                        let mut sink = |items: Vec<Item>| {
+                            count += items.len();
+                            let _ = tx.unbounded_send(Msg::Batch { source, items });
+                        };
+                        scraper.fetch_batches(&client, &mut sink).await
+                    };
+                    // A source that failed before it produced anything gets one
+                    // more try after a pause: with dozens of requests in flight
+                    // a connection can fail for reasons that are gone a moment
+                    // later, and the next scheduled attempt is a quarter of an
+                    // hour away. A source that already sent rows is not retried —
+                    // those rows would arrive twice.
+                    let retryable =
+                        matches!(&result, Err(e) if e.downcast_ref::<Dormant>().is_none());
+                    if retryable && count == 0 && attempt == 0 {
+                        attempt += 1;
+                        log::info!("{source}: failed, trying once more");
+                        tokio::time::sleep(Duration::from_secs(3)).await;
+                        continue;
+                    }
+                    break;
+                }
+                let health = match result {
+                    Ok(()) => {
+                        log::info!("{source}: {count} items");
+                        Health::Ok
+                    }
+                    Err(e) => match e.downcast_ref::<Dormant>() {
+                        Some(note) => {
+                            log::warn!("{source}: {note}");
+                            Health::Dormant(note.0.clone())
+                        }
+                        None => {
+                            log::error!("Error scraping {source}: {e}");
+                            Health::Failed(e.to_string())
+                        }
+                    },
+                };
+                let _ = tx.unbounded_send(Msg::Done(SourceOutcome {
+                    source,
+                    category,
+                    count,
+                    health,
+                }));
             }
         })
         .collect();
+    drop(tx);
 
-    let mut results: Vec<(usize, Vec<Item>)> = Vec::with_capacity(total);
-    let mut outcomes: Vec<SourceOutcome> = Vec::with_capacity(total);
-    while let Some((at, category, source, result)) = pending.next().await {
-        let (items, health) = match result {
-            Ok(items) => {
-                log::info!("{source}: {} items", items.len());
-                (items, Health::Ok)
+    while pending.next().await.is_some() {}
+}
+
+/// Runs the named sources concurrently and reports each as it finishes.
+///
+/// The collecting form of [`fetch_stream`], for the tools and tests that want
+/// one deduped list. `on_done` is told the outcome and how many of the
+/// selected sources have now finished. The rows are put back into registry
+/// order before they are merged, because completion order is arbitrary and
+/// dedupe keeps the *first* copy of a URL: it has to keep the same one
+/// whichever source happened to answer first.
+pub async fn fetch_selected(
+    names: &[&str],
+    mut on_done: impl FnMut(&SourceOutcome, usize, usize),
+) -> (Vec<Item>, Vec<SourceOutcome>) {
+    let order = source_order();
+    let at = |source: &str| {
+        order
+            .iter()
+            .position(|n| *n == source)
+            .unwrap_or(usize::MAX)
+    };
+    let total = sources()
+        .iter()
+        .filter(|(_, name)| names.contains(name))
+        .count();
+
+    let (tx, mut rx) = futures::channel::mpsc::unbounded();
+    let consume = async {
+        let mut results: Vec<(usize, Vec<Item>)> = Vec::new();
+        let mut outcomes: Vec<SourceOutcome> = Vec::new();
+        while let Some(msg) = rx.next().await {
+            match msg {
+                Msg::Batch { source, items } => results.push((at(source), items)),
+                Msg::Done(outcome) => {
+                    on_done(&outcome, outcomes.len() + 1, total);
+                    outcomes.push(outcome);
+                }
             }
-            Err(e) => match e.downcast_ref::<Dormant>() {
-                Some(note) => {
-                    log::warn!("{source}: {note}");
-                    (Vec::new(), Health::Dormant(note.0.clone()))
-                }
-                None => {
-                    log::error!("Error scraping {source}: {e}");
-                    (Vec::new(), Health::Failed(e.to_string()))
-                }
-            },
-        };
-        let outcome = SourceOutcome {
-            source,
-            category,
-            count: items.len(),
-            health,
-        };
-        on_done(&outcome, outcomes.len() + 1, total);
-        outcomes.push(outcome);
-        results.push((at, items));
-    }
+        }
+        (results, outcomes)
+    };
+    let (_, (mut results, outcomes)) = futures::join!(fetch_stream(names, tx), consume);
 
-    results.sort_by_key(|(at, _)| *at);
+    // A source that failed after streaming some rows has its rows dropped here,
+    // as it always did: the collecting form promises a failed source yields
+    // nothing.
+    let failed: HashSet<usize> = outcomes
+        .iter()
+        .filter(|o| matches!(o.health, Health::Failed(_)))
+        .map(|o| at(o.source))
+        .collect();
+    results.retain(|(source_at, _)| !failed.contains(source_at));
+    results.sort_by_key(|(source_at, _)| *source_at);
     let merged = finish(results.into_iter().flat_map(|(_, items)| items));
     (merged, outcomes)
 }
@@ -333,7 +465,7 @@ pub async fn fetch_selected(
 /// better informed one: the GitHub lists know nothing of a deadline, a pay
 /// range or a description, and the employer's board often does. So the copy
 /// that is dropped is not discarded, it is read for what the kept one lacks.
-fn finish(items: impl IntoIterator<Item = Item>) -> Vec<Item> {
+pub fn finish(items: impl IntoIterator<Item = Item>) -> Vec<Item> {
     let mut index: HashMap<String, usize> = HashMap::new();
     let mut deduped: Vec<Item> = Vec::new();
 
@@ -456,6 +588,43 @@ mod tests {
         Item::new("Engineer", source, ItemType::Job, url).with_company(company)
     }
 
+    /// The mechanism a Stop relies on: aborting the producer abandons whatever
+    /// it was still waiting for, closes the channel behind it, and leaves every
+    /// message it had already sent for the consumer to drain.
+    #[test]
+    fn stopping_the_producer_keeps_what_it_sent_and_ends_the_stream() {
+        use futures::future::{AbortHandle, Abortable};
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let (tx, mut rx) = futures::channel::mpsc::unbounded::<Msg>();
+        let (handle, registration) = AbortHandle::new_pair();
+
+        let producer = Abortable::new(
+            async move {
+                let _ = tx.unbounded_send(Msg::Batch {
+                    source: "Greenhouse",
+                    items: vec![posting("Greenhouse", "Acme", "https://acme.test/1")],
+                });
+                // A board still waiting on the network.
+                futures::future::pending::<()>().await;
+            },
+            registration,
+        );
+        let consumer = async {
+            let mut seen = 0;
+            while let Some(msg) = rx.next().await {
+                if let Msg::Batch { items, .. } = msg {
+                    seen += items.len();
+                    // The reader presses Stop once something has arrived.
+                    handle.abort();
+                }
+            }
+            seen
+        };
+        let (aborted, seen) = runtime.block_on(async { futures::join!(producer, consumer) });
+        assert!(aborted.is_err(), "the producer was cut short");
+        assert_eq!(seen, 1, "what arrived before the stop is kept");
+    }
+
     #[test]
     fn a_dropped_duplicate_still_lends_its_deadline_and_pay() {
         let closes = Utc::now() + Days::days(5);
@@ -559,6 +728,9 @@ mod tests {
             "Lever",
             "Ashby",
             "SmartRecruiters",
+            "Workable",
+            "Recruitee",
+            "Breezy",
             "Pitt CSC Repo",
             "Simplify",
             "New Grad Positions",
@@ -569,6 +741,14 @@ mod tests {
                 "{name} is not a registered source"
             );
             assert_ne!(liveness(name), Liveness::Sampled);
+        }
+        // Searches and samples: absence from one proves nothing.
+        for name in ["Himalayas", "HN Who's Hiring", "Job Bank Canada", "Workday"] {
+            assert!(
+                registered.contains(name),
+                "{name} is not a registered source"
+            );
+            assert_eq!(liveness(name), Liveness::Sampled, "{name}");
         }
         for name in START_DATED {
             assert!(

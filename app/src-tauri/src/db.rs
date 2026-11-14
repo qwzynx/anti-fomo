@@ -455,10 +455,49 @@ pub fn save_items_at(
     items: &[Item],
     seen_at: DateTime<Utc>,
 ) -> Result<usize> {
+    save_items_ranked(conn, items, seen_at, &[])
+}
+
+/// SQL that turns a source name into its place in `order`; anything not named
+/// sorts last. With an empty `order` every source ties.
+fn source_rank_sql(column: &str, order: &[&str]) -> String {
+    if order.is_empty() {
+        return "0".to_string();
+    }
+    let arms: String = order
+        .iter()
+        .enumerate()
+        .map(|(at, name)| format!(" WHEN '{}' THEN {at}", name.replace('\'', "''")))
+        .collect();
+    format!("CASE {column}{arms} ELSE 9999 END")
+}
+
+/// [`save_items_at`] for a scrape that arrives in pieces.
+///
+/// One URL can be offered by several sources, and which source *owns* the row
+/// (its title, text and date) used to be settled before anything was stored:
+/// `finish` kept the registry-first copy. When each source is written as it
+/// finishes, the copies arrive in whatever order the network allows, so the
+/// rule has to live in the write. `order` is the registry order; a row is
+/// overwritten when it was last seen by an earlier run, or when the incoming
+/// source ranks at or before the one that owns it. Otherwise the incoming copy
+/// only fills gaps and counts as a sighting. The same two batches therefore
+/// leave the same row in either order.
+pub fn save_items_ranked(
+    conn: &mut Connection,
+    items: &[Item],
+    seen_at: DateTime<Utc>,
+    order: &[&str],
+) -> Result<usize> {
     let seen_at = seen_at.to_rfc3339();
+    let own = format!(
+        "(items.last_seen_at < excluded.last_seen_at OR {} <= {})",
+        source_rank_sql("excluded.source_platform", order),
+        source_rank_sql("items.source_platform", order),
+    );
     let tx = conn.transaction()?;
     {
-        let mut stmt = tx.prepare(
+        let mut stmt = tx.prepare(&format!(
             r#"
             INSERT INTO items
                 (title, source_platform, item_type, url, content_text,
@@ -468,33 +507,34 @@ pub fn save_items_at(
             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
                     ?15, ?16, ?17, ?18, ?19, 0)
             ON CONFLICT (url) DO UPDATE SET
-                title           = excluded.title,
-                source_platform = excluded.source_platform,
-                item_type       = excluded.item_type,
-                content_text    = excluded.content_text,
-                timestamp       = excluded.timestamp,
-                discipline      = excluded.discipline,
-                relevance_score = excluded.relevance_score,
-                location        = excluded.location,
-                location_tags   = excluded.location_tags,
+                title           = CASE WHEN {own} THEN excluded.title ELSE items.title END,
+                source_platform = CASE WHEN {own} THEN excluded.source_platform ELSE items.source_platform END,
+                item_type       = CASE WHEN {own} THEN excluded.item_type ELSE items.item_type END,
+                content_text    = CASE WHEN {own} THEN excluded.content_text ELSE items.content_text END,
+                timestamp       = CASE WHEN {own} THEN excluded.timestamp ELSE items.timestamp END,
+                discipline      = CASE WHEN {own} THEN excluded.discipline ELSE items.discipline END,
+                relevance_score = CASE WHEN {own} THEN excluded.relevance_score ELSE items.relevance_score END,
+                location        = CASE WHEN {own} THEN excluded.location ELSE items.location END,
+                location_tags   = CASE WHEN {own} THEN excluded.location_tags ELSE items.location_tags END,
                 -- Only ever gained, never cleared: one source knowing the id
-                -- and another not should not lose it on the second write.
-                simplify_id     = COALESCE(excluded.simplify_id, items.simplify_id),
+                -- and another not should not lose it on the second write. The
+                -- owner's value wins when both have one.
+                simplify_id     = CASE WHEN {own} THEN COALESCE(excluded.simplify_id, items.simplify_id) ELSE COALESCE(items.simplify_id, excluded.simplify_id) END,
                 -- Same rule, same reason: two sources can carry the same
                 -- posting and only one of them publish a deadline or a pay
-                -- range. Whichever refresh writes second must not erase what
-                -- the first one learned.
-                company         = COALESCE(excluded.company, items.company),
-                closes_at       = COALESCE(excluded.closes_at, items.closes_at),
-                salary_min      = COALESCE(excluded.salary_min, items.salary_min),
-                salary_max      = COALESCE(excluded.salary_max, items.salary_max),
-                salary_currency = COALESCE(excluded.salary_currency, items.salary_currency),
-                salary_period   = COALESCE(excluded.salary_period, items.salary_period),
-                seniority       = COALESCE(excluded.seniority, items.seniority),
+                -- range. Whichever write comes second must not erase what the
+                -- first one learned.
+                company         = CASE WHEN {own} THEN COALESCE(excluded.company, items.company) ELSE COALESCE(items.company, excluded.company) END,
+                closes_at       = CASE WHEN {own} THEN COALESCE(excluded.closes_at, items.closes_at) ELSE COALESCE(items.closes_at, excluded.closes_at) END,
+                salary_min      = CASE WHEN {own} THEN COALESCE(excluded.salary_min, items.salary_min) ELSE COALESCE(items.salary_min, excluded.salary_min) END,
+                salary_max      = CASE WHEN {own} THEN COALESCE(excluded.salary_max, items.salary_max) ELSE COALESCE(items.salary_max, excluded.salary_max) END,
+                salary_currency = CASE WHEN {own} THEN COALESCE(excluded.salary_currency, items.salary_currency) ELSE COALESCE(items.salary_currency, excluded.salary_currency) END,
+                salary_period   = CASE WHEN {own} THEN COALESCE(excluded.salary_period, items.salary_period) ELSE COALESCE(items.salary_period, excluded.salary_period) END,
+                seniority       = CASE WHEN {own} THEN COALESCE(excluded.seniority, items.seniority) ELSE COALESCE(items.seniority, excluded.seniority) END,
                 last_seen_at    = excluded.last_seen_at,
                 missed          = 0
             "#,
-        )?;
+        ))?;
 
         for item in items {
             stmt.execute(params![
@@ -522,6 +562,46 @@ pub fn save_items_at(
     }
     tx.commit()?;
     Ok(items.len())
+}
+
+/// Opportunities in the cache, for the ceiling check.
+pub fn opportunity_count(conn: &Connection) -> Result<usize> {
+    let n: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM items WHERE item_type IN ('Internship', 'Job')",
+        [],
+        |row| row.get(0),
+    )?;
+    Ok(n as usize)
+}
+
+/// Every opportunity's URL, for reading the employer boards out of them.
+pub fn opportunity_urls(conn: &Connection) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT url FROM items WHERE item_type IN ('Internship', 'Job')
+           AND (url LIKE '%greenhouse.io/%' OR url LIKE '%lever.co/%'
+             OR url LIKE '%ashbyhq.com/%' OR url LIKE '%smartrecruiters.com/%'
+             OR url LIKE '%workable.com/%')",
+    )?;
+    let rows = stmt.query_map([], |row| row.get(0))?;
+    Ok(rows.flatten().collect())
+}
+
+/// Deletes the given rows except any the reader has starred. Returns how many
+/// went.
+pub fn delete_unsaved(conn: &mut Connection, urls: &[String]) -> Result<usize> {
+    let tx = conn.transaction()?;
+    let mut gone = 0;
+    {
+        let mut stmt = tx.prepare(
+            "DELETE FROM items WHERE url = ?1
+               AND url NOT IN (SELECT url FROM item_state WHERE saved_at IS NOT NULL)",
+        )?;
+        for url in urls {
+            gone += stmt.execute([url])?;
+        }
+    }
+    tx.commit()?;
+    Ok(gone)
 }
 
 pub fn load_items(conn: &Connection) -> Result<Vec<Item>> {
@@ -2338,6 +2418,64 @@ mod tests {
                 let _ = std::fs::remove_file(format!("{}{suffix}", self.0.display()));
             }
         }
+    }
+
+    // --- ownership of a posting two sources both list ---
+
+    fn dual(source: &str, title: &str) -> Item {
+        Item::new(title, source, ItemType::Job, "https://acme.test/dual").with_company("Acme")
+    }
+
+    fn owner(conn: &Connection) -> (String, String) {
+        let item = load_items(conn).unwrap().remove(0);
+        (item.source_platform, item.title)
+    }
+
+    #[test]
+    fn the_owner_of_a_shared_posting_does_not_depend_on_arrival_order() {
+        let order = ["Simplify", "Greenhouse"];
+        let run = Utc::now();
+        for batches in [
+            [("Simplify", "from list"), ("Greenhouse", "from board")],
+            [("Greenhouse", "from board"), ("Simplify", "from list")],
+        ] {
+            let mut conn = mem();
+            for (source, title) in batches {
+                save_items_ranked(&mut conn, &[dual(source, title)], run, &order).unwrap();
+            }
+            assert_eq!(owner(&conn), ("Simplify".into(), "from list".into()));
+        }
+    }
+
+    #[test]
+    fn a_later_copy_still_lends_the_deadline_it_alone_knows() {
+        let order = ["Simplify", "Greenhouse"];
+        let run = Utc::now();
+        let closes = run + chrono::Duration::days(4);
+        let mut conn = mem();
+        save_items_ranked(&mut conn, &[dual("Simplify", "from list")], run, &order).unwrap();
+        let board = dual("Greenhouse", "from board").with_closes_at(Some(closes));
+        save_items_ranked(&mut conn, &[board], run, &order).unwrap();
+        let kept = load_items(&conn).unwrap().remove(0);
+        assert_eq!(kept.source_platform, "Simplify");
+        assert!(kept.closes_at.is_some());
+    }
+
+    #[test]
+    fn a_new_run_hands_ownership_to_whoever_still_lists_it() {
+        let order = ["Simplify", "Greenhouse"];
+        let first = Utc::now() - chrono::Duration::days(2);
+        let mut conn = mem();
+        save_items_ranked(&mut conn, &[dual("Simplify", "from list")], first, &order).unwrap();
+        // Simplify dropped it; the employer's board still has it.
+        save_items_ranked(
+            &mut conn,
+            &[dual("Greenhouse", "from board")],
+            Utc::now(),
+            &order,
+        )
+        .unwrap();
+        assert_eq!(owner(&conn), ("Greenhouse".into(), "from board".into()));
     }
 
     /// Bulk enough to span many pages, and old enough for the sweep to take.

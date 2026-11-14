@@ -17,7 +17,15 @@ Everything ships from `/app`:
 - **`app/src-tauri`** — the Rust core.
   - `scrapers/` — one module per source, all implementing the `Scraper` trait and
     run concurrently. A source that fails logs and returns nothing; it must never
-    take the whole refresh down.
+    take the whole refresh down. **A source hands over its rows in pieces**
+    (`Scraper::fetch_batches`, default one piece from `fetch`; the ATS families
+    override it) and `fetch_stream` sends them over a channel, so rows are stored
+    while the scrape is still running. A piece is a promise — whatever was sent
+    is written — and a board's rows always travel in one piece, because the sweep
+    reasons per employer. **Stop = drop the producer** (`Abortable`), never a loop
+    `break` returning `Ok(partial)`: for a list source that would charge misses to
+    the rows it did not fetch. Writes happen in a consumer that is *not* abortable,
+    so a stop cannot land in the middle of one.
     - `details.rs` is the exception: a second phase that runs *after* the scrape
       and works on URLs rather than sources. `route()` returns an ordered chain
       per posting — the employer's ATS API, then the page's schema.org
@@ -40,6 +48,23 @@ Everything ships from `/app`:
     carried. Where a cap must stay it keeps the best, not the newest:
     `github_internships::select`, `ats::keep_best`, and `rank::cap_opportunities`
     by `rank::fit` at ingest.
+  - `scrapers/boards.rs` + `boards.json` — which employer boards the ATS scrapers
+    read: the curated `EMPLOYERS` (tiered), a bundled list of probed boards, and
+    boards learned from posting URLs in the cache (`discover`). Health is kept in
+    `settings` (`boards_health`, `boards_discovered`), not a table, so it needs no
+    schema bump and survives one. A board that is *definitively* gone (404/410) or
+    empty on three separate days (strikes are spaced 24 h apart, like the sweep's
+    misses) is skipped for a week. A timeout, a 429 or a 5xx never counts: three
+    refreshes on a laptop with no network must not retire the whole list. A family that is one host behind many subdomains
+    (Recruitee) rate-limits, so each family has its own concurrency
+    (`ats::concurrency_for`) and `ats::get_json` waits out a 429. A tenant's JSON
+    shape varies (Breezy's `location`, Recruitee's string salaries): read the
+    fields that vary loosely rather than failing a board over one.
+    `rank::worth_storing` is the ingest filter for sources that read whole boards:
+    early-career in any field, technical at any level, judged on the *title* — a
+    substring match on the body ("api" in "Capital One") calls everything
+    technical. `OPPORTUNITY_CEILING` is 40,000, held by `perf_check` gates, not by
+    taste.
   - `location.rs`, `rank.rs`, `skills.rs` — pure functions (location tagging,
     discipline classification, interest-tag matching, recency decay, relevance
     scoring, round-robin per-source diversification, skill extraction).
@@ -133,7 +158,14 @@ Everything ships from `/app`:
     and the freelist, which is the only thing that tells the two apart.
     `journal_size_limit` is the counterpart for the WAL, which otherwise keeps
     the width of the largest refresh long after that refresh is over.
-    **Retention is liveness, not age.** `sweep` runs in `persist` after
+    **Writes are per piece, the sweep is once.** `persist_batch` upserts each piece
+    (`save_items_ranked`) and never sweeps; `finalize` runs once at the end, stopped
+    or not. Sweeping per source would delete a posting two sources list the moment
+    the first one stopped listing it, before the second had been written — and take
+    its dismissed state and fetched details with it. A stopped run passes an empty
+    alive set, so only the calendar deletes anything. Which source *owns* a URL is
+    decided in the upsert (earlier run, or earlier in `registry()` order), not by
+    arrival order. **Retention is liveness, not age.** `sweep` runs in `persist` after
     `save_items_at` and drops a posting when its source stops offering it (three
     scrapes that vouched for its scope without returning it, at least 24 h apart),
     when its deadline passed a week ago (`job_details.closes_at` first — most
@@ -154,7 +186,9 @@ Everything ships from `/app`:
     `#[tauri::command]` on a synchronous function runs on the *main thread*,
     which is the webview's thread, so a read that walks the cache freezes the
     window for as long as it takes. Reads are served from a ranked cache in
-    `AppState` — the whole visible store, scored and ordered, rebuilt only when
+    `AppState` (`Freshness`: list reads accept a cache a few seconds old *while a
+    scrape is running*, the detail pane and the description queue accept any age —
+    a ranking pass per streamed piece would otherwise sit behind every click) — the whole visible store, scored and ordered, rebuilt only when
     a generation counter or the reader's profile moves — because ranking 18,000
     items is not something to do three times per refresh. Anything that writes
     calls `invalidate()`. The list commands return `ListItem`, a borrowed
@@ -186,7 +220,15 @@ Everything ships from `/app`:
     a `Modal` (a stray Escape must not strand an empty first-run feed). The store's
     `onboarding` is `unknown | needed | offered | done` so a returning reader never
     sees it flash; `feed.scrapeNow()` calls Rust directly rather than `refresh()`,
-    which gives up if one is already running. The seniority and region choices come
+    which gives up if one is already running, and resolves when the *run* ends,
+    not when the feed is usable: the form offers "Open Today" as soon as rows exist.
+    While a scrape runs the store reloads single-flight at most every three seconds
+    (an event during a load marks it dirty; a sequence token drops a stale load),
+    with the spacing growing with how long a load took (at forty thousand roles the
+    twenty-odd-megabyte payload parsed on the window's thread *is* the stutter), and
+    holds the update behind a "Show new results" pill when a list is scrolled
+    away from its top. `ScanBar` is the one place a running scrape is visible and
+    stoppable from every route. The seniority and region choices come
     from `list_setup_options`, not a copy: they are matched by equality and a typo
     matches nothing. Today's "Last call" band is its own list (`get_last_call`),
     since a strong posting closing tomorrow can rank past the feed's 400.

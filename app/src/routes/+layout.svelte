@@ -1,9 +1,11 @@
 <script lang="ts">
   import "../app.css";
+  import { afterNavigate } from "$app/navigation";
   import type { ScrapedItem } from "$lib/api";
   import BottomNav from "$lib/components/BottomNav.svelte";
   import ItemModal from "$lib/components/ItemModal.svelte";
   import Onboarding from "$lib/components/Onboarding.svelte";
+  import ScanBar from "$lib/components/ScanBar.svelte";
   import SearchPalette from "$lib/components/SearchPalette.svelte";
   import SkillsWizard from "$lib/components/SkillsWizard.svelte";
   import TopBar from "$lib/components/TopBar.svelte";
@@ -34,6 +36,9 @@
     return theme.watchSystem();
   });
 
+  // A new page is a list at its top again, so an update no longer needs to wait.
+  afterNavigate(() => feed.noteNavigated());
+
   /** ⌘K / Ctrl-K anywhere. Ignored while typing, so it cannot eat a keystroke. */
   function onKeydown(e: KeyboardEvent) {
     // Search sits outside the inert shell, so the shortcut has to be refused here too.
@@ -62,6 +67,7 @@
      walk straight through it into a page that is not there yet. -->
 <div class="flex min-h-screen flex-col bg-background font-sans text-foreground" inert={setup}>
   <TopBar />
+  <ScanBar />
 
   {#if feed.error}
     <div

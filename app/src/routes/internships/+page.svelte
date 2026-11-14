@@ -417,11 +417,12 @@
   {:else if items.length === 0}
     <EmptyState
       icon={Briefcase}
-      title="No roles cached yet"
-      body="Refresh to pull the latest openings from all sources."
-      actionLabel="Refresh now"
-      busy={feed.refreshing}
-      onAction={() => feed.refresh(true)}
+      title={feed.refreshing ? "Collecting roles…" : "No roles cached yet"}
+      body={feed.refreshing
+        ? "Roles appear here as each source finishes."
+        : "Refresh to pull the latest openings from all sources."}
+      actionLabel={feed.refreshing ? "Stop" : "Refresh now"}
+      onAction={() => (feed.refreshing ? feed.stop() : feed.refresh(true))}
     />
   {:else}
     <EmptyState

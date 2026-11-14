@@ -1,6 +1,6 @@
 <script lang="ts">
   import { feed } from "$lib/feed.svelte";
-  import { RefreshCw, Search } from "$lib/icons";
+  import { RefreshCw, Search, Square } from "$lib/icons";
   import { search } from "$lib/search.svelte";
 
   // Every page opens the same way: its name, one line saying what is in it, and
@@ -39,13 +39,23 @@
     >
       <Search size={19} />
     </button>
-    <button
-      onclick={() => feed.refresh(true)}
-      disabled={feed.refreshing}
-      aria-label={feed.refreshing ? "Refreshing sources" : "Refresh all sources"}
-      class="tap h-11 w-11 bg-background disabled:opacity-60 md:hidden"
-    >
-      <RefreshCw size={19} class={feed.refreshing ? "animate-spin" : ""} />
-    </button>
+    {#if feed.refreshing}
+      <button
+        onclick={() => feed.stop()}
+        disabled={feed.phase === "stopping"}
+        aria-label="Stop scraping"
+        class="tap h-11 w-11 bg-background disabled:opacity-60 md:hidden"
+      >
+        <Square size={16} class="fill-current" />
+      </button>
+    {:else}
+      <button
+        onclick={() => feed.refresh(true)}
+        aria-label="Refresh all sources"
+        class="tap h-11 w-11 bg-background md:hidden"
+      >
+        <RefreshCw size={19} />
+      </button>
+    {/if}
   </div>
 </div>

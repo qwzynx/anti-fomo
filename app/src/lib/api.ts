@@ -156,6 +156,9 @@ export interface ScrapeProgress {
   total: number;
 }
 
+/** Which part of a refresh is running, from `feed:phase`. */
+export type ScanPhase = "idle" | "scraping" | "details" | "stopping";
+
 export interface FeedStatus {
   last_refresh: string | null;
   item_count: number;
@@ -251,8 +254,24 @@ export const getSkills = () => invoke<string[]>("get_skills");
 
 export const setSkills = (skills: string[]) => invoke<void>("set_skills", { skills });
 
-/** Returns the item count written, or null when the cache was still fresh. */
-export const refreshFeed = (force = false) => invoke<number | null>("refresh", { force });
+/**
+ * What a refresh did. `skipped` means nothing ran — the reader has not been
+ * asked yet, or another refresh was already under way. `stopped` is a run the
+ * reader ended; everything written before that stays.
+ */
+export interface RefreshOutcome {
+  status: "skipped" | "ran" | "stopped";
+  sources_done: number;
+  sources_total: number;
+  /** Rows the scrape wrote, before descriptions were read. */
+  rows: number;
+}
+
+/** Resolves when the whole refresh has ended, descriptions included. */
+export const refreshFeed = (force = false) => invoke<RefreshOutcome>("refresh", { force });
+
+/** Stops the running refresh. False when nothing was running. */
+export const stopRefresh = () => invoke<boolean>("stop_refresh");
 
 export const getSetting = (key: string) => invoke<string | null>("get_setting", { key });
 

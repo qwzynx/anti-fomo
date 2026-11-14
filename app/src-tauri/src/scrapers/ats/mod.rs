@@ -3,7 +3,8 @@
 //! One [`Scraper`](crate::scrapers::Scraper) per ATS family rather than one
 //! per employer: `all_scrapers()` gains five entries instead of a hundred, and
 //! the Sources health list in Settings stays readable. Which employers each
-//! one covers is `super::employers::EMPLOYERS`.
+//! one covers is `super::boards::all()`: the curated `EMPLOYERS`, the bundled
+//! list and whatever the cache has taught us.
 //!
 //! `source_platform` is the ATS family; `company` is the employer. That split
 //! matters to ranking — `rank::diversify` buckets on the employer, so one
@@ -14,20 +15,72 @@ use futures::{stream, StreamExt};
 use std::future::Future;
 use std::pin::Pin;
 
-use super::employers::{Board, Employer, EMPLOYERS};
+use super::boards;
+use super::employers::{Board, Employer};
+use super::Sink;
 use crate::models::{Item, JobDetail};
 use crate::rank::{classify_item, DEFAULT_MAJOR};
 
 pub mod ashby;
+pub mod breezy;
 pub mod greenhouse;
 pub mod lever;
+pub mod recruitee;
 pub mod smartrecruiters;
+pub mod workable;
 pub mod workday;
 
-/// Employer boards fetched at once. Each of these is a different host, so the
-/// limit is about not looking like a crawler rather than about politeness to
-/// any one of them.
-const CONCURRENCY: usize = 8;
+/// Employer boards fetched at once, per ATS family. A family is one API host
+/// (Greenhouse's `boards-api`, Lever's `api.lever.co`), and those are built for
+/// exactly this: public, cacheable, read by thousands of careers pages. The
+/// limit is about not looking like a crawler.
+pub const CONCURRENCY: usize = 16;
+/// Workday is a different host per tenant, each a real employer's careers
+/// stack, and a request there is a search rather than a cached file.
+pub const WORKDAY_CONCURRENCY: usize = 8;
+
+/// Recruitee answers 429 well below the other families' rates (every board is a
+/// subdomain of one host, so the limit is shared by all of them).
+pub const RECRUITEE_CONCURRENCY: usize = 3;
+
+/// How many boards of this family the scraper fetches at once.
+pub fn concurrency_for(board: &Board) -> usize {
+    match board {
+        Board::Workday { .. } => WORKDAY_CONCURRENCY,
+        Board::Recruitee(_) => RECRUITEE_CONCURRENCY,
+        _ => CONCURRENCY,
+    }
+}
+
+/// GETs a JSON document, waiting out a 429 rather than reporting a healthy
+/// board as dead. Two retries, backing off; anything else is an error as
+/// usual.
+pub async fn get_json<T: serde::de::DeserializeOwned>(
+    client: &reqwest::Client,
+    url: &str,
+) -> anyhow::Result<T> {
+    let mut wait = std::time::Duration::from_millis(1500);
+    for attempt in 0..3 {
+        let response = client.get(url).send().await?;
+        if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS && attempt < 2 {
+            let hinted = response
+                .headers()
+                .get(reqwest::header::RETRY_AFTER)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.parse::<u64>().ok())
+                .map(|s| std::time::Duration::from_secs(s.min(10)));
+            tokio::time::sleep(hinted.unwrap_or(wait)).await;
+            wait *= 2;
+            continue;
+        }
+        let body = response.error_for_status()?.bytes().await?;
+        // Through serde directly, so a field that is not what we assumed is
+        // named in the error instead of "error decoding response body".
+        return serde_json::from_slice(&body)
+            .map_err(|e| anyhow::anyhow!("{url}: unreadable response: {e}"));
+    }
+    unreachable!("the last attempt returns")
+}
 
 /// One employer board fetch, boxed.
 ///
@@ -37,29 +90,60 @@ const CONCURRENCY: usize = 8;
 /// allocation per board is nothing against the request it wraps.
 pub type BoardFuture = Pin<Box<dyn Future<Output = anyhow::Result<Vec<Item>>> + Send + 'static>>;
 
-/// Runs `fetch` over every employer whose board `pick` claims, concurrently.
+/// One employer's board, fetched by whichever module reads its ATS. For the
+/// tools that want to try a board on its own; the scrapers go through
+/// [`fan_out`].
+pub fn fetch_one(employer: &'static Employer, client: reqwest::Client) -> BoardFuture {
+    match employer.board {
+        Board::Greenhouse(_) => Box::pin(greenhouse::fetch_board(employer, client)),
+        Board::Lever(_) => Box::pin(lever::fetch_board(employer, client)),
+        Board::Ashby(_) => Box::pin(ashby::fetch_board(employer, client)),
+        Board::SmartRecruiters(_) => Box::pin(smartrecruiters::fetch_board(employer, client)),
+        Board::Workable(_) => Box::pin(workable::fetch_board(employer, client)),
+        Board::Recruitee(_) => Box::pin(recruitee::fetch_board(employer, client)),
+        Board::Breezy(_) => Box::pin(breezy::fetch_board(employer, client)),
+        Board::Workday { .. } => Box::pin(workday::fetch_board(employer, client)),
+    }
+}
+
+/// Boards finished between hand-overs. Small enough that the first rows reach
+/// the reader within seconds of the scrape starting, large enough that a
+/// thousand-board scrape is a few dozen writes and not a thousand.
+const BATCH_BOARDS: usize = 40;
+
+/// Runs `fetch` over every employer whose board `pick` claims, concurrently,
+/// handing the rows to `sink` as boards finish.
 ///
 /// One employer's board failing yields nothing for that employer and leaves
 /// the rest alone — the same contract `fetch_all` gives a whole source, one
 /// level down. A bank changing its Workday site name must not empty the feed.
+///
+/// A board's rows always travel together, in one piece: the liveness sweep
+/// reasons per employer, and half of a board is a board that looks to have
+/// lost postings it still has.
 pub async fn fan_out(
     client: &reqwest::Client,
     pick: fn(&Board) -> bool,
     fetch: fn(&'static Employer, reqwest::Client) -> BoardFuture,
-) -> Vec<Item> {
+    concurrency: usize,
+    sink: Sink<'_>,
+) {
     // The per-board futures are built eagerly here rather than inside a
     // stream combinator. A combinator closure that receives the boxed future
     // forces a higher-ranked lifetime bound that `async_trait`'s own boxed
     // future cannot satisfy; building them in a plain `map` before the stream
     // exists sidesteps the question.
-    let jobs: Vec<_> = EMPLOYERS
-        .iter()
+    let jobs: Vec<_> = boards::all()
+        .into_iter()
         .filter(|e| pick(&e.board))
         .map(|employer| {
             let future = fetch(employer, client.clone());
             let name = employer.name;
+            let board = employer.board;
             async move {
-                match future.await {
+                let result = future.await;
+                boards::report(&board, boards::Answer::of(&result));
+                match result {
                     Ok(items) => items,
                     Err(e) => {
                         log::warn!("{name} board failed: {e}");
@@ -70,11 +154,19 @@ pub async fn fan_out(
         })
         .collect();
 
-    stream::iter(jobs)
-        .buffer_unordered(CONCURRENCY)
-        .flat_map(stream::iter)
-        .collect()
-        .await
+    let mut boards = stream::iter(jobs).buffer_unordered(concurrency);
+    let mut pending: Vec<Item> = Vec::new();
+    let mut finished = 0usize;
+    while let Some(items) = boards.next().await {
+        pending.extend(items);
+        finished += 1;
+        if finished.is_multiple_of(BATCH_BOARDS) && !pending.is_empty() {
+            sink(std::mem::take(&mut pending));
+        }
+    }
+    if !pending.is_empty() {
+        sink(pending);
+    }
 }
 
 /// Trims one employer's postings to `cap`, keeping the ones this app is about.

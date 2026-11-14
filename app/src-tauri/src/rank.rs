@@ -225,6 +225,83 @@ pub fn list_interests() -> Vec<String> {
     INTERESTS.iter().map(|(name, _)| name.to_string()).collect()
 }
 
+/// Title words that make a role technical, at any level. Matched against the
+/// lowercased title with a space either side, so " ai " and " ml " are words
+/// and not the middle of "maintain". Deliberately about the *title*:
+/// `classify_item` reads the body and the company too, and a loose substring
+/// there ("api" inside "Capital One") would call every posting an employer has
+/// technical.
+const TECHNICAL_TITLE: &[&str] = &[
+    "software",
+    "developer",
+    "engineer",
+    "programmer",
+    "devops",
+    "sre",
+    "site reliability",
+    "machine learning",
+    " ml ",
+    " ai ",
+    "data ",
+    "analytics",
+    "analyst",
+    "cloud",
+    "backend",
+    "back-end",
+    "back end",
+    "frontend",
+    "front-end",
+    "front end",
+    "full stack",
+    "full-stack",
+    "fullstack",
+    "mobile",
+    " ios ",
+    "android",
+    " qa ",
+    "sdet",
+    "security",
+    "cyber",
+    "infrastructure",
+    "platform",
+    "architect",
+    "scientist",
+    "researcher",
+    "technolog",
+    " it ",
+    "network",
+    "database",
+    " dba ",
+    "embedded",
+    "firmware",
+    "robotics",
+    "systems",
+    "computing",
+    "digital",
+];
+
+/// Whether a posting is worth a place in the cache: early-career in *any*
+/// field — an accounting co-op is somebody's internship — or a technical role
+/// at any level. A senior regional sales manager is neither, and an employer
+/// with two thousand postings has a great many of those.
+///
+/// Applied to the sources that read whole employer boards. Aggregators and
+/// searches (the GitHub lists, Job Bank, Himalayas) have already chosen what
+/// they carry.
+pub fn worth_storing(item: &Item) -> bool {
+    if !item.item_type.is_opportunity() || item.item_type == ItemType::Internship {
+        return true;
+    }
+    if matches!(
+        item.seniority.as_deref(),
+        Some("Intern") | Some("New grad") | Some("Junior")
+    ) {
+        return true;
+    }
+    let title = format!(" {} ", item.title.to_ascii_lowercase());
+    TECHNICAL_TITLE.iter().any(|word| title.contains(word))
+}
+
 /// Counts keyword hits across title + body and returns the best-scoring major,
 /// or "General" when nothing matches.
 pub fn classify_item(item: &Item) -> String {
@@ -1046,6 +1123,46 @@ mod tests {
 
     fn item(title: &str, source: &str, ty: ItemType) -> Item {
         Item::new(title, source, ty, format!("https://example.com/{title}"))
+    }
+
+    #[test]
+    fn early_career_roles_are_kept_in_any_field_and_technical_ones_at_any_level() {
+        let kept = |title: &str, seniority: Option<&str>| {
+            let mut it = item(title, "Greenhouse", ItemType::Job);
+            it.seniority = seniority.map(str::to_string);
+            worth_storing(&it)
+        };
+        assert!(kept("Accounting Co-op", Some("Intern")));
+        assert!(kept("Associate Brand Manager", Some("Junior")));
+        assert!(kept(
+            "Staff Software Engineer, Infrastructure",
+            Some("Lead")
+        ));
+        assert!(kept("Senior Data Scientist", Some("Senior")));
+        assert!(kept("Machine Learning Researcher", None));
+        assert!(!kept("Regional Sales Manager, Midwest", Some("Senior")));
+        assert!(!kept("Senior Accountant", Some("Senior")));
+        assert!(!kept("Director of People Operations", None));
+        // The company is not read: "Capital One" must not make a recruiter
+        // technical, which is what a body substring match would have done.
+        let mut recruiter = item("Technical Recruiter", "Greenhouse", ItemType::Job);
+        recruiter.content_text = "Capital One · api".into();
+        recruiter.seniority = Some("Senior".into());
+        assert!(
+            !worth_storing(&recruiter),
+            "a company's name is not evidence that the role is technical"
+        );
+    }
+
+    #[test]
+    fn only_opportunities_are_judged() {
+        let article = item("Sales news", "Hacker News", ItemType::Article);
+        assert!(worth_storing(&article));
+        assert!(worth_storing(&item(
+            "Anything",
+            "Simplify",
+            ItemType::Internship
+        )));
     }
 
     /// The shipped weights, so a test asserts against the same numbers the

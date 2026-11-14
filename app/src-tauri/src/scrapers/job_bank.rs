@@ -17,8 +17,9 @@ use crate::models::{Item, ItemType};
 
 pub struct JobBank {
     pub name: &'static str,
-    /// A `searchstring` for the public job search.
-    pub query: &'static str,
+    /// The `searchstring`s to run against the public job search, each with the
+    /// discipline it implies — or none, where the title has to say.
+    pub queries: &'static [(&'static str, Option<&'static str>)],
     pub item_type: ItemType,
 }
 
@@ -27,9 +28,22 @@ pub struct JobBank {
 /// "junior software developer" both return the same generic developer listings
 /// (measured: 24 of 25 results identical) — so there is no honest way to make
 /// this an internship feed. It is Canadian developer roles, labelled as such.
+///
+/// Several searches, because one phrase reaches one corner: "software developer"
+/// returns about as many results as the five phrases below it add together
+/// (measured over 30 days: junior developer 210, information systems 123,
+/// web developer 51, data analyst 50, cybersecurity 38). Their results overlap
+/// little, and the ones that do are deduped by URL.
 pub const JOB_BANK: JobBank = JobBank {
     name: "Job Bank Canada",
-    query: "software+developer",
+    queries: &[
+        ("software+developer", Some("Software Engineering")),
+        ("junior+developer", Some("Software Engineering")),
+        ("web+developer", Some("Software Engineering")),
+        ("information+systems", None),
+        ("data+analyst", None),
+        ("cybersecurity", None),
+    ],
     item_type: ItemType::Job,
 };
 
@@ -88,18 +102,55 @@ impl Scraper for JobBank {
     }
 
     async fn fetch(&self, client: &reqwest::Client) -> Result<Vec<Item>> {
+        crate::scrapers::collect_batches(self, client).await
+    }
+
+    /// The searches run side by side (each walks its own pages politely, one at
+    /// a time) and each hands over its results when it ends.
+    async fn fetch_batches(
+        &self,
+        client: &reqwest::Client,
+        sink: crate::scrapers::Sink<'_>,
+    ) -> Result<()> {
+        let walks = self
+            .queries
+            .iter()
+            .map(|(query, discipline)| self.walk(client, query, *discipline));
+        let mut failed = 0;
+        let mut last_error = None;
+        for result in futures::future::join_all(walks).await {
+            match result {
+                Ok(items) => sink(items),
+                Err(e) => {
+                    failed += 1;
+                    last_error = Some(e);
+                }
+            }
+        }
+        // Every search failing is a real failure; one failing is thin coverage.
+        if failed == self.queries.len() {
+            return Err(last_error.unwrap_or_else(|| anyhow::anyhow!("no search answered")));
+        }
+        Ok(())
+    }
+}
+
+impl JobBank {
+    /// One search, paged until it is exhausted.
+    async fn walk(
+        &self,
+        client: &reqwest::Client,
+        query: &str,
+        discipline: Option<&'static str>,
+    ) -> Result<Vec<Item>> {
         let mut all = Vec::new();
-        // Sequential rather than concurrent: five polite requests to a
-        // government server, and an exhausted search should stop paging rather
-        // than fire the remaining requests regardless.
         for page in 1..=MAX_PAGES {
-            let items = self.fetch_page(client, page).await;
-            match items {
+            match self.fetch_page(client, query, discipline, page).await {
                 // Page 1 failing is a real failure; a later page failing just
                 // ends the walk with whatever came before it.
                 Err(e) if page == 1 => return Err(e),
                 Err(e) => {
-                    log::warn!("{}: page {page} failed: {e}", self.name);
+                    log::warn!("{}: '{query}' page {page} failed: {e}", self.name);
                     break;
                 }
                 Ok(items) if items.is_empty() => break,
@@ -108,12 +159,16 @@ impl Scraper for JobBank {
         }
         Ok(all)
     }
-}
 
-impl JobBank {
-    async fn fetch_page(&self, client: &reqwest::Client, page: usize) -> Result<Vec<Item>> {
+    async fn fetch_page(
+        &self,
+        client: &reqwest::Client,
+        query: &str,
+        discipline: Option<&'static str>,
+        page: usize,
+    ) -> Result<Vec<Item>> {
         let body = client
-            .get(format!("{SEARCH}{}&page={page}", self.query))
+            .get(format!("{SEARCH}{query}&page={page}"))
             .send()
             .await?
             .text()
@@ -154,8 +209,9 @@ impl JobBank {
                     Item {
                         // Job Bank titles are lowercase NOC occupation names
                         // ("developer, software"), which the keyword classifier
-                        // handles poorly; the query already constrains the field.
-                        discipline: Some("Software Engineering".to_string()),
+                        // handles poorly; where the query already constrains
+                        // the field it says so, and elsewhere the title does.
+                        discipline: discipline.map(str::to_string),
                         company: (company != "Employer").then(|| company.clone()),
                         salary_min: pay.as_ref().and_then(|p| p.min),
                         salary_max: pay.as_ref().and_then(|p| p.max),

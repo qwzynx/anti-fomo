@@ -41,6 +41,10 @@ struct Job {
     published_at: Option<String>,
     #[serde(default)]
     is_listed: Option<bool>,
+    /// "FullTime", "PartTime", "Intern", "Contract". Structured, so it is
+    /// better evidence of an internship than anything the title implies.
+    #[serde(default)]
+    employment_type: Option<String>,
     #[serde(default)]
     description_html: Option<String>,
     #[serde(default)]
@@ -81,16 +85,30 @@ impl Scraper for AshbyBoards {
     }
 
     async fn fetch(&self, client: &reqwest::Client) -> Result<Vec<Item>> {
-        Ok(fan_out(
+        crate::scrapers::collect_batches(self, client).await
+    }
+
+    async fn fetch_batches(
+        &self,
+        client: &reqwest::Client,
+        sink: crate::scrapers::Sink<'_>,
+    ) -> Result<()> {
+        fan_out(
             client,
             |b| matches!(b, Board::Ashby(_)),
             |e, c| Box::pin(fetch_board(e, c)),
+            super::CONCURRENCY,
+            sink,
         )
-        .await)
+        .await;
+        Ok(())
     }
 }
 
-async fn fetch_board(employer: &'static Employer, client: reqwest::Client) -> Result<Vec<Item>> {
+pub async fn fetch_board(
+    employer: &'static Employer,
+    client: reqwest::Client,
+) -> Result<Vec<Item>> {
     let Board::Ashby(slug) = employer.board else {
         return Ok(Vec::new());
     };
@@ -129,10 +147,18 @@ fn to_item(company: &str, job: Job) -> Item {
         _ => company.to_string(),
     };
 
+    let intern = job
+        .employment_type
+        .as_deref()
+        .is_some_and(|t| t.to_ascii_lowercase().contains("intern"));
     let mut item = Item::new(
         job.title.trim(),
         "Ashby",
-        ItemType::Job,
+        if intern {
+            ItemType::Internship
+        } else {
+            ItemType::Job
+        },
         job.job_url.clone(),
     )
     .with_company(company)
@@ -222,5 +248,21 @@ mod tests {
             summary_components: Vec::new(),
         };
         assert!(salary(&compensation).is_none());
+    }
+
+    #[test]
+    fn the_employment_type_marks_an_internship_whatever_the_title_says() {
+        let job: Job = serde_json::from_str(
+            r#"{"title":"Software Engineer","jobUrl":"https://jobs.ashbyhq.com/acme/1",
+                "employmentType":"Intern"}"#,
+        )
+        .unwrap();
+        assert_eq!(to_item("Acme", job).item_type, ItemType::Internship);
+        let job: Job = serde_json::from_str(
+            r#"{"title":"Software Engineer","jobUrl":"https://jobs.ashbyhq.com/acme/2",
+                "employmentType":"FullTime"}"#,
+        )
+        .unwrap();
+        assert_eq!(to_item("Acme", job).item_type, ItemType::Job);
     }
 }

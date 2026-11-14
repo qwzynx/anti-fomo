@@ -8,8 +8,9 @@
 //! **Every row here was verified against the live endpoint**, not guessed.
 //! Guessing does not work: `rbc.wd3` is a real tenant whose site is
 //! `RBCGLOBAL1`, `scotiabank` is not on Workday at all, and `shopify.wd3`
-//! answers 401. `cargo run --bin employer_check` re-runs that verification and
-//! is the gate on adding a row.
+//! answers 401. `cargo run --features dev-tools --bin board_check` re-runs that
+//! verification against every board, these and the bundled ones, and is the
+//! gate on adding a row.
 //!
 //! Prestige is deliberately *not* here — it lives in `crate::companies::TIERS`
 //! keyed by `name`, so an employer we scrape and an employer that arrives
@@ -30,6 +31,12 @@ pub enum Board {
     Lever(&'static str),
     Ashby(&'static str),
     SmartRecruiters(&'static str),
+    /// `https://apply.workable.com/api/v1/widget/accounts/{slug}`.
+    Workable(&'static str),
+    /// `https://{slug}.recruitee.com/api/offers/`.
+    Recruitee(&'static str),
+    /// `https://{slug}.breezy.hr/json`.
+    Breezy(&'static str),
 }
 
 pub struct Employer {
@@ -187,9 +194,12 @@ pub const EMPLOYERS: &[Employer] = &[
     ab("Float", "float"),
 ];
 
-/// The employers served by one ATS family, for the scraper that owns it.
+/// The employers served by one ATS family, for the scraper that owns it. Reads
+/// every board there is — curated, bundled and learned — not just this table.
 pub fn of_kind(kind: fn(&Board) -> bool) -> impl Iterator<Item = &'static Employer> {
-    EMPLOYERS.iter().filter(move |e| kind(&e.board))
+    super::boards::all()
+        .into_iter()
+        .filter(move |e| kind(&e.board))
 }
 
 #[cfg(test)]
@@ -225,7 +235,10 @@ mod tests {
                 Board::Greenhouse(s)
                 | Board::Lever(s)
                 | Board::Ashby(s)
-                | Board::SmartRecruiters(s) => {
+                | Board::SmartRecruiters(s)
+                | Board::Workable(s)
+                | Board::Recruitee(s)
+                | Board::Breezy(s) => {
                     assert!(!s.is_empty(), "{}", e.name);
                 }
             }

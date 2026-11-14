@@ -6,6 +6,8 @@ import * as api from "./api";
 import type {
   FeedStatus,
   OnboardingState,
+  RefreshOutcome,
+  ScanPhase,
   ScrapedItem,
   ScrapePrefs,
   ScrapeProgress,
@@ -24,6 +26,25 @@ const DEFAULT_PREFS: ScrapePrefs = {
   events: true,
   disabled_sources: [],
 };
+
+/**
+ * While a scrape is writing, how often the lists are reloaded. Every source
+ * that finishes moves the data, and a reload is five commands and a re-rank, so
+ * reloading per event would spend the whole scrape redrawing. A few seconds
+ * keeps the feed visibly filling without that.
+ */
+const SCAN_RELOAD_MS = 3000;
+/**
+ * A load is five commands, a re-rank and — at forty thousand roles — a payload
+ * of twenty-odd megabytes parsed on the window's own thread, and measured against
+ * the real app that parse is the stutter. So the pace follows the cost: a reload
+ * is spaced at least this many times its own duration after the last one, up to
+ * a cap, and a small cache keeps the quick cadence above.
+ */
+const SCAN_RELOAD_COST_FACTOR = 5;
+const SCAN_RELOAD_MAX_MS = 20000;
+/** How far down a list the reader can be before an update would move it. */
+const SCROLLED_AWAY_PX = 120;
 
 /**
  * How long after the last skill tap the feed is re-ranked. Long enough to
@@ -90,12 +111,30 @@ let idleWaiters: Array<() => void> = [];
 let skillsFormOpen = $state(false);
 let loading = $state(true);
 let refreshing = $state(false);
+/** Which part of a refresh is running, driven by `feed:phase`. */
+let phase = $state<ScanPhase>("idle");
+/** Sources the running refresh will ask, from `feed:plan`. */
+let planned = $state(0);
+/** Rows the running scrape has written so far. */
+let scanRows = $state(0);
+/** New results are waiting behind the "Show" pill because the reader is mid-list. */
+let pending = $state(false);
 let error = $state<string | null>(null);
 let started = false;
 let skillRerankTimer: ReturnType<typeof setTimeout> | null = null;
-/** Coalesces the burst of `feed:updated` events one refresh emits. */
+/** Coalesces the stream of `feed:updated` events a refresh emits. */
 let reloadTimer: ReturnType<typeof setTimeout> | null = null;
 let reloading = false;
+/** An event arrived while a load was in flight, so one more is owed. */
+let dirty = false;
+let lastLoadAt = 0;
+/** How long the last reload took, which sets how soon the next may start. */
+let lastLoadMs = 0;
+/** Orders loads: a slow one that finishes late must not overwrite a newer one. */
+let loadSeq = 0;
+let appliedSeq = 0;
+/** Whether the reader has scrolled a list down, so an update would move it. */
+let scrolledAway = false;
 
 /** Postings the detail pane has already fetched, keyed by URL. */
 const detailCache = new Map<string, ScrapedItem | null>();
@@ -125,6 +164,7 @@ function reset(set: SvelteSet<string>, values: Iterable<string>) {
 }
 
 async function loadAll() {
+  const mine = ++loadSeq;
   const [feedItems, internshipItems, savedItems, lastCallItems, st] = await Promise.all([
     api.getFeed(major),
     api.getInternships(major),
@@ -132,6 +172,10 @@ async function loadAll() {
     api.getLastCall(major),
     api.feedStatus(),
   ]);
+  // Superseded while it was in flight: a newer load has already landed.
+  if (mine < appliedSeq) return;
+  appliedSeq = mine;
+  pending = false;
   items = feedItems;
   internships = internshipItems;
   saved = savedItems;
@@ -156,23 +200,91 @@ async function loadAll() {
 }
 
 /**
- * Reloads on a trailing debounce.
- *
- * One refresh emits `feed:updated` twice — once when the scrape lands and once
- * when enrichment does — and a settings change can land on top of either. Each
- * reload is four commands and a full re-rank, so running them back to back
- * bought nothing but the second answer.
+ * Whether a reload now would move rows under someone reading them. Only while a
+ * scrape is writing, only when there is something on screen to move, and only
+ * when the reader has scrolled away from the top — a list they are at the top of
+ * is one they are watching fill.
  */
-function scheduleReload() {
-  if (reloadTimer) clearTimeout(reloadTimer);
-  reloadTimer = setTimeout(() => {
+function shouldHold(): boolean {
+  return refreshing && internships.length > 0 && scrolledAway;
+}
+
+/**
+ * Reloads the lists, at most one at a time and at most every few seconds while
+ * a scrape is writing.
+ *
+ * A refresh emits `feed:updated` per source and per group of descriptions, and
+ * a settings change can land on top of any of them. Each reload is five
+ * commands and a re-rank. A load already in flight is not dropped — an event
+ * that arrives during it marks the store dirty and one more follows — and one
+ * already scheduled is left alone, so a steady stream becomes a steady pace
+ * and not a postponement.
+ */
+function scheduleReload(now = false) {
+  dirty = true;
+  if (reloading || reloadTimer) return;
+  const spacing = Math.min(
+    SCAN_RELOAD_MAX_MS,
+    Math.max(SCAN_RELOAD_MS, lastLoadMs * SCAN_RELOAD_COST_FACTOR),
+  );
+  const wait = now ? 0 : refreshing ? Math.max(0, spacing - (Date.now() - lastLoadAt)) : 150;
+  reloadTimer = setTimeout(runReload, wait);
+}
+
+async function runReload() {
+  reloadTimer = null;
+  if (reloading) return;
+  if (shouldHold()) {
+    // Left dirty-free: the pill, or the reader returning to the top, reloads.
+    dirty = false;
+    pending = true;
+    return;
+  }
+  reloading = true;
+  dirty = false;
+  const started = Date.now();
+  try {
+    await loadAll();
+  } catch (e) {
+    error = String(e);
+  } finally {
+    reloading = false;
+    lastLoadAt = Date.now();
+    lastLoadMs = lastLoadAt - started;
+    if (dirty) scheduleReload();
+  }
+}
+
+/** Loads now, past the hold, and resolves when it has landed. */
+async function reloadNow() {
+  if (reloadTimer) {
+    clearTimeout(reloadTimer);
     reloadTimer = null;
-    if (reloading) return;
-    reloading = true;
-    void loadAll()
-      .catch((e) => (error = String(e)))
-      .finally(() => (reloading = false));
-  }, 150);
+  }
+  dirty = false;
+  lastLoadAt = Date.now();
+  await loadAll();
+}
+
+/** Tracks whether any list on screen has been scrolled away from its top. */
+function watchScrolling() {
+  if (typeof document === "undefined") return;
+  document.addEventListener(
+    "scroll",
+    (e) => {
+      const target = e.target;
+      const el =
+        target instanceof Element
+          ? target
+          : (document.scrollingElement ?? document.documentElement);
+      const away = el.scrollTop > SCROLLED_AWAY_PX;
+      if (away === scrolledAway) return;
+      scrolledAway = away;
+      // Back at the top: whatever was held can land without moving anything.
+      if (!away && pending) scheduleReload(true);
+    },
+    { capture: true, passive: true },
+  );
 }
 
 /** Re-ranks once the taps stop, so the list does not reshuffle mid-burst. */
@@ -252,6 +364,18 @@ export const feed = {
   get refreshing() {
     return refreshing;
   },
+  get phase() {
+    return phase;
+  },
+  get planned() {
+    return planned;
+  },
+  get scanRows() {
+    return scanRows;
+  },
+  get pending() {
+    return pending;
+  },
   get error() {
     return error;
   },
@@ -327,6 +451,7 @@ export const feed = {
   async init() {
     if (started) return;
     started = true;
+    watchScrolling();
 
     try {
       // Subscribe before the first read. The Rust side kicks off a background
@@ -334,14 +459,27 @@ export const feed = {
       // would drop that event on a fast machine and leave the feed empty until
       // a manual refresh.
       await Promise.all([
-        listen<number>("feed:updated", () => scheduleReload()),
+        listen<number>("feed:updated", (e) => {
+          if (phase === "scraping") scanRows = e.payload;
+          scheduleReload();
+        }),
         listen<boolean>("feed:refreshing", (e) => {
           refreshing = e.payload;
-          // A new refresh starts with an empty list; the end of one releases
-          // anything that was waiting for it.
-          if (e.payload) progress = [];
-          else for (const wake of idleWaiters.splice(0)) wake();
+          if (e.payload) {
+            // A new refresh starts with an empty list.
+            progress = [];
+            planned = 0;
+            scanRows = 0;
+          } else {
+            phase = "idle";
+            // The end of a run releases anything that was waiting for it, and
+            // owes the lists one last load to show where it ended up.
+            for (const wake of idleWaiters.splice(0)) wake();
+            scheduleReload();
+          }
         }),
+        listen<ScanPhase>("feed:phase", (e) => (phase = e.payload)),
+        listen<number>("feed:plan", (e) => (planned = e.payload)),
         listen<ScrapeProgress>("feed:progress", (e) => (progress = [...progress, e.payload])),
       ]);
 
@@ -477,19 +615,22 @@ export const feed = {
   },
 
   /**
-   * Scrapes what was just asked for and loads the result, resolving once the
-   * feed is on screen. Calls Rust directly rather than `refresh`, which gives
-   * up if anything is already running: an upgrader's launch scrape may still be
-   * in flight when they press Start, and the right thing then is to follow it,
-   * not to return as though it had finished.
+   * Scrapes what was just asked for, resolving when the run has ended — which is
+   * not when the feed becomes usable: the lists fill as sources finish, and the
+   * caller can let the reader in before this resolves. Calls Rust directly
+   * rather than `refresh`, which gives up if anything is already running: an
+   * upgrader's launch scrape may still be in flight when they press Start, and
+   * the right thing then is to follow it, not to return as though it had
+   * finished.
    */
-  async scrapeNow(): Promise<number | null> {
+  async scrapeNow(): Promise<RefreshOutcome> {
     error = null;
     progress = [];
-    const written = await api.refreshFeed(true);
-    if (written === null) await whenIdle();
-    await loadAll();
-    return written;
+    refreshing = true;
+    const outcome = await api.refreshFeed(true);
+    if (outcome.status === "skipped") await whenIdle();
+    await reloadNow();
+    return outcome;
   },
 
   /** Dismisses the form, whichever way it was reached. */
@@ -529,19 +670,52 @@ export const feed = {
     }
   },
 
+  /**
+   * Starts a refresh. `force` ignores how recently each source ran.
+   *
+   * Whether one is running is the backend's to say (`feed:refreshing`), so this
+   * only claims the flag for the instant before that event arrives, and gives
+   * it back if nothing was started — the reader has not been asked yet, or
+   * another refresh got there first.
+   */
   async refresh(force = false) {
     if (refreshing) return;
     error = null;
     refreshing = true;
     try {
-      await api.refreshFeed(force);
-      await loadAll();
+      const outcome = await api.refreshFeed(force);
+      refreshing = outcome.status === "skipped" ? (await api.feedStatus()).refreshing : false;
+      await reloadNow();
     } catch (e) {
       // A failed refresh keeps whatever is already cached on screen.
       error = String(e);
-    } finally {
       refreshing = false;
     }
+  },
+
+  /**
+   * Stops the running refresh. What it had already written stays, and sources
+   * it had not reached stay due, so Start picks up where it left off.
+   */
+  async stop() {
+    if (!refreshing || phase === "stopping") return;
+    phase = "stopping";
+    try {
+      await api.stopRefresh();
+    } catch (e) {
+      error = String(e);
+    }
+  },
+
+  /** Shows the results held back while the reader was mid-list. */
+  applyPending() {
+    scrolledAway = false;
+    scheduleReload(true);
+  },
+
+  /** A page change resets what "scrolled away" means. */
+  noteNavigated() {
+    scrolledAway = false;
   },
 
   // --- item actions ---
