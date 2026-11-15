@@ -7,6 +7,7 @@
   import PageHeader from "$lib/components/PageHeader.svelte";
   import ResumePreview from "$lib/components/resume/ResumePreview.svelte";
   import TailorPanel from "$lib/components/resume/TailorPanel.svelte";
+  import TailorStart from "$lib/components/resume/TailorStart.svelte";
   import ThemePicker from "$lib/components/resume/ThemePicker.svelte";
   import {
     ArrowLeft,
@@ -15,6 +16,7 @@
     FileText,
     Loader,
     Palette,
+    Replace,
     RotateCcw,
     SlidersHorizontal,
   } from "$lib/icons";
@@ -22,6 +24,7 @@
   import type { ResumeVariant, ResumeView } from "$lib/api";
   import { outcomeMessage, saveResumePdf } from "$lib/resumeFile";
   import { resume } from "$lib/resume.svelte";
+  import { hasScrapedPosting } from "$lib/item";
 
   /**
    * One posting, one résumé, tailored.
@@ -74,6 +77,7 @@
     headline: null,
     include: {},
     order: {},
+    section_order: [],
     text: {},
     skills_lead: [],
   });
@@ -162,6 +166,7 @@
     !!variant &&
       (Object.keys(variant.include).length > 0 ||
         Object.keys(variant.order).length > 0 ||
+        variant.section_order.length > 0 ||
         Object.keys(variant.text).length > 0 ||
         variant.headline !== null ||
         variant.theme !== null),
@@ -211,9 +216,14 @@
     void load();
   });
 
+  /** A version made without a job: nothing to match, the reader decides. */
+  const byHand = $derived(api.isPasted(url) && !!item && !hasScrapedPosting(item));
+
   const heading = $derived(item?.title ?? "this posting");
   const subtitle = $derived(
-    item
+    !url
+      ? "Pick a job, or paste one from anywhere"
+      : item
       ? `${item.title}${item.company ? ` · ${item.company}` : ""} — from “${resume.name}”`
       : `From “${resume.name}”`,
   );
@@ -224,7 +234,16 @@
 <div class="flex h-full min-h-0 flex-col">
   <PageHeader title="Tailor résumé" {subtitle}>
     {#snippet actions()}
-      <button onclick={back} class="tool" title="Back"><ArrowLeft size={14} /><span class="hidden sm:inline">Back</span></button>
+      {#if url}
+        <button onclick={back} class="tool" title="Back"><ArrowLeft size={14} /><span class="hidden sm:inline">Back</span></button>
+        <button
+          onclick={() => goto("/resume/tailor")}
+          class="tool"
+          title="Tailor against a different job"
+        >
+          <Replace size={14} /><span class="hidden sm:inline">Change job</span>
+        </button>
+      {/if}
       {#if hasOverrides}
         <button onclick={reset} class="tool" title="Undo every choice made for this posting">
           <RotateCcw size={14} /><span class="hidden sm:inline">Reset</span>
@@ -246,13 +265,7 @@
   {/if}
 
   {#if !url}
-    <EmptyState
-      icon={FileText}
-      title="No posting"
-      body="Open a role and use “Tailor résumé” to get here."
-      actionLabel="Browse roles"
-      onAction={() => goto("/internships")}
-    />
+    <TailorStart />
   {:else if loading}
     <div class="flex flex-1 items-center justify-center">
       <Loader size={22} class="animate-spin text-subtle" />
@@ -329,6 +342,7 @@
               doc={resume.doc}
               {view}
               {variant}
+              {byHand}
               onVariant={(next) => void applyVariant(next)}
             />
           {/key}

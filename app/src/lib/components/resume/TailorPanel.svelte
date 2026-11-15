@@ -7,12 +7,15 @@
     ChevronsUpDown,
     CircleAlert,
     EyeOff,
+    GripVertical,
+    ListChecks,
     Pencil,
     Pin,
     Target,
     Undo2,
     X,
   } from "$lib/icons";
+  import { moved, sortHandle } from "$lib/sortable";
   import type {
     ResumeBullet,
     ResumeDoc,
@@ -51,11 +54,14 @@
     doc,
     view,
     variant,
+    byHand = false,
     onVariant,
   }: {
     doc: ResumeDoc;
     view: ResumeView;
     variant: ResumeVariant;
+    /** Made without a job: there is nothing to match, only what to keep. */
+    byHand?: boolean;
     onVariant: (next: ResumeVariant) => void;
   } = $props();
 
@@ -66,7 +72,8 @@
   /** A skill from the posting: show only the bullets that name it. */
   let skill = $state<string | null>(null);
   let matchOpen = $state(false);
-  const collapsed = new SvelteSet<string>();
+  /** Entries opened to show their bullets. Everything starts folded. */
+  const expanded = new SvelteSet<string>();
 
   // --- what the posting asks for ---
 
@@ -148,12 +155,31 @@
     return true;
   }
 
+  /**
+   * `items` ordered by `order`, stable: ids the order does not name keep their
+   * relative place after the ones it does — an entry added since, say.
+   */
+  function inOrder<T extends { id: string }>(items: readonly T[], order: readonly string[] | undefined): T[] {
+    if (!order || order.length === 0) return [...items];
+    const rank = new Map(order.map((id, i) => [id, i]));
+    return items
+      .map((it, i) => ({ it, i, r: rank.get(it.id) ?? Number.MAX_SAFE_INTEGER }))
+      .sort((a, b) => a.r - b.r || a.i - b.i)
+      .map((x) => x.it);
+  }
+
+  /** Sections in the reader's order. Only the reader ever moves a section. */
+  const orderedSections = $derived(inOrder(doc.sections, variant.section_order));
+
   const model = $derived.by((): SectionModel[] =>
-    doc.sections
+    orderedSections
       .filter((s) => s.entries.length > 0)
       .map((section) => {
         const sectionOff = stateOf(section.id) === "out";
-        const entries = section.entries.map((entry): EntryModel => {
+        // The reader's order where they set one, else the order the page drew
+        // (the tailoring leads Projects and the like with what fits the job).
+        const entryOrder = variant.order[section.id] ?? view.order[section.id];
+        const entries = inOrder(section.entries, entryOrder).map((entry): EntryModel => {
           const off = sectionOff || stateOf(entry.id) === "out";
           const rows = entry.bullets.map((bullet): Row => {
             const state = stateOf(bullet.id);
@@ -205,16 +231,44 @@
   );
 
   const allIds = $derived(model.flatMap((s) => s.entries.map((e) => e.entry.id)));
-  const anyOpen = $derived(allIds.some((id) => !collapsed.has(id)));
+  const anyOpen = $derived(allIds.some((id) => expanded.has(id)));
 
   function toggleAll() {
-    if (anyOpen) for (const id of allIds) collapsed.add(id);
-    else collapsed.clear();
+    if (anyOpen) expanded.clear();
+    else for (const id of allIds) expanded.add(id);
   }
 
   function toggleOpen(id: string) {
-    if (collapsed.has(id)) collapsed.delete(id);
-    else collapsed.add(id);
+    if (expanded.has(id)) expanded.delete(id);
+    else expanded.add(id);
+  }
+
+  // --- reordering, for this posting only ---
+  //
+  // Dragging writes the whole order, so what is on screen is exactly what was
+  // saved; the master résumé keeps its own. A filtered outline shows a subset,
+  // and moving within a subset has no clear meaning, so the handles go away
+  // while one is on.
+
+  function moveSection(from: number, to: number) {
+    const shown = moved(
+      model.map((s) => s.section.id),
+      from,
+      to,
+    );
+    // Empty sections draw nothing and are not listed; they keep their place
+    // after the ones that were.
+    const rest = orderedSections.map((s) => s.id).filter((id) => !shown.includes(id));
+    onVariant({ ...variant, section_order: [...shown, ...rest] });
+  }
+
+  function moveEntry(s: SectionModel, from: number, to: number) {
+    const ids = moved(
+      s.entries.map((e) => e.entry.id),
+      from,
+      to,
+    );
+    onVariant({ ...variant, order: { ...variant.order, [s.section.id]: ids } });
   }
 
   function pickSkill(s: string) {
@@ -332,7 +386,7 @@
     <button
       onclick={toggleAll}
       class="tool ml-auto"
-      title={anyOpen ? "Collapse every entry" : "Expand every entry"}
+      title={anyOpen ? "Fold every entry" : "Open every entry"}
       aria-label={anyOpen ? "Collapse all" : "Expand all"}
     >
       {#if anyOpen}<ChevronsDownUp size={14} />{:else}<ChevronsUpDown size={14} />{/if}
@@ -341,7 +395,13 @@
 
   <div class="pane flex-1 space-y-4 px-3 py-3">
     <!-- What the posting asks for: one line until it is wanted. -->
-    {#if view.required.length === 0}
+    {#if byHand}
+      <p class="flex items-start gap-2 rounded-md bg-line-soft px-3 py-2.5 text-[12.5px] text-muted">
+        <ListChecks size={14} class="mt-0.5 shrink-0 text-subtle" />
+        No job behind this version — untick what you don't want on it. If it still runs past the
+        page limit, the last bullets of each entry are cut first; tick one to keep it.
+      </p>
+    {:else if view.required.length === 0}
       <p class="flex items-start gap-2 rounded-md bg-line-soft px-3 py-2.5 text-[12.5px] text-muted">
         <Target size={14} class="mt-0.5 shrink-0 text-subtle" />
         This posting's page could not be read, so there are no skills to tailor against. Your full
@@ -418,7 +478,7 @@
     {/if}
 
     <label class="block">
-      <span class="eyebrow mb-1 block">Headline for this posting</span>
+      <span class="eyebrow mb-1 block">Headline for this {byHand ? "version" : "posting"}</span>
       <input
         value={variant.headline ?? ""}
         oninput={(e) => onHeadline(e.currentTarget.value)}
@@ -459,8 +519,18 @@
     {/if}
 
     {#each shownModel as s (s.section.id)}
-      <section aria-label={s.section.title}>
+      <section aria-label={s.section.title} data-sort-item class="rounded-md data-[sorting]:bg-background data-[sorting]:shadow-lg">
         <div class="mb-1.5 flex items-center gap-2 px-1">
+          {#if !narrowing && shownModel.length > 1}
+            <button
+              use:sortHandle={{ onMove: moveSection }}
+              aria-label="Move the {s.section.title} section"
+              title="Drag to move this section · ↑/↓ on the keyboard"
+              class="-ml-1 flex h-5 w-4 shrink-0 cursor-grab touch-none items-center justify-center text-subtle/70 hover:text-foreground active:cursor-grabbing"
+            >
+              <GripVertical size={13} />
+            </button>
+          {/if}
           <button
             role="checkbox"
             aria-checked={!s.off}
@@ -484,10 +554,22 @@
         <div class="card divide-y divide-line-soft overflow-hidden {s.off ? 'opacity-60' : ''}">
           {#each s.entries as e (e.entry.id)}
             {@const entryOut = stateOf(e.entry.id) === "out"}
-            {@const open = narrowing || !collapsed.has(e.entry.id)}
+            {@const open = narrowing || expanded.has(e.entry.id)}
             {@const sub = entrySub(e.entry)}
-            <div>
-              <div class="flex items-center gap-2.5 px-3 py-2">
+            <div data-sort-item class="bg-surface data-[sorting]:shadow-lg">
+              <div class="flex items-center gap-2.5 py-2 pr-3 pl-1.5">
+                {#if !narrowing && s.entries.length > 1}
+                  <button
+                    use:sortHandle={{ onMove: (from, to) => moveEntry(s, from, to) }}
+                    aria-label="Move {entryLabel(e.entry)}"
+                    title="Drag to move · ↑/↓ on the keyboard"
+                    class="flex h-6 w-4 shrink-0 cursor-grab touch-none items-center justify-center text-subtle/70 hover:text-foreground active:cursor-grabbing"
+                  >
+                    <GripVertical size={13} />
+                  </button>
+                {:else}
+                  <span class="w-4 shrink-0"></span>
+                {/if}
                 <button
                   role="checkbox"
                   aria-checked={!e.off}
@@ -542,7 +624,7 @@
                   {#each e.visible as row (row.bullet.id)}
                     {@const id = row.bullet.id}
                     {@const reworded = variant.text[id] !== undefined}
-                    <li class="group flex items-start gap-2.5 py-1.5 pr-2 pl-[2.375rem] hover:bg-hover/60">
+                    <li class="group flex items-start gap-2.5 py-1.5 pr-2 pl-[3.625rem] hover:bg-hover/60">
                       {#if editing === id}
                         <div class="min-w-0 flex-1">
                           <textarea

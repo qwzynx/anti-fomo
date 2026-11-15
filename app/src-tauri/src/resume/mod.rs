@@ -50,9 +50,32 @@ pub fn tailored(
     variant: &Variant,
     theme: &Theme,
 ) -> (layout::LaidOut, Selection) {
+    let reordered = in_section_order(resume, &variant.section_order);
+    let resume = reordered.as_ref().unwrap_or(resume);
     let selection = tailor::tailor(resume, target, have, variant, theme);
     let laid_out = layout::lay_out(resume, &selection, theme);
     (laid_out, selection)
+}
+
+/// The résumé with its sections in the order a variant asked for, or `None`
+/// when it asked for none. Moving a section is the reader's call alone — the
+/// tailoring never reorders sections by itself — so this is applied before
+/// the pass rather than decided inside it. A stable sort: sections the order
+/// does not name (one added since) keep their relative place, after it.
+fn in_section_order(resume: &Resume, order: &[String]) -> Option<Resume> {
+    if order.is_empty() {
+        return None;
+    }
+    let rank: std::collections::HashMap<&str, usize> = order
+        .iter()
+        .enumerate()
+        .map(|(i, id)| (id.as_str(), i))
+        .collect();
+    let mut resume = resume.clone();
+    resume
+        .sections
+        .sort_by_key(|s| rank.get(s.id.as_str()).copied().unwrap_or(usize::MAX));
+    Some(resume)
 }
 
 /// The filename a saved résumé should default to.
@@ -102,6 +125,28 @@ mod tests {
             "Ada Lovelace - Resume.pdf"
         );
         assert_eq!(suggested_filename("", None), "Resume - Resume.pdf");
+    }
+
+    #[test]
+    fn sections_follow_the_variant_order_and_unnamed_ones_follow() {
+        let section = |id: &str| model::Section {
+            id: id.into(),
+            ..Default::default()
+        };
+        let resume = Resume {
+            sections: vec![
+                section("edu"),
+                section("exp"),
+                section("proj"),
+                section("new"),
+            ],
+            ..Default::default()
+        };
+        assert!(in_section_order(&resume, &[]).is_none());
+        let moved = in_section_order(&resume, &["proj".into(), "edu".into(), "exp".into()])
+            .expect("an order was given");
+        let ids: Vec<&str> = moved.sections.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(ids, ["proj", "edu", "exp", "new"]);
     }
 
     /// Path separators and the rest must never reach a filename.

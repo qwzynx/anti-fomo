@@ -54,6 +54,9 @@ pub struct Variant {
     pub include: BTreeMap<String, bool>,
     /// Section id → the order its entries should appear in.
     pub order: BTreeMap<String, Vec<String>>,
+    /// The order the sections themselves appear in, by id. Empty keeps the
+    /// résumé's own order; a section it does not name follows the ones it does.
+    pub section_order: Vec<String>,
     /// Bullet id → reworded for this job. The master résumé keeps its wording.
     pub text: BTreeMap<String, String>,
     /// Skills to put first in the skills block, whatever the match says.

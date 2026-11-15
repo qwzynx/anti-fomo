@@ -492,6 +492,8 @@ export interface ResumeView {
   focus: string[];
   theme: ResumeTheme;
   filename: string;
+  /** Section id → its entries in the order the page draws them. */
+  order: Record<string, string[]>;
 }
 
 export interface ResumeVariant {
@@ -499,7 +501,10 @@ export interface ResumeVariant {
   headline: string | null;
   /** Entry or bullet id → forced in (and never trimmed) or out. */
   include: Record<string, boolean>;
+  /** Section id → its entries in the reader's order. */
   order: Record<string, string[]>;
+  /** Section ids in the reader's order; empty keeps the résumé's own. */
+  section_order: string[];
   text: Record<string, string>;
   skills_lead: string[];
 }
@@ -565,6 +570,29 @@ export const importJsonResume = (json: string, name?: string) =>
 
 export const exportJsonResume = (id?: string) =>
   invoke<string>("export_json_resume", { id: id ?? null });
+
+/** A job description pasted in rather than scraped. Its `url` is `pasted:<id>`. */
+export interface PastedPosting {
+  url: string;
+  title: string;
+  company: string | null;
+  created_at: string;
+  /** No job description: a version of the résumé chosen by hand. */
+  by_hand: boolean;
+}
+
+/**
+ * Stores a pasted job description and returns the URL to tailor against. Empty `text` makes a
+ * version with no job behind it, chosen by hand.
+ */
+export const savePastedPosting = (title: string, company: string | null, text: string) =>
+  invoke<string>("save_pasted_posting", { title, company, text });
+
+export const listPastedPostings = () => invoke<PastedPosting[]>("list_pasted_postings");
+
+export const deletePastedPosting = (url: string) => invoke<void>("delete_pasted_posting", { url });
+
+export const isPasted = (url: string) => url.startsWith("pasted:");
 
 export const listResumeThemes = () => invoke<ResumeThemeOption[]>("list_resume_themes");
 

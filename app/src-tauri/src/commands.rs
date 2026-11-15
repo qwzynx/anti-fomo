@@ -592,6 +592,22 @@ fn item_detail(state: &AppState, url: &str) -> CmdResult<Option<Item>> {
     let view = ranked_view(state, None, Freshness::Any)?;
     let cached = view.items.iter().find(|i| i.url == url).cloned();
 
+    if let Some(id) = url.strip_prefix(PASTED_PREFIX) {
+        let conn = state.db.lock_recover();
+        let Some(posting) = db::load_pasted(&conn, id).map_err(err)? else {
+            return Ok(None);
+        };
+        drop(conn);
+        let profile = current_profile(state, None);
+        let item = pasted_item(&posting, &url);
+        return Ok(
+            personalize_with(vec![item], &profile, view.now, Some(&view.bars))
+                .0
+                .into_iter()
+                .next(),
+        );
+    }
+
     let mut items = {
         let conn = state.db.lock_recover();
         // Not in the feed means dismissed or pruned — the saved list still
@@ -1954,6 +1970,10 @@ pub struct ResumeView {
     theme: resume::Theme,
     /// What a save dialog should suggest.
     filename: String,
+    /// Section id → its entries in the order they are drawn, whoever chose
+    /// it — the reader's drag or the tailoring's own lead-with-the-relevant —
+    /// so the outline lists them the way the page does.
+    order: std::collections::BTreeMap<String, Vec<String>>,
 }
 
 fn now_rfc3339() -> String {
@@ -2087,6 +2107,101 @@ pub fn save_resume_variant(
     db::save_variant(&conn, &url, &resume_id, &json, &now_rfc3339()).map_err(err)
 }
 
+/// The URL scheme of a pasted job description. Tailoring keys everything on a
+/// posting's URL, so a pasted one gets a URL of its own and every résumé
+/// command works on it unchanged.
+const PASTED_PREFIX: &str = "pasted:";
+
+/// A pasted description, read the way a fetched one is: through
+/// `sections::split`, so its Requirements / Responsibilities headings weigh
+/// what they weigh on any other posting.
+fn pasted_item(posting: &db::PastedPosting, url: &str) -> Item {
+    let detail = details::detail_of(scrapers::sections::split(&posting.text), Vec::new());
+    let mut item = Item {
+        company: posting.company.clone(),
+        ..Item::new(posting.title.clone(), "Pasted", ItemType::Job, url)
+    }
+    .with_content(posting.text.chars().take(280).collect::<String>());
+    if let Ok(at) = DateTime::parse_from_rfc3339(&posting.created_at) {
+        item = item.with_timestamp(at.with_timezone(&Utc));
+    }
+    let details = std::iter::once((url.to_string(), detail)).collect();
+    db::attach_details(std::slice::from_mut(&mut item), &details);
+    item
+}
+
+/// A pasted posting as the picker lists it.
+#[derive(Serialize)]
+pub struct PastedSummary {
+    url: String,
+    title: String,
+    company: Option<String>,
+    created_at: String,
+    /// No job description at all: a version of the résumé chosen by hand.
+    by_hand: bool,
+}
+
+/// Stores a job description pasted in from anywhere, and returns the URL to
+/// tailor against.
+///
+/// The text may be empty. That is a version made without any job in mind —
+/// a general one-pager, say — where the reader picks what goes on the page
+/// and the page limit trims the rest. It is a posting with no text, which
+/// tailors against nothing, so every résumé command already handles it.
+#[tauri::command(async)]
+pub fn save_pasted_posting(
+    state: State<'_, AppState>,
+    title: String,
+    company: Option<String>,
+    text: String,
+) -> CmdResult<String> {
+    let text = text.trim();
+    let title = title.trim();
+    let posting = db::PastedPosting {
+        id: resume::model::new_id(),
+        title: match (title.is_empty(), text.is_empty()) {
+            (false, _) => title.into(),
+            (true, true) => "General résumé".into(),
+            (true, false) => "Pasted job".into(),
+        },
+        company: company
+            .map(|c| c.trim().to_string())
+            .filter(|c| !c.is_empty()),
+        text: text.to_string(),
+        created_at: now_rfc3339(),
+    };
+    let conn = state.db.lock_recover();
+    db::save_pasted(&conn, &posting).map_err(err)?;
+    Ok(format!("{PASTED_PREFIX}{}", posting.id))
+}
+
+/// Every pasted posting, newest first.
+#[tauri::command(async)]
+pub fn list_pasted_postings(state: State<'_, AppState>) -> CmdResult<Vec<PastedSummary>> {
+    let conn = state.db.lock_recover();
+    Ok(db::list_pasted(&conn)
+        .map_err(err)?
+        .into_iter()
+        .map(|p| PastedSummary {
+            url: format!("{PASTED_PREFIX}{}", p.id),
+            title: p.title,
+            company: p.company,
+            created_at: p.created_at,
+            by_hand: p.text.trim().is_empty(),
+        })
+        .collect())
+}
+
+/// Deletes a pasted posting and the tailoring made against it.
+#[tauri::command(async)]
+pub fn delete_pasted_posting(state: State<'_, AppState>, url: String) -> CmdResult<()> {
+    let Some(id) = url.strip_prefix(PASTED_PREFIX) else {
+        return Err("Not a pasted posting.".into());
+    };
+    let conn = state.db.lock_recover();
+    db::delete_pasted(&conn, id, &url).map_err(err)
+}
+
 /// Throws away a posting's overrides, putting it back to whatever the auto pass
 /// decides.
 #[tauri::command(async)]
@@ -2201,6 +2316,18 @@ fn view_of(
     doc: &resume::Resume,
     company: Option<&str>,
 ) -> ResumeView {
+    let order = doc
+        .sections
+        .iter()
+        .map(|section| {
+            let ids = selection
+                .order_for(section)
+                .iter()
+                .map(|e| e.id.clone())
+                .collect();
+            (section.id.clone(), ids)
+        })
+        .collect();
     ResumeView {
         pages: laid_out.pages,
         fill: laid_out.fill,
@@ -2215,6 +2342,7 @@ fn view_of(
         focus: selection.focus,
         theme,
         filename: resume::suggested_filename(&doc.contact.name, company),
+        order,
     }
 }
 
@@ -2332,6 +2460,59 @@ mod tests {
         ] {
             assert!(!is_ui_setting(key), "{key}");
         }
+    }
+
+    #[test]
+    fn a_pasted_posting_is_tailored_against_like_a_fetched_one() {
+        let t = test_state();
+        let posting = db::PastedPosting {
+            id: "p1".into(),
+            title: "Data Engineer".into(),
+            company: Some("Acme".into()),
+            text: "We move money.\n\nRequirements:\n- 3+ years of Python\n- Strong SQL\n\nNice to have:\n- Kafka".into(),
+            created_at: now_rfc3339(),
+        };
+        db::save_pasted(&t.state.db.lock_recover(), &posting).unwrap();
+        let url = "pasted:p1";
+
+        let item = item_detail(&t.state, url)
+            .unwrap()
+            .expect("the pasted posting resolves");
+        assert_eq!(item.title, "Data Engineer");
+        assert_eq!(item.company.as_deref(), Some("Acme"));
+        assert!(
+            skills::from_posting(&item),
+            "its text counts as a posting's own"
+        );
+        let asks = skills::extract(&item);
+        for skill in ["Python", "SQL", "Kafka"] {
+            assert!(asks.iter().any(|s| s == skill), "{skill} in {asks:?}");
+        }
+        assert!(
+            item.requirements.is_some(),
+            "the Requirements heading is honoured"
+        );
+
+        // A version with no job text tailors against nothing: no skills, and
+        // the reader's own choices plus the page limit decide the page.
+        let blank = db::PastedPosting {
+            id: "p2".into(),
+            title: "General".into(),
+            company: None,
+            text: String::new(),
+            created_at: now_rfc3339(),
+        };
+        db::save_pasted(&t.state.db.lock_recover(), &blank).unwrap();
+        let general = item_detail(&t.state, "pasted:p2").unwrap().unwrap();
+        assert!(!skills::from_posting(&general));
+        assert!(skills::extract(&general).is_empty());
+
+        // Deleting it takes its tailoring with it.
+        let conn = t.state.db.lock_recover();
+        db::save_variant(&conn, url, "r1", "{}", &now_rfc3339()).unwrap();
+        db::delete_pasted(&conn, "p1", url).unwrap();
+        assert!(db::load_pasted(&conn, "p1").unwrap().is_none());
+        assert!(db::load_variant(&conn, url, "r1").unwrap().is_none());
     }
 
     #[test]

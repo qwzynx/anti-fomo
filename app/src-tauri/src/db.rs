@@ -58,7 +58,91 @@ pub fn open(path: &std::path::Path) -> Result<Connection> {
         log::warn!("could not build the description search index: {e}");
     }
     ensure_application_columns(&conn)?;
+    ensure_pasted_postings(&conn)?;
     Ok(conn)
+}
+
+/// Job descriptions the reader pasted in to tailor a résumé against — a
+/// posting found somewhere this app does not scrape.
+///
+/// Durable, and outside `migrate` like the tracker's columns: it is the
+/// reader's own text, not a cached listing, so a schema bump must not drop it
+/// and `clear_data` leaves it alone. A row is never edited — the skill memo is
+/// keyed by URL, so pasting a corrected description is a new posting.
+pub fn ensure_pasted_postings(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS pasted_postings (
+            id         TEXT PRIMARY KEY,
+            title      TEXT NOT NULL,
+            company    TEXT,
+            text       TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );",
+    )?;
+    Ok(())
+}
+
+/// One pasted job description.
+#[derive(serde::Serialize, Debug, Clone, PartialEq)]
+pub struct PastedPosting {
+    pub id: String,
+    pub title: String,
+    pub company: Option<String>,
+    pub text: String,
+    pub created_at: String,
+}
+
+pub fn save_pasted(conn: &Connection, posting: &PastedPosting) -> Result<()> {
+    conn.execute(
+        "INSERT INTO pasted_postings (id, title, company, text, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![
+            posting.id,
+            posting.title,
+            posting.company,
+            posting.text,
+            posting.created_at
+        ],
+    )?;
+    Ok(())
+}
+
+fn pasted_of(row: &rusqlite::Row<'_>) -> rusqlite::Result<PastedPosting> {
+    Ok(PastedPosting {
+        id: row.get(0)?,
+        title: row.get(1)?,
+        company: row.get(2)?,
+        text: row.get(3)?,
+        created_at: row.get(4)?,
+    })
+}
+
+pub fn load_pasted(conn: &Connection, id: &str) -> Result<Option<PastedPosting>> {
+    Ok(conn
+        .query_row(
+            "SELECT id, title, company, text, created_at FROM pasted_postings WHERE id = ?1",
+            params![id],
+            pasted_of,
+        )
+        .optional()?)
+}
+
+/// Newest first.
+pub fn list_pasted(conn: &Connection) -> Result<Vec<PastedPosting>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, title, company, text, created_at FROM pasted_postings
+         ORDER BY created_at DESC",
+    )?;
+    let rows = stmt.query_map([], pasted_of)?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+/// Deletes a pasted posting and every tailoring made against it, which has
+/// nothing left to tailor to.
+pub fn delete_pasted(conn: &Connection, id: &str, url: &str) -> Result<()> {
+    conn.execute("DELETE FROM pasted_postings WHERE id = ?1", params![id])?;
+    conn.execute("DELETE FROM resume_variants WHERE url = ?1", params![url])?;
+    Ok(())
 }
 
 /// The application tracker's columns on `item_state`.

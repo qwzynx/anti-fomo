@@ -118,7 +118,11 @@ Everything ships from `/app`:
     (`Selection::why` vs `Selection::echo`) so the weaker evidence cannot read
     as coverage. Tailoring also *orders*: Projects, Leadership and Awards lead
     with the entry that speaks to the posting, and Experience and Education
-    never do — a reordered work history reads as a mistake.
+    never do — a reordered work history reads as a mistake. The reader can
+    reorder anything by hand (drag in the tailor outline, `lib/sortable.ts`):
+    `Variant::order` per section's entries and `Variant::section_order`,
+    which `resume::tailored` applies before the pass — only the reader ever
+    moves a section.
     **`layout` emits positioned boxes and has two consumers** —
     `pdf.rs` writes them into a PDF and `ResumeSheet.svelte` (one page, inside
     the paged `ResumePreview` viewer) draws the very
@@ -131,6 +135,13 @@ Everything ships from `/app`:
     theme and runs `pdftotext` over the output; printpdf's own `extract_text`
     replays ops rather than reading the file back and will happily report text
     that never reached the page.
+    A job description pasted in from anywhere (`/resume/tailor` with no
+    `?url=`, the sidebar's "Tailor résumé") is a `pasted_postings` row with
+    the URL `pasted:<id>`; `item_detail` builds an `Item` from it through
+    `sections::split`, so every résumé command works on it unchanged. Rows
+    are never edited — the skill memo is keyed by URL. Empty text is a version
+    made by hand with no job behind it: it tailors against nothing, so the
+    reader's ticks and the page limit decide the page.
   - `prefs.rs` — what the reader asked to have scraped (`ScrapePrefs`) and which
     sources that makes due. Pure, so the rules that decide what costs a request
     are tested without an app: `due` (a source never run, or older than its
@@ -142,8 +153,8 @@ Everything ships from `/app`:
     `complete_onboarding` writes for a new one. The launch refresh and every button
     go through that one gate.
   - `db.rs` — SQLite via `rusqlite` (bundled). Items are a rebuildable cache keyed
-    by URL. `settings`, `item_state`, `job_details`, `resumes` and
-    `resume_variants` are the durable tables and must survive a schema bump, so
+    by URL. `settings`, `item_state`, `job_details`, `resumes`,
+    `resume_variants` and `pasted_postings` are the durable tables and must survive a schema bump, so
     they are created with `IF NOT EXISTS` and never dropped. **Additive schema
     goes in `open()`, not `migrate`**: a version bump drops the items cache and
     costs a full re-scrape, so new durable columns (`ensure_application_columns`

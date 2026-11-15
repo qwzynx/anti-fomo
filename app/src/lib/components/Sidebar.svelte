@@ -18,6 +18,7 @@
     Sparkles,
     Square,
     Sun,
+    Target,
     type IconComponent,
   } from "$lib/icons";
   import { modKey } from "$lib/platform";
@@ -58,7 +59,13 @@
   ]);
 
   const tools = $derived<Link[]>([
-    { href: "/resume", label: "Résumé", icon: FileText, match: (p) => p.startsWith("/resume") },
+    {
+      href: "/resume",
+      label: "Résumé",
+      icon: FileText,
+      match: (p) => p.startsWith("/resume") && !p.startsWith("/resume/tailor"),
+    },
+    { href: "/resume/tailor", label: "Tailor résumé", icon: Target, match: (p) => p.startsWith("/resume/tailor") },
     { href: "/settings", label: "Settings", icon: Settings, match: (p) => p.startsWith("/settings") },
   ]);
 

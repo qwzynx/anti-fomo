@@ -16,6 +16,7 @@
     Palette,
     Plus,
     RotateCcw,
+    Target,
     Trash2,
     Upload,
   } from "$lib/icons";
@@ -177,6 +178,10 @@
   >
     {#snippet actions()}
       {#if resume.exists}
+        <!-- The sidebar has this too; phones have no sidebar. -->
+        <a href="/resume/tailor" class="tool mr-1" title="Tailor this résumé to a job">
+          <Target size={14} /><span class="hidden sm:inline">Tailor for a job</span>
+        </a>
         <button
           onclick={downloadPdf}
           disabled={busy === "pdf" || !view}
