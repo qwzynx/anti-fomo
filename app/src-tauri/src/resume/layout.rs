@@ -544,13 +544,23 @@ fn entries_block(pen: &mut Pen, section: &Section, selection: &Selection, base: 
         pen.reserve(lh * 3.0);
 
         let dates = date_range(&entry.start, &entry.end);
+        // With no location to share the first line, the dates take its right
+        // edge. Left on the second line beside an empty title — a project's,
+        // usually — they cost a whole line of white space between the name
+        // and what follows it.
+        let dates_up = entry.location.trim().is_empty() && !dates.is_empty();
         let org_baseline = pen.y + base;
+        let (right, right_style) = if dates_up {
+            (dates.as_str(), FontStyle::Italic)
+        } else {
+            (entry.location.as_str(), FontStyle::Regular)
+        };
         pen.row(
             &entry.org,
             FontStyle::Bold,
             pen.theme.ink(|r: &AccentRoles| r.org),
-            &entry.location,
-            FontStyle::Regular,
+            right,
+            right_style,
             base,
         );
         // A project's repository, an employer's careers page. The organisation
@@ -574,12 +584,13 @@ fn entries_block(pen: &mut Pen, section: &Section, selection: &Selection, base: 
                 });
             }
         }
-        if !entry.title.trim().is_empty() || !dates.is_empty() {
+        let second_dates = if dates_up { "" } else { dates.as_str() };
+        if !entry.title.trim().is_empty() || !second_dates.is_empty() {
             pen.row(
                 &entry.title,
                 FontStyle::Italic,
                 Rgb::BLACK,
-                &dates,
+                second_dates,
                 FontStyle::Italic,
                 base,
             );
@@ -718,6 +729,49 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    #[test]
+    fn a_project_with_no_location_keeps_its_dates_on_the_name_line() {
+        let mut r = fixture();
+        let projects = r
+            .sections
+            .iter_mut()
+            .find(|s| s.kind == SectionKind::Projects)
+            .expect("starter has a projects section");
+        projects.entries.push(Entry {
+            id: "p1".into(),
+            org: "Fretnote".into(),
+            title: String::new(),
+            location: String::new(),
+            start: "Jul 2026".into(),
+            end: "Present".into(),
+            link: None,
+            detail: Some("Svelte · Rust".into()),
+            bullets: vec![],
+        });
+        let out = lay_out(&r, &all_of(&r), &Theme::default());
+        let baseline = |want: &str| {
+            out.pages
+                .iter()
+                .flat_map(|p| &p.items)
+                .find_map(|d| match d {
+                    Draw::Text { text, y, .. } if text == want => Some(*y),
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("{want} is drawn"))
+        };
+        assert_eq!(baseline("Fretnote"), baseline("Jul 2026 – Present"));
+        // The stack line follows the name directly, with no empty line between.
+        let gap = baseline("Svelte · Rust") - baseline("Fretnote");
+        let theme = Theme::default();
+        assert!(gap < theme.base_size * theme.leading * 1.5, "gap {gap}");
+
+        // A job with a location still puts its dates beside the title.
+        assert_eq!(
+            baseline("Software Engineer Intern"),
+            baseline("May 2025 – Aug 2025")
+        );
     }
 
     #[test]

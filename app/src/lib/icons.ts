@@ -39,6 +39,8 @@ export {
   Download,
   Eye,
   EyeOff,
+  File,
+  Files,
   FileText,
   Filter,
   Flame,
@@ -84,6 +86,8 @@ export {
   Trophy,
   Upload,
   Wrench,
+  ZoomIn,
+  ZoomOut,
   X,
 } from "lucide-svelte";
 
