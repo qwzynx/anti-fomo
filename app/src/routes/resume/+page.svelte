@@ -9,7 +9,12 @@
   import { confirm } from "$lib/confirm.svelte";
   import { toast } from "$lib/toast.svelte";
   import ThemePicker from "$lib/components/resume/ThemePicker.svelte";
+  import { tick } from "svelte";
+  import { SvelteSet } from "svelte/reactivity";
   import {
+    ChevronRight,
+    ChevronsDownUp,
+    ChevronsUpDown,
     Download,
     FileText,
     Loader,
@@ -37,6 +42,59 @@
    */
 
   let tab = $state<"content" | "design">("content");
+
+  // --- getting around a long résumé ---
+  //
+  // Entries start folded to a line each and sections can fold too, so the
+  // page reads as an outline; the bar over it jumps to a section and says
+  // which one is in view. `fold` is "open all / fold all": every entry editor
+  // follows a change of its counter, and otherwise keeps its own state.
+  let fold = $state({ open: false, n: 0 });
+  const foldedSections = new SvelteSet<string>();
+  /** The entry just added, which arrives open: there is nothing to fold yet. */
+  let added = $state<{ section: string; index: number } | null>(null);
+  let pane = $state<HTMLDivElement | null>(null);
+  let inView = $state("you");
+
+  const sectionKey = (section: ResumeSection) => section.id || section.kind;
+
+  function toggleEverything() {
+    const open = !fold.open;
+    fold = { open, n: fold.n + 1 };
+    if (open) foldedSections.clear();
+  }
+
+  function toggleSection(key: string) {
+    if (foldedSections.has(key)) foldedSections.delete(key);
+    else foldedSections.add(key);
+  }
+
+  async function jump(key: string) {
+    foldedSections.delete(key);
+    await tick();
+    const el = document.getElementById(`resume-${key}`);
+    if (!el || !pane) return;
+    // Straight there, under the bar. A smooth scroll is not reliable in every
+    // webview — in some it never starts — and a jump that goes nowhere is worse
+    // than one without an animation.
+    const nav = pane.querySelector<HTMLElement>("nav[aria-label='Résumé sections']");
+    const offset = (nav?.offsetHeight ?? 48) + 12;
+    pane.scrollTo({
+      top: pane.scrollTop + el.getBoundingClientRect().top - pane.getBoundingClientRect().top - offset,
+    });
+    inView = key;
+  }
+
+  /** The last section whose top has passed just under the jump bar. */
+  function spy() {
+    if (!pane || tab !== "content") return;
+    const line = pane.getBoundingClientRect().top + 96;
+    let current = "you";
+    for (const el of pane.querySelectorAll<HTMLElement>("[data-resume-section]")) {
+      if (el.getBoundingClientRect().top <= line) current = el.dataset.resumeSection ?? current;
+    }
+    inView = current;
+  }
   let importing = $state(false);
   let importText = $state("");
   /** What is running, so each button spins for its own job and not the others'. */
@@ -64,7 +122,12 @@
   }
 
   function addEntry(section: ResumeSection) {
+    added = { section: sectionKey(section), index: section.entries.length };
+    foldedSections.delete(sectionKey(section));
     section.entries = [...section.entries, emptyEntry()];
+    // Read once, when the new editor mounts; cleared so no later editor that
+    // happens to land at that index opens too.
+    void tick().then(() => (added = null));
     touch();
   }
 
@@ -194,7 +257,7 @@
     {/snippet}
   </PageHeader>
 
-  <div class="pane flex-1">
+  <div class="pane flex-1" bind:this={pane} onscroll={spy}>
   <div class="mx-auto w-full max-w-7xl px-4 py-5 sm:px-6">
 
   {#if resume.error && resume.exists}
@@ -246,8 +309,9 @@
     </div>
   {:else if doc}
     <div class="mt-4 lg:grid lg:grid-cols-[minmax(0,1fr)_minmax(0,26rem)] lg:gap-6">
-      <!-- Editor -->
-      <div class="min-w-0">
+      <!-- Editor. Room below the last section, so a jump to it can bring it
+           to the top rather than stopping short with the one above in view. -->
+      <div class="min-w-0 {tab === 'content' ? 'lg:pb-[45dvh]' : ''}">
         <div class="mb-4 flex flex-wrap items-center gap-2">
           <ResumeSwitcher />
           {#each [{ id: "content", label: "Content", icon: FileText }, { id: "design", label: "Design", icon: Palette }] as const as t (t.id)}
@@ -267,6 +331,40 @@
             {#if resume.saving}Saving…{:else if resume.dirty}Unsaved{:else}Saved{/if}
           </span>
         </div>
+
+        {#if tab === "content"}
+          <!-- Sticks to the top of the pane: where you are, and a way to the rest. -->
+          <nav
+            class="sticky top-0 z-10 -mx-1 mb-4 flex items-center gap-1 border-b border-line bg-background/95 px-1 py-2 backdrop-blur"
+            aria-label="Résumé sections"
+          >
+            <div class="scrollbar-hide flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
+              {#each [{ key: "you", label: "You", count: null as number | null }, ...doc.sections.map( (sec) => ({ key: sectionKey(sec), label: sec.title || "Untitled", count: sec.entries.length as number | null }), )] as item (item.key)}
+                <button
+                  onclick={() => jump(item.key)}
+                  aria-current={inView === item.key ? "location" : undefined}
+                  class="inline-flex h-7 shrink-0 items-center gap-1 rounded-md px-2.5 text-[12px] font-medium transition-colors {inView ===
+                  item.key
+                    ? 'bg-hover text-foreground'
+                    : 'text-subtle hover:text-foreground'}"
+                >
+                  {item.label}
+                  {#if item.count}
+                    <span class="tabular-nums opacity-60">{item.count}</span>
+                  {/if}
+                </button>
+              {/each}
+            </div>
+            <button
+              onclick={toggleEverything}
+              class="tool shrink-0"
+              title={fold.open ? "Fold every entry to one line" : "Open every entry"}
+            >
+              {#if fold.open}<ChevronsDownUp size={14} />{:else}<ChevronsUpDown size={14} />{/if}
+              <span class="hidden sm:inline">{fold.open ? "Fold all" : "Open all"}</span>
+            </button>
+          </nav>
+        {/if}
 
         {#if tab === "design"}
           <section class="card p-4">
@@ -338,7 +436,7 @@
             {/if}
           </section>
 
-          <section class="card mb-4 p-4">
+          <section class="card mb-4 p-4" id="resume-you" data-resume-section="you">
             <h2 class="mb-3 text-[14px] font-semibold">You</h2>
             <div class="grid gap-3 sm:grid-cols-2">
               <Field
@@ -408,8 +506,22 @@
           </section>
 
           {#each doc.sections as section (section.id || section.kind)}
-            <section class="card mb-4 p-4">
-              <div class="mb-3 flex items-baseline justify-between gap-3">
+            {@const key = sectionKey(section)}
+            {@const folded = foldedSections.has(key)}
+            <section
+              class="card mb-4 p-4"
+              id="resume-{key}"
+              data-resume-section={key}
+            >
+              <div class="flex items-center justify-between gap-2 {folded ? '' : 'mb-3'}">
+                <button
+                  onclick={() => toggleSection(key)}
+                  aria-expanded={!folded}
+                  aria-label="{folded ? 'Open' : 'Fold'} {section.title || 'this section'}"
+                  class="tap h-7 w-7 shrink-0"
+                >
+                  <ChevronRight size={15} class="transition-transform {folded ? '' : 'rotate-90'}" />
+                </button>
                 <input
                   bind:value={section.title}
                   oninput={touch}
@@ -422,6 +534,7 @@
                 </span>
               </div>
 
+              {#if !folded}
               {#if section.kind === "skills"}
                 <p class="mb-3 text-sm text-muted">
                   Leave this empty and the skills line is built from the skills you picked in
@@ -440,6 +553,8 @@
                     onChange={touch}
                     onRemove={() => removeEntry(section, i)}
                     onMove={(d) => moveEntry(section, i, d)}
+                    startOpen={added?.section === key && added.index === i}
+                    {fold}
                   />
                 {/each}
               </div>
@@ -451,6 +566,7 @@
                 <Plus size={14} strokeWidth={2.5} />
                 Add {section.kind === "skills" ? "a skills line" : "an entry"}
               </button>
+              {/if}
             </section>
           {/each}
         {/if}

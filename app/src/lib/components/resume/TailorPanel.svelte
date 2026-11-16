@@ -711,8 +711,8 @@
                   <p class="mb-1 text-[11px] text-subtle">
                     {s.section.kind === "skills"
                       ? "Skills on this line"
-                      : e.items.length > 1
-                        ? "Detail line — tech, stack, honours"
+                      : ["projects", "experience", "leadership"].includes(s.section.kind)
+                        ? "Skills & tools"
                         : "Detail line"}
                   </p>
                   {@render chips(e.items, e.off, `${entryLabel(e.entry)} details`)}

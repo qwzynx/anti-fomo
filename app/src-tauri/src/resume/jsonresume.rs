@@ -22,7 +22,9 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::model::{new_id, Bullet, Contact, Entry, Link, Resume, Section, SectionKind};
+use super::model::{
+    detail_items, new_id, Bullet, Contact, Entry, Link, Resume, Section, SectionKind,
+};
 
 #[derive(Serialize, Deserialize, Default)]
 #[serde(default)]
@@ -248,10 +250,23 @@ fn record_to_entry(r: &Record, project_like: bool) -> Entry {
             .map(Bullet::new),
     );
 
-    let detail = if project_like && !r.keywords.is_empty() {
-        Some(r.keywords.join(" · "))
+    // `keywords` is the skills-and-tools line under a project, a job or an
+    // activity; `score` the one detail line under a degree. A record carrying
+    // both is a project's (keywords win) or anything else's (score wins).
+    let keywords = || -> Option<String> {
+        let items: Vec<&str> = r
+            .keywords
+            .iter()
+            .map(|k| k.trim())
+            .filter(|k| !k.is_empty())
+            .collect();
+        (!items.is_empty()).then(|| items.join(" · "))
+    };
+    let score = || Some(r.score.trim().to_string()).filter(|s| !s.is_empty());
+    let detail = if project_like {
+        keywords().or_else(score)
     } else {
-        Some(r.score.trim().to_string()).filter(|s| !s.is_empty())
+        score().or_else(keywords)
     };
 
     Entry {
@@ -310,7 +325,13 @@ fn restore_ids(resume: &mut Resume, ids: &Ids) {
 /// Serializes a résumé as a `resume.json`.
 pub fn export(resume: &Resume) -> Result<String, String> {
     let section_of = |kind: SectionKind| resume.sections.iter().filter(move |s| s.kind == kind);
-    let records = |kind: SectionKind, project_like: bool| -> Vec<Record> {
+    let records = |kind: SectionKind| -> Vec<Record> {
+        // Where the detail line is skills and tools, it travels as `keywords`;
+        // under a degree or an award it is the one `score`-shaped line.
+        let stack = matches!(
+            kind,
+            SectionKind::Projects | SectionKind::Experience | SectionKind::Leadership
+        );
         section_of(kind)
             .flat_map(|s| &s.entries)
             .map(|e| Record {
@@ -320,18 +341,15 @@ pub fn export(resume: &Resume) -> Result<String, String> {
                 url: e.link.clone().unwrap_or_default(),
                 start_date: e.start.clone(),
                 end_date: e.end.clone(),
-                score: if project_like {
+                score: if stack {
                     String::new()
                 } else {
                     e.detail.clone().unwrap_or_default()
                 },
-                keywords: if project_like {
-                    e.detail
-                        .as_deref()
-                        .unwrap_or("")
-                        .split('·')
-                        .map(str::trim)
-                        .filter(|s| !s.is_empty())
+                keywords: if stack {
+                    detail_items(e.detail.as_deref().unwrap_or(""))
+                        .0
+                        .into_iter()
                         .map(str::to_string)
                         .collect()
                 } else {
@@ -365,11 +383,11 @@ pub fn export(resume: &Resume) -> Result<String, String> {
                 })
                 .collect(),
         },
-        work: records(SectionKind::Experience, false),
-        volunteer: records(SectionKind::Leadership, false),
-        education: records(SectionKind::Education, false),
-        projects: records(SectionKind::Projects, true),
-        awards: records(SectionKind::Awards, false),
+        work: records(SectionKind::Experience),
+        volunteer: records(SectionKind::Leadership),
+        education: records(SectionKind::Education),
+        projects: records(SectionKind::Projects),
+        awards: records(SectionKind::Awards),
         skills: section_of(SectionKind::Skills)
             .flat_map(|s| &s.entries)
             .map(|e| SkillGroup {
@@ -509,6 +527,42 @@ mod tests {
             assert_eq!(a.kind, b.kind);
             assert_eq!(a.entries.len(), b.entries.len());
         }
+    }
+
+    /// A job's and an activity's skills-and-tools line travels as `keywords`,
+    /// like a project's stack, and a degree's detail stays a `score`.
+    #[test]
+    fn skills_lines_round_trip_for_jobs_and_activities() {
+        let json = r#"{
+          "work": [{ "name": "Shopify", "position": "Intern", "keywords": ["Python", "SQL"] }],
+          "volunteer": [{ "organization": "YorkU Hacks", "position": "Organiser", "keywords": ["Figma"] }],
+          "education": [{ "institution": "York", "score": "GPA 3.9/4.0" }]
+        }"#;
+        let resume = import(json).unwrap();
+        let detail = |kind: SectionKind| {
+            resume
+                .sections
+                .iter()
+                .find(|s| s.kind == kind)
+                .and_then(|s| s.entries[0].detail.clone())
+        };
+        assert_eq!(
+            detail(SectionKind::Experience).as_deref(),
+            Some("Python · SQL")
+        );
+        assert_eq!(detail(SectionKind::Leadership).as_deref(), Some("Figma"));
+        assert_eq!(
+            detail(SectionKind::Education).as_deref(),
+            Some("GPA 3.9/4.0")
+        );
+
+        let out: serde_json::Value = serde_json::from_str(&export(&resume).unwrap()).unwrap();
+        assert_eq!(
+            out["work"][0]["keywords"],
+            serde_json::json!(["Python", "SQL"])
+        );
+        assert_eq!(out["work"][0]["score"], "");
+        assert_eq!(out["education"][0]["score"], "GPA 3.9/4.0");
     }
 
     /// The reason ids ride along in `meta`: a variant addresses bullets by id,

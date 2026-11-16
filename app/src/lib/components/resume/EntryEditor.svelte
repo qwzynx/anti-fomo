@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { ChevronDown, ChevronUp, Plus, Trash2 } from "$lib/icons";
+  import { ChevronDown, ChevronRight, ChevronUp, Plus, Trash2 } from "$lib/icons";
   import type { ResumeEntry, SectionKind } from "$lib/api";
   import { emptyBullet } from "$lib/resume.svelte";
   import Field from "./Field.svelte";
@@ -13,9 +13,13 @@
    * the organisation slot holds, which is the employer for a role and the
    * project's own name for a project.
    *
-   * Reordering is up/down buttons rather than drag-and-drop. There is no drag
-   * primitive anywhere in this codebase, and a drag target is miserable on a
-   * phone, where half of this app is used.
+   * Reordering is up/down buttons, which work the same under a finger.
+   *
+   * It starts folded to one line — name, role, dates, how many bullets — so a
+   * résumé of a dozen entries reads as a list to pick from rather than a wall
+   * of forms. `fold` is the page's "open all / fold all": a change of its
+   * counter sets every editor to its `open`; between changes each one keeps
+   * its own state.
    */
   let {
     entry = $bindable(),
@@ -25,6 +29,8 @@
     onChange,
     onRemove,
     onMove,
+    startOpen = false,
+    fold = { open: false, n: 0 },
   }: {
     entry: ResumeEntry;
     kind: SectionKind;
@@ -33,17 +39,46 @@
     onChange: () => void;
     onRemove: () => void;
     onMove: (delta: number) => void;
+    /** Open on arrival — an entry just added has nothing to fold yet. */
+    startOpen?: boolean;
+    fold?: { open: boolean; n: number };
   } = $props();
 
+  // svelte-ignore state_referenced_locally
+  let open = $state(startOpen || fold.open);
+  // svelte-ignore state_referenced_locally
+  let seen = fold.n;
+  $effect(() => {
+    if (fold.n === seen) return;
+    seen = fold.n;
+    open = fold.open;
+  });
+
+  const summary = $derived(
+    [
+      entry.org.trim() && entry.title.trim() ? entry.title.trim() : "",
+      [entry.start.trim(), entry.end.trim()].filter(Boolean).join(" – "),
+    ]
+      .filter(Boolean)
+      .join(" · ") || (kind === "skills" ? (entry.detail ?? "") : ""),
+  );
+
+  // Projects, jobs and activities share a "Skills & tools" line — what the
+  // work was done with, printed under the role — which a tailored version can
+  // trim item by item. Under a degree or an award the same slot is one detail.
+  const SKILLS = "Skills & tools";
   const words = $derived(
     kind === "education"
       ? { org: "School", title: "Degree & field", detail: "Detail (GPA, honours)" }
       : kind === "projects"
-        ? { org: "Project", title: "Your role", detail: "Tech used" }
+        ? { org: "Project", title: "Your role", detail: SKILLS }
         : kind === "awards"
           ? { org: "Awarded by", title: "Award", detail: "Detail" }
-          : { org: "Organisation", title: "Role", detail: "Detail" },
+          : kind === "experience" || kind === "leadership"
+            ? { org: "Organisation", title: "Role", detail: SKILLS }
+            : { org: "Organisation", title: "Role", detail: "Detail" },
   );
+  const skillsLine = $derived(words.detail === SKILLS);
 
   const heading = $derived(entry.org.trim() || entry.title.trim() || "Untitled");
 
@@ -67,9 +102,29 @@
   }
 </script>
 
-<div class="rounded-xl border border-line-soft bg-line-soft/40 p-4">
-  <div class="mb-3 flex items-center justify-between gap-2">
-    <h4 class="min-w-0 truncate text-sm font-bold">{heading}</h4>
+<div class="rounded-xl border border-line-soft bg-line-soft/40 {open ? 'p-4' : 'px-2 py-1.5'}">
+  <div class="flex items-center justify-between gap-2 {open ? 'mb-3' : ''}">
+    <button
+      onclick={() => (open = !open)}
+      aria-expanded={open}
+      class="flex min-w-0 flex-1 items-center gap-2 rounded-md py-1 text-left {open ? '' : 'pl-1'}"
+    >
+      <ChevronRight
+        size={15}
+        class="shrink-0 text-subtle transition-transform {open ? 'rotate-90' : ''}"
+      />
+      <span class="min-w-0 flex-1">
+        <span class="block truncate text-sm font-bold">{heading}</span>
+        {#if !open && summary}
+          <span class="block truncate text-[11.5px] text-subtle">{summary}</span>
+        {/if}
+      </span>
+      {#if !open && entry.bullets.length > 0}
+        <span class="shrink-0 rounded bg-hover px-1.5 py-0.5 text-[11px] font-medium text-muted tabular-nums">
+          {entry.bullets.length} {entry.bullets.length === 1 ? "bullet" : "bullets"}
+        </span>
+      {/if}
+    </button>
     <div class="flex shrink-0 items-center gap-0.5">
       <button
         onclick={() => onMove(-1)}
@@ -97,6 +152,7 @@
     </div>
   </div>
 
+  {#if open}
   <div class="grid gap-3 sm:grid-cols-2">
     <Field label={words.org} bind:value={entry.org} oninput={onChange} placeholder="Acme Corp" />
     <Field
@@ -133,7 +189,16 @@
         label={words.detail}
         bind:value={() => entry.detail ?? "", (v) => (entry.detail = v.trim() ? v : null)}
         oninput={onChange}
-        placeholder={kind === "projects" ? "Rust · Tauri · SQLite" : "GPA 3.9/4.0"}
+        placeholder={skillsLine
+          ? kind === "projects"
+            ? "Rust · Tauri · SQLite"
+            : "Python · SQL · Figma"
+          : kind === "education"
+            ? "GPA 3.9/4.0"
+            : ""}
+        hint={skillsLine
+          ? "Optional. One line under the role — separate items with · or commas. A tailored version can leave any of them out."
+          : undefined}
       />
     </div>
   </div>
@@ -211,4 +276,5 @@
       Add a bullet
     </button>
   </div>
+{/if}
 </div>

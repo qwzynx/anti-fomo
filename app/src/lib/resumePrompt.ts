@@ -115,7 +115,7 @@ Only these keys are read; anything else is ignored.
     "startDate": "", "endDate": "", "score": "", "highlights": []
   }],
   "work": [{
-    "name": "", "position": "", "location": "", "url": "",
+    "name": "", "position": "", "location": "", "url": "", "keywords": [],
     "startDate": "", "endDate": "", "highlights": []
   }],
   "projects": [{
@@ -123,7 +123,7 @@ Only these keys are read; anything else is ignored.
     "startDate": "", "endDate": "", "highlights": []
   }],
   "volunteer": [{
-    "organization": "", "position": "", "location": "",
+    "organization": "", "position": "", "location": "", "keywords": [],
     "startDate": "", "endDate": "", "highlights": []
   }],
   "awards": [{ "title": "", "awarder": "", "date": "" }],
@@ -141,8 +141,9 @@ How the app reads it:
   Student", "Registered Nurse"). Leave it out if my material does not support one.
 - \`education[].score\` is a single detail line under the degree: GPA, honours,
   or a distinction. Relevant coursework or a thesis can go in its \`highlights\`.
-- \`projects[].keywords\` is the short line of tools or methods under the project
-  name; keep it to the main few rather than repeating them as a bullet.
+- \`keywords\` on a project, a job or an activity is its "Skills & tools" line,
+  printed under the role: the main tools, methods or skills that work used.
+  Keep it to the few that matter; the app can leave any of them out per job.
 - \`volunteer\` is printed as Leadership & Activities — clubs, societies,
   volunteering, mentoring, organising. Keep \`work\` for paid or formal roles,
   including internships and co-ops.
