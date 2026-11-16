@@ -340,6 +340,8 @@ fn visible_items(state: &AppState) -> CmdResult<Vec<Item>> {
         .filter(|i| !states.dismissed.contains(&i.url))
         .collect();
     db::annotate(&mut items, &states);
+    // After `annotate`, which is what says a row is saved and must stay.
+    scrapers::hide_mirrored(&mut items);
     // Before ranking, so skill extraction reads the real requirements rather
     // than the list endpoint's line of location text.
     db::attach_details(&mut items, &details);
@@ -1128,6 +1130,9 @@ async fn enrich_details(app: &AppHandle) -> CmdResult<usize> {
     // without a single request being made.
     let mut unsupported = Vec::new();
     let mut queue = Vec::new();
+    // Postings already queued per paced handler (`Handler::per_pass`).
+    let mut paced: std::collections::HashMap<&'static str, usize> =
+        std::collections::HashMap::new();
     for (url, simplify_id) in candidates {
         let chain = details::route(&url, simplify_id.as_deref());
         if chain.is_empty() {
@@ -1136,6 +1141,13 @@ async fn enrich_details(app: &AppHandle) -> CmdResult<usize> {
                 models::JobDetail::with_status(models::DetailStatus::Unsupported),
             ));
         } else if queue.len() < DETAIL_BUDGET {
+            if let Some(cap) = chain[0].per_pass() {
+                let taken = paced.entry(chain[0].name()).or_default();
+                if *taken >= cap {
+                    continue;
+                }
+                *taken += 1;
+            }
             queue.push((url, chain));
         }
     }

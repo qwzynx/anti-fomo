@@ -146,6 +146,8 @@ employers on the tier list first, software roles first, then by fit.
 | New Grad Positions | `listings.json` from the repo (full-time, not interns) |
 | Job Bank Canada | six searches of the federal job board's HTML results |
 | Himalayas | key-less search API: intern, co-op, student, junior and new grad queries for Canada and the US |
+| Jobicy | key-less API: remote software engineering and data science roles open to Canada, cursor-paged |
+| LinkedIn | the logged-out job search's HTML endpoint: nine software queries scoped to Canada, one request every 1.5 s with 429s waited out, titles that are not software dropped. Descriptions come from the guest posting view, at most 30 a pass |
 | HN Who's Hiring | the latest monthly thread, read through Algolia |
 | Greenhouse, Lever, Ashby, SmartRecruiters, Workable, Recruitee, Breezy | each employer's own public board API, one scraper per ATS family |
 | Workday | each tenant's `cxs` search endpoint |
@@ -157,6 +159,11 @@ from the posting URLs already in the cache. A board that is gone (404/410) or em
 on three separate days is skipped for a week; transient errors never count. `board_check` re-probes all of
 them. Lever's `commitment`, Ashby's `employmentType`, SmartRecruiters'
 `experienceLevel` and Recruitee's type codes mark internships directly.
+
+LinkedIn and Jobicy re-list postings that employers also publish on their own
+boards, under a different URL. On read, a row from either is hidden when
+another source has the same employer and title (`scrapers::hide_mirrored`), so
+the employer's own copy is the one shown. A saved row is never hidden.
 
 **Events**
 

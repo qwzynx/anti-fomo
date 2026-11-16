@@ -45,7 +45,14 @@ Everything ships from `/app`:
     for 74 days) — the schedule treats that as having worked, and the sweep must
     not be fed its rows, or dead listings would become permanent. Dedupe keeps the
     first copy of a URL but `absorb`s the deadline, pay and text the dropped copy
-    carried. Where a cap must stay it keeps the best, not the newest:
+    carried. A **mirror** (`scrapers::MIRRORS`: LinkedIn, Jobicy) re-lists an
+    employer's posting under its own URL, so `hide_mirrored` drops it *on read*
+    (in `visible_items`) when another source has the same employer and title;
+    saved rows are never hidden. LinkedIn is limited to software titles in Canada
+    (`linkedin::is_software`) and is paced: list requests go one at a time, and
+    its descriptions pass through a single gate in `details.rs`, capped per pass
+    by `Handler::per_pass` — a failed description is never retried, so a burst
+    of 429s would lose them for good. Where a cap must stay it keeps the best, not the newest:
     `github_internships::select`, `ats::keep_best`, and `rank::cap_opportunities`
     by `rank::fit` at ingest.
   - `scrapers/boards.rs` + `boards.json` — which employer boards the ATS scrapers

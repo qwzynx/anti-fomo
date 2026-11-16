@@ -30,7 +30,9 @@ pub mod himalayas;
 pub mod hn_hiring;
 pub mod hn_top_links;
 pub mod job_bank;
+pub mod jobicy;
 pub mod jsonld;
+pub mod linkedin;
 pub mod luma;
 pub mod rss;
 pub mod sections;
@@ -142,6 +144,8 @@ pub fn registry() -> Vec<(Category, Box<dyn Scraper>)> {
         (Opportunities, Box::new(github_internships::NEW_GRAD)),
         (Opportunities, Box::new(job_bank::JOB_BANK)),
         (Opportunities, Box::new(himalayas::Himalayas)),
+        (Opportunities, Box::new(jobicy::Jobicy)),
+        (Opportunities, Box::new(linkedin::LinkedIn)),
         (Opportunities, Box::new(hn_hiring::HnHiring)),
         (Opportunities, Box::new(ats::workday::WorkdayBoards)),
         (Opportunities, Box::new(ats::greenhouse::GreenhouseBoards)),
@@ -576,6 +580,79 @@ fn absorb(kept: &mut Item, dup: Item) {
     }
 }
 
+/// Sources that re-list postings employers publish on boards of their own.
+/// A LinkedIn copy of a Greenhouse posting has a different URL, so the
+/// URL-keyed dedupe above cannot see that it is the same job.
+pub const MIRRORS: &[&str] = &[linkedin::NAME, jobicy::NAME];
+
+/// A title reduced to its words, for telling that two sources list the same
+/// role: "Software Engineer, Intern (Summer)" and "Software Engineer - Intern
+/// (Summer)" are one posting.
+fn title_key(title: &str) -> String {
+    let spaced: String = title
+        .to_lowercase()
+        .chars()
+        .map(|c| if c.is_alphanumeric() { c } else { ' ' })
+        .collect();
+    collapse_ws(&spaced)
+}
+
+/// Drops the rows a [`MIRRORS`] source re-lists from somewhere else: same
+/// employer, same title, as a row from any other source. The employer's own
+/// copy is the one kept — it is where the application goes, and the copy the
+/// description handlers read best. Two mirrors listing the same title are both
+/// kept: a role posted in Toronto and in Calgary is two cards on LinkedIn too.
+///
+/// Applied on read rather than at write time, because the copies arrive in
+/// either order and either may be swept later; the mirror row stays in the
+/// cache and comes back on its own when the original goes. A row the reader
+/// saved is never hidden.
+///
+/// One pass over the cache, and cheap where most of it is: only rows at an
+/// employer that some mirror row names build a title key, and the employer is
+/// compared as stored, since every row's company went through
+/// `companies::canonical` in [`finish`].
+pub fn hide_mirrored(items: &mut Vec<Item>) {
+    let is_mirror = |item: &Item| MIRRORS.contains(&item.source_platform.as_str());
+    let mirror_companies: HashSet<&str> = items
+        .iter()
+        .filter(|i| is_mirror(i))
+        .filter_map(|i| i.company.as_deref())
+        .collect();
+    if mirror_companies.is_empty() {
+        return;
+    }
+    let originals: HashSet<(&str, String)> = items
+        .iter()
+        .filter(|i| !is_mirror(i) && i.item_type.is_opportunity())
+        .filter_map(|i| {
+            let company = i.company.as_deref()?;
+            mirror_companies
+                .contains(company)
+                .then(|| (company, title_key(&i.title)))
+        })
+        .collect();
+    if originals.is_empty() {
+        return;
+    }
+    let hidden: Vec<bool> = items
+        .iter()
+        .map(|i| {
+            is_mirror(i)
+                && !i.saved
+                && i.company
+                    .as_deref()
+                    .is_some_and(|c| originals.contains(&(c, title_key(&i.title))))
+        })
+        .collect();
+    let mut at = 0;
+    items.retain(|_| {
+        let keep = !hidden[at];
+        at += 1;
+        keep
+    });
+}
+
 // --- shared parsing helpers ---
 
 /// Flattens an HTML fragment to its visible text, collapsing whitespace.
@@ -796,6 +873,90 @@ mod tests {
     }
 
     #[test]
+    fn a_mirror_copy_of_an_employers_posting_is_hidden() {
+        let titled = |title: &str, source: &str, url: &str| {
+            Item::new(title, source, ItemType::Job, url).with_company("Acme")
+        };
+        let mut items = vec![
+            titled(
+                "Software Engineer - Intern (Summer)",
+                "LinkedIn",
+                "https://www.linkedin.com/jobs/view/1",
+            ),
+            titled(
+                "Software Engineer, Intern (Summer)",
+                "Greenhouse",
+                "https://acme.test/1",
+            ),
+            // Same title, other employer: a different job.
+            Item::new(
+                "Software Engineer, Intern (Summer)",
+                "LinkedIn",
+                ItemType::Job,
+                "https://www.linkedin.com/jobs/view/2",
+            )
+            .with_company("Initech"),
+            // Only on LinkedIn.
+            titled(
+                "Backend Developer",
+                "LinkedIn",
+                "https://www.linkedin.com/jobs/view/3",
+            ),
+        ];
+        hide_mirrored(&mut items);
+        let urls: Vec<&str> = items.iter().map(|i| i.url.as_str()).collect();
+        assert_eq!(
+            urls,
+            [
+                "https://acme.test/1",
+                "https://www.linkedin.com/jobs/view/2",
+                "https://www.linkedin.com/jobs/view/3",
+            ]
+        );
+    }
+
+    #[test]
+    fn mirrors_do_not_hide_each_other_or_a_saved_row() {
+        let mut a = Item::new(
+            "Software Engineer",
+            "LinkedIn",
+            ItemType::Job,
+            "https://www.linkedin.com/jobs/view/1",
+        )
+        .with_company("Acme");
+        let b = Item::new(
+            "Software Engineer",
+            "LinkedIn",
+            ItemType::Job,
+            "https://www.linkedin.com/jobs/view/2",
+        )
+        .with_company("Acme");
+        let mut items = vec![a.clone(), b.clone()];
+        hide_mirrored(&mut items);
+        assert_eq!(items.len(), 2, "a role posted in two cities is two cards");
+
+        a.saved = true;
+        let original = Item::new(
+            "Software Engineer",
+            "Lever",
+            ItemType::Job,
+            "https://acme.test/1",
+        )
+        .with_company("Acme");
+        let mut items = vec![a, b, original];
+        hide_mirrored(&mut items);
+        let urls: Vec<&str> = items.iter().map(|i| i.url.as_str()).collect();
+        assert_eq!(
+            urls,
+            [
+                "https://www.linkedin.com/jobs/view/1",
+                "https://acme.test/1"
+            ],
+            "the saved copy stays, the other mirror goes"
+        );
+    }
+
+    #[test]
     fn only_employers_that_answered_are_alive() {
         let items = [
             posting("Greenhouse", "Acme", "https://acme.test/a"),
@@ -852,7 +1013,14 @@ mod tests {
             assert_ne!(liveness(name), Liveness::Sampled);
         }
         // Searches and samples: absence from one proves nothing.
-        for name in ["Himalayas", "HN Who's Hiring", "Job Bank Canada", "Workday"] {
+        for name in [
+            "Himalayas",
+            "HN Who's Hiring",
+            "Job Bank Canada",
+            "Workday",
+            "LinkedIn",
+            "Jobicy",
+        ] {
             assert!(
                 registered.contains(name),
                 "{name} is not a registered source"

@@ -87,6 +87,9 @@ pub enum Handler {
         id: String,
     },
     JobBank(String),
+    /// LinkedIn's guest view of one posting, by its numeric id. Paced: see
+    /// [`fetch_linkedin`].
+    LinkedIn(String),
     /// Fetch the posting page and read its schema.org `JobPosting`.
     Page(String),
     /// Fetch `https://simplify.jobs/p/{id}`.
@@ -104,8 +107,22 @@ impl Handler {
             Handler::Workable { .. } => "workable",
             Handler::Eightfold { .. } => "eightfold",
             Handler::JobBank(_) => "job bank",
+            Handler::LinkedIn(_) => "linkedin",
             Handler::Page(_) => "schema.org",
             Handler::Simplify(_) => "simplify.jobs",
+        }
+    }
+
+    /// How many postings this handler may take from one description pass.
+    /// `None` is no limit beyond the pass's own budget. A host whose requests
+    /// must be paced would otherwise turn a three-second pass into minutes, and
+    /// fill every concurrent slot with requests waiting their turn while the
+    /// other hosts sit idle. What it is not given this time is not recorded,
+    /// so it is first in line next time.
+    pub fn per_pass(&self) -> Option<usize> {
+        match self {
+            Handler::LinkedIn(_) => Some(LINKEDIN_PER_PASS),
+            _ => None,
         }
     }
 }
@@ -186,6 +203,9 @@ fn ats_handler(url: &str) -> Option<Handler> {
     if host.ends_with("jobbank.gc.ca") && path.contains("/jobsearch/jobposting") {
         return Some(Handler::JobBank(url.to_string()));
     }
+    if let Some(id) = super::linkedin::job_id(url) {
+        return Some(Handler::LinkedIn(id.to_string()));
+    }
     None
 }
 
@@ -233,6 +253,7 @@ const NO_METADATA: &[&str] = &[
     "apply.workable.com",
     "eightfold.ai",
     "jobbank.gc.ca",
+    "linkedin.com",
     "lifeattiktok.com",
     "bytedance.com",
     "oraclecloud.com",
@@ -378,6 +399,7 @@ async fn fetch_one(client: &reqwest::Client, handler: &Handler) -> JobDetail {
         }
         Handler::Eightfold { host, id } => fetch_eightfold(client, host, id).await,
         Handler::JobBank(url) => fetch_job_bank(client, url).await,
+        Handler::LinkedIn(id) => fetch_linkedin(client, id).await,
         Handler::Page(url) => fetch_page(client, url).await,
         Handler::Simplify(id) => fetch_simplify(client, id).await,
     };
@@ -897,6 +919,68 @@ fn parse_simplify(payload: &str) -> JobDetail {
     )
 }
 
+// --- LinkedIn ---
+
+/// LinkedIn postings described per pass. At the pace below, about forty
+/// seconds of requests — the rest of the pass is over long before that, so
+/// this is the share that keeps it from being much longer.
+pub const LINKEDIN_PER_PASS: usize = 30;
+/// Between two LinkedIn requests. Measured: at one a second about one in
+/// sixteen answers 429.
+const LINKEDIN_SPACING: std::time::Duration = std::time::Duration::from_millis(1200);
+const LINKEDIN_TRIES: u32 = 3;
+
+/// One LinkedIn request at a time, and when the last one went. Every other
+/// host keeps the pass's concurrency; this one sees a single, paced reader,
+/// because a description that fails is recorded and never asked for again,
+/// and a burst of 429s would throw away the descriptions it was for.
+static LINKEDIN_GATE: LazyLock<futures::lock::Mutex<Option<std::time::Instant>>> =
+    LazyLock::new(|| futures::lock::Mutex::new(None));
+
+async fn fetch_linkedin(client: &reqwest::Client, id: &str) -> anyhow::Result<JobDetail> {
+    let url = format!("https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/{id}");
+    let mut last = LINKEDIN_GATE.lock().await;
+    for attempt in 1..=LINKEDIN_TRIES {
+        if let Some(at) = *last {
+            let since = at.elapsed();
+            if since < LINKEDIN_SPACING {
+                tokio::time::sleep(LINKEDIN_SPACING - since).await;
+            }
+        }
+        let response = get(client, url.clone()).send().await;
+        *last = Some(std::time::Instant::now());
+        let response = response?;
+        match response.status() {
+            reqwest::StatusCode::TOO_MANY_REQUESTS if attempt < LINKEDIN_TRIES => {
+                tokio::time::sleep(std::time::Duration::from_secs(4 * u64::from(attempt))).await;
+                continue;
+            }
+            // Taken down. A posting outlives its page in the cache by design.
+            reqwest::StatusCode::NOT_FOUND | reqwest::StatusCode::GONE => {
+                return Ok(JobDetail::with_status(DetailStatus::Empty));
+            }
+            _ => {}
+        }
+        let body = response.error_for_status()?.text().await?;
+        return Ok(parse_linkedin(&body));
+    }
+    unreachable!("the last attempt returns")
+}
+
+static LINKEDIN_BODY: LazyLock<Selector> =
+    LazyLock::new(|| Selector::parse(".show-more-less-html__markup, .description__text").unwrap());
+
+/// The description is the employer's own HTML, headings and all — usually
+/// `<strong>` runs ("What You'll Do", "What You Bring") — so it goes through
+/// the same splitter as every ATS.
+fn parse_linkedin(html: &str) -> JobDetail {
+    let doc = Html::parse_document(html);
+    let Some(body) = doc.select(&LINKEDIN_BODY).next() else {
+        return JobDetail::with_status(DetailStatus::Empty);
+    };
+    detail_of(sections::split(&body.inner_html()), Vec::new())
+}
+
 // --- Job Bank Canada ---
 
 async fn fetch_job_bank(client: &reqwest::Client, url: &str) -> anyhow::Result<JobDetail> {
@@ -1112,6 +1196,58 @@ mod tests {
             )[0],
             Handler::JobBank(_)
         ));
+    }
+
+    #[test]
+    fn a_linkedin_posting_is_read_from_its_guest_view_alone() {
+        assert_eq!(
+            route(
+                "https://www.linkedin.com/jobs/view/4455797536",
+                Some("simplify-id")
+            )[0],
+            Handler::LinkedIn("4455797536".into())
+        );
+        assert_eq!(
+            names("https://www.linkedin.com/jobs/view/4455797536", None),
+            ["linkedin"],
+            "the page itself carries no schema.org block to spend a request on"
+        );
+        assert!(route("https://www.linkedin.com/company/acme", None).is_empty());
+        assert_eq!(
+            Handler::LinkedIn("1".into()).per_pass(),
+            Some(LINKEDIN_PER_PASS)
+        );
+        assert_eq!(Handler::Simplify("1".into()).per_pass(), None);
+    }
+
+    #[test]
+    fn linkedin_descriptions_split_on_their_bold_headings() {
+        let html = r#"<html><body><div class="description__text"><section class="show-more-less-html">
+            <div class="show-more-less-html__markup relative overflow-hidden">
+            <strong>About the team</strong><br><br>We build payment systems.<br><br>
+            <strong>What You'll Do</strong><ul><li>Ship backend services in Rust</li></ul>
+            <strong>What You Bring</strong><ul><li>Experience with Python and SQL</li></ul>
+            </div></section></div></body></html>"#;
+        let detail = parse_linkedin(html);
+        assert_eq!(detail.status, DetailStatus::Ok);
+        assert!(
+            detail
+                .requirements
+                .as_deref()
+                .is_some_and(|r| r.contains("Python")),
+            "{detail:?}"
+        );
+        assert!(
+            detail
+                .responsibilities
+                .as_deref()
+                .is_some_and(|r| r.contains("Rust")),
+            "{detail:?}"
+        );
+        assert_eq!(
+            parse_linkedin("<html><body>Sign in</body></html>").status,
+            DetailStatus::Empty
+        );
     }
 
     #[test]
