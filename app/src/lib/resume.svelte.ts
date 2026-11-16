@@ -196,6 +196,39 @@ export const resume = {
     saveTimer = setTimeout(() => void resume.save(), SAVE_DELAY);
   },
 
+  /**
+   * Rewrites one bullet of the résumé itself and waits until it is on disk.
+   *
+   * For the tailor screen's "Save to résumé": a rewording made for one posting
+   * that turned out to be the better wording everywhere. Waits for the write,
+   * not just the edit, because the tailored layout is read back from the
+   * stored row — relaying out before the save lands would show the old words.
+   * Returns false when no bullet has that id.
+   */
+  async setBulletText(bulletId: string, text: string): Promise<boolean> {
+    const bullet = doc?.sections
+      .flatMap((s) => s.entries)
+      .flatMap((e) => e.bullets)
+      .find((b) => b.id === bulletId);
+    if (!bullet) return false;
+    bullet.text = text;
+    edits++;
+    dirty = true;
+    await resume.flush();
+    return !dirty;
+  },
+
+  /** Writes any pending edit now and resolves once nothing is left unsaved. */
+  async flush() {
+    clearTimeout(saveTimer);
+    const settled = async () => {
+      while (saving) await new Promise((r) => setTimeout(r, 40));
+    };
+    await settled();
+    if (dirty) await resume.save();
+    await settled();
+  },
+
   /** Writes the résumé, then re-reads it because Rust re-derives on save. */
   async save() {
     if (!doc || !theme) return;

@@ -162,6 +162,30 @@
     await relayout();
   }
 
+  /**
+   * A rewording promoted to the résumé itself. The bullet's text is written
+   * and saved first, then this posting's override is dropped — it would only
+   * repeat what the résumé now says — and the page laid out again.
+   */
+  async function saveToResume(bulletId: string, text: string) {
+    if (!variant) return;
+    let ok = false;
+    try {
+      ok = await resume.setBulletText(bulletId, text);
+    } catch (e) {
+      toast.error("save that wording to your résumé", e);
+      return;
+    }
+    if (!ok) {
+      toast.error("save that wording to your résumé", resume.error ?? "the bullet is no longer there");
+      return;
+    }
+    const rest = { ...variant.text };
+    delete rest[bulletId];
+    await applyVariant({ ...variant, text: rest });
+    toast.success(`Saved to “${resume.name}” — every version now starts from this wording`);
+  }
+
   const hasOverrides = $derived(
     !!variant &&
       (Object.keys(variant.include).length > 0 ||
@@ -344,6 +368,7 @@
               {variant}
               {byHand}
               onVariant={(next) => void applyVariant(next)}
+              onSaveToResume={(id, text) => void saveToResume(id, text)}
             />
           {/key}
         {/if}

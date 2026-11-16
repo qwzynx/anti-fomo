@@ -8,6 +8,7 @@
     CircleAlert,
     EyeOff,
     GripVertical,
+    Save,
     ListChecks,
     Pencil,
     Pin,
@@ -57,6 +58,7 @@
     variant,
     byHand = false,
     onVariant,
+    onSaveToResume,
   }: {
     doc: ResumeDoc;
     view: ResumeView;
@@ -64,6 +66,11 @@
     /** Made without a job: there is nothing to match, only what to keep. */
     byHand?: boolean;
     onVariant: (next: ResumeVariant) => void;
+    /**
+     * Makes a rewording permanent: writes it into the résumé itself, where
+     * every version and every posting gets it, and drops this override.
+     */
+    onSaveToResume?: (bulletId: string, text: string) => void;
   } = $props();
 
   type Filter = "all" | "on" | "off";
@@ -355,6 +362,14 @@
     else text[id] = next;
     editing = null;
     onVariant({ ...variant, text });
+  }
+
+  /** The draft (or the standing rewording) becomes the résumé's own wording. */
+  function keepEverywhere(id: string, text: string) {
+    const next = text.trim();
+    if (!next || !onSaveToResume) return;
+    editing = null;
+    onSaveToResume(id, next);
   }
 
   function revertText(id: string) {
@@ -748,12 +763,22 @@
                             <button onclick={() => (editing = null)} class="tool tool-outline h-7 text-[12px]">
                               Cancel
                             </button>
+                            {#if onSaveToResume}
+                              <button
+                                onclick={() => keepEverywhere(id, draftText)}
+                                disabled={!draftText.trim() || draftText.trim() === row.bullet.text.trim()}
+                                class="tool tool-outline h-7 text-[12px] disabled:opacity-40"
+                                title="Write this wording into your résumé itself, for every version and posting"
+                              >
+                                <Save size={12} /> Save to résumé
+                              </button>
+                            {/if}
                             {#if reworded}
                               <button onclick={() => revertText(id)} class="tool h-7 text-[12px]">
                                 Use original
                               </button>
                             {/if}
-                            <span class="ml-auto text-[11px] text-subtle">This posting only</span>
+                            <span class="ml-auto text-[11px] text-subtle">Done keeps it to this posting</span>
                           </div>
                         </div>
                       {:else}
@@ -814,6 +839,17 @@
                           >
                             <Pencil size={13} />
                           </button>
+                          {#if reworded && onSaveToResume}
+                            <button
+                              onclick={() => keepEverywhere(id, variant.text[id] ?? "")}
+                              disabled={e.off}
+                              aria-label="Save this wording to your résumé"
+                              title="Save this wording to your résumé — every version gets it"
+                              class="tool h-7 min-w-7 px-0 disabled:opacity-40"
+                            >
+                              <Save size={13} />
+                            </button>
+                          {/if}
                           {#if row.state !== "auto"}
                             <button
                               onclick={() => setInclude(id, "auto")}

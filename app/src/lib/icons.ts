@@ -71,6 +71,7 @@ export {
   RefreshCw,
   Replace,
   RotateCcw,
+  Save,
   Search,
   Server,
   Settings,
