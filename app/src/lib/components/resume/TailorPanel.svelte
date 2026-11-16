@@ -16,6 +16,7 @@
     X,
   } from "$lib/icons";
   import { moved, sortHandle } from "$lib/sortable";
+  import { detailItems, detailKey, skillItems, skillKey } from "$lib/resumeItems";
   import type {
     ResumeBullet,
     ResumeDoc,
@@ -128,8 +129,17 @@
     echo: string[];
   }
 
+  /** One item of a detail line or a skills run, switchable on its own. */
+  interface Item {
+    name: string;
+    key: string;
+    on: boolean;
+  }
+
   interface EntryModel {
     entry: ResumeEntry;
+    /** The stack line's technologies, or a skills line's skills. */
+    items: Item[];
     off: boolean;
     rows: Row[];
     onCount: number;
@@ -173,7 +183,9 @@
 
   const model = $derived.by((): SectionModel[] =>
     orderedSections
-      .filter((s) => s.entries.length > 0)
+      // A skills section with no lines of its own still prints one — built
+      // from the profile — and its skills can be left out like any other.
+      .filter((s) => s.entries.length > 0 || (s.kind === "skills" && view.skills.length > 0))
       .map((section) => {
         const sectionOff = stateOf(section.id) === "out";
         // The reader's order where they set one, else the order the page drew
@@ -193,8 +205,15 @@
               echo: view.echo[bullet.id] ?? [],
             };
           });
+          const names =
+            section.kind === "skills" ? skillItems(entry.detail) : detailItems(entry.detail);
+          const items = names.map((name): Item => {
+            const key = section.kind === "skills" ? skillKey(name) : detailKey(entry.id, name);
+            return { name, key, on: variant.include[key] !== false };
+          });
           return {
             entry,
+            items,
             off,
             rows,
             onCount: rows.filter((r) => r.shown).length,
@@ -250,6 +269,25 @@
   // and moving within a subset has no clear meaning, so the handles go away
   // while one is on.
 
+  /** On, or left out of this version — one technology, one skill. */
+  function toggleItem(item: Item) {
+    const include = { ...variant.include };
+    if (item.on) include[item.key] = false;
+    else delete include[item.key];
+    onVariant({ ...variant, include });
+  }
+
+  /** The profile-built skills block, when the résumé writes none of its own. */
+  const generatedSkills = $derived(
+    view.skills.map(([label, names]) => ({
+      label,
+      items: names.map((name): Item => {
+        const key = skillKey(name);
+        return { name, key, on: variant.include[key] !== false };
+      }),
+    })),
+  );
+
   function moveSection(from: number, to: number) {
     const shown = moved(
       model.map((s) => s.section.id),
@@ -290,7 +328,9 @@
       .map((d) => d.trim())
       .filter(Boolean)
       .join(" – ");
-    const role = entry.org && entry.title ? entry.title : (entry.detail ?? "");
+    // Not the detail line: it is listed item by item when the entry opens,
+    // and a copy here would still show what was switched off.
+    const role = entry.org && entry.title ? entry.title : "";
     return [role, dates].filter(Boolean).join(" · ");
   }
 
@@ -353,6 +393,25 @@
   >
     {#if checked}<Check size={11} strokeWidth={3.25} />{/if}
   </span>
+{/snippet}
+
+{#snippet chips(items: Item[], disabled: boolean, what: string)}
+  <div class="flex flex-wrap gap-1" role="group" aria-label={what}>
+    {#each items as item (item.key)}
+      <button
+        onclick={() => toggleItem(item)}
+        aria-pressed={item.on}
+        {disabled}
+        title={item.on ? `Leave ${item.name} off this version` : `Put ${item.name} back`}
+        class="inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[11.5px] font-medium transition-colors disabled:opacity-40 {item.on
+          ? 'border-line bg-surface text-foreground hover:border-brand'
+          : 'border-dashed border-line text-subtle line-through decoration-1 hover:text-foreground'}"
+      >
+        {#if item.on}<Check size={10} strokeWidth={3} class="text-brand" />{/if}
+        {item.name}
+      </button>
+    {/each}
+  </div>
 {/snippet}
 
 <div class="flex min-h-0 flex-1 flex-col">
@@ -552,6 +611,17 @@
         </div>
 
         <div class="card divide-y divide-line-soft overflow-hidden {s.off ? 'opacity-60' : ''}">
+          {#if s.section.kind === "skills" && s.entries.length === 0}
+            <p class="px-3 pt-2.5 pb-1 text-[11.5px] text-subtle">
+              Built from the skills on your profile. Untick any you don't want on this version.
+            </p>
+            {#each generatedSkills as line (line.label)}
+              <div class="px-3 py-2">
+                <p class="mb-1 text-[12px] font-semibold">{line.label}</p>
+                {@render chips(line.items, s.off, `${line.label} skills`)}
+              </div>
+            {/each}
+          {/if}
           {#each s.entries as e (e.entry.id)}
             {@const entryOut = stateOf(e.entry.id) === "out"}
             {@const open = narrowing || expanded.has(e.entry.id)}
@@ -583,8 +653,8 @@
                 </button>
                 <button
                   onclick={() => toggleOpen(e.entry.id)}
-                  aria-expanded={e.rows.length > 0 ? open : undefined}
-                  disabled={e.rows.length === 0 || narrowing}
+                  aria-expanded={e.rows.length > 0 || e.items.length > 0 ? open : undefined}
+                  disabled={(e.rows.length === 0 && e.items.length === 0) || narrowing}
                   class="flex min-w-0 flex-1 items-center gap-2 text-left"
                 >
                   <span class="min-w-0 flex-1">
@@ -599,6 +669,23 @@
                       <span class="block truncate text-[11.5px] text-subtle">{sub}</span>
                     {/if}
                   </span>
+                  {#if e.rows.length === 0 && e.items.length > 0}
+                    {@const onItems = e.items.filter((i) => i.on).length}
+                    <span
+                      class="shrink-0 rounded px-1.5 py-0.5 text-[11px] font-medium tabular-nums {onItems === 0
+                        ? 'text-subtle'
+                        : 'bg-hover text-muted'}"
+                      title="{onItems} of {e.items.length} on the page"
+                    >
+                      {onItems}/{e.items.length}
+                    </span>
+                    {#if !narrowing}
+                      <ChevronDown
+                        size={14}
+                        class="shrink-0 text-subtle transition-transform {open ? '' : '-rotate-90'}"
+                      />
+                    {/if}
+                  {/if}
                   {#if e.rows.length > 0}
                     <span
                       class="shrink-0 rounded px-1.5 py-0.5 text-[11px] font-medium tabular-nums {e.onCount ===
@@ -618,6 +705,19 @@
                   {/if}
                 </button>
               </div>
+
+              {#if open && !narrowing && e.items.length > 0}
+                <div class="pr-3 pb-2 pl-[3.625rem] {e.off ? 'opacity-50' : ''}">
+                  <p class="mb-1 text-[11px] text-subtle">
+                    {s.section.kind === "skills"
+                      ? "Skills on this line"
+                      : e.items.length > 1
+                        ? "Detail line — tech, stack, honours"
+                        : "Detail line"}
+                  </p>
+                  {@render chips(e.items, e.off, `${entryLabel(e.entry)} details`)}
+                </div>
+              {/if}
 
               {#if open && e.visible.length > 0}
                 <ul class="pb-1.5 {e.off ? 'opacity-50' : ''}">

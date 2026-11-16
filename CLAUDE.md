@@ -122,7 +122,11 @@ Everything ships from `/app`:
     reorder anything by hand (drag in the tailor outline, `lib/sortable.ts`):
     `Variant::order` per section's entries and `Variant::section_order`,
     which `resume::tailored` applies before the pass — only the reader ever
-    moves a section.
+    moves a section. Single items leave a version through `include` too:
+    `skill:<name>` drops a skill from every skills line (`Selection::skills`
+    is what prints, `skill_lines` what the outline offers back), and
+    `<entry>/detail:<item>` drops one item of a detail line, split by
+    `model::detail_items` — which `lib/resumeItems.ts` must split the same way.
     **`layout` emits positioned boxes and has two consumers** —
     `pdf.rs` writes them into a PDF and `ResumeSheet.svelte` (one page, inside
     the paged `ResumePreview` viewer) draws the very

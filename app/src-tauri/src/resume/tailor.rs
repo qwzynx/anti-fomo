@@ -197,8 +197,12 @@ pub struct Selection {
     pub entries: HashSet<String>,
     /// Bullet ids that made the page.
     pub bullets: HashSet<String>,
-    /// The skills block: one labelled line per entry, in render order.
+    /// The skills block: one labelled line per entry, in render order, with
+    /// the skills the reader left out of this version already gone.
     pub skills: Vec<(String, Vec<String>)>,
+    /// The same block before those exclusions: what the outline offers to
+    /// switch back on.
+    pub skill_lines: Vec<(String, Vec<String>)>,
     /// Bullet id → the posting skills it covers. Drives the UI's "why".
     pub why: HashMap<String, Vec<String>>,
     /// Bullet id → the posting's own words it echoes, for the bullets that
@@ -266,6 +270,7 @@ pub fn everything(resume: &Resume) -> Selection {
         }
     }
     selection.skills = skills_block(resume, &Target::none(), &[], &[], &BTreeMap::new());
+    selection.skill_lines = selection.skills.clone();
     selection
 }
 
@@ -287,9 +292,11 @@ pub fn tailor(
         required: target.names.clone(),
         must: target.must.clone(),
         focus: target.focus.top().to_vec(),
-        skills: skills_block(resume, target, have, &variant.skills_lead, &variant.include),
+        skill_lines: skills_block(resume, target, have, &variant.skills_lead, &variant.include),
         ..Selection::default()
     };
+
+    selection.skills = without_left_out(&selection.skill_lines, &variant.include);
 
     // Start from everything and take away, rather than building up from the
     // best match. A résumé is a document the user wrote on purpose; the default
@@ -552,6 +559,32 @@ fn weakest(
 ///
 /// Either way the posting's skills lead: within a line, then across lines, and
 /// the ones it called non-negotiable lead the ones it merely preferred.
+/// The `include` key that leaves one skill out of the skills block, on every
+/// line it appears on.
+pub fn skill_key(skill: &str) -> String {
+    format!("skill:{skill}")
+}
+
+/// The skills block minus what the reader switched off. A line left with
+/// nothing on it goes too, so the section's heading does not stand over air.
+fn without_left_out(
+    lines: &[(String, Vec<String>)],
+    include: &BTreeMap<String, bool>,
+) -> Vec<(String, Vec<String>)> {
+    lines
+        .iter()
+        .map(|(label, items)| {
+            let kept: Vec<String> = items
+                .iter()
+                .filter(|s| include.get(&skill_key(s)) != Some(&false))
+                .cloned()
+                .collect();
+            (label.clone(), kept)
+        })
+        .filter(|(_, items)| !items.is_empty())
+        .collect()
+}
+
 fn skills_block(
     resume: &Resume,
     target: &Target,
@@ -787,6 +820,41 @@ mod tests {
         let s = tailor(&r, &Target::none(), &[], &variant, &Theme::default());
         let labels: Vec<&str> = s.skills.iter().map(|(l, _)| l.as_str()).collect();
         assert_eq!(labels, vec!["Languages"], "the excluded line still printed");
+    }
+
+    #[test]
+    fn a_left_out_skill_leaves_the_page_but_stays_on_offer() {
+        let mut r = sample();
+        let skills_section = r
+            .sections
+            .iter_mut()
+            .find(|s| s.kind == SectionKind::Skills)
+            .unwrap();
+        skills_section.entries.push(Entry {
+            id: "s-lang".into(),
+            title: "Languages".into(),
+            detail: Some("Rust, TypeScript".into()),
+            ..Entry::default()
+        });
+        skills_section.entries.push(Entry {
+            id: "s-design".into(),
+            title: "Design".into(),
+            detail: Some("Figma".into()),
+            ..Entry::default()
+        });
+
+        let mut variant = Variant::default();
+        variant.include.insert(skill_key("TypeScript"), false);
+        variant.include.insert(skill_key("Figma"), false);
+        let s = tailor(&r, &Target::none(), &[], &variant, &Theme::default());
+        assert_eq!(
+            s.skills,
+            vec![("Languages".to_string(), vec!["Rust".to_string()])],
+            "TypeScript is gone, and Design with nothing left on it"
+        );
+        let offered: Vec<&String> = s.skill_lines.iter().flat_map(|(_, i)| i).collect();
+        assert!(offered.iter().any(|s| *s == "TypeScript"));
+        assert!(offered.iter().any(|s| *s == "Figma"));
     }
 
     #[test]

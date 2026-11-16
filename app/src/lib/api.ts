@@ -494,6 +494,8 @@ export interface ResumeView {
   filename: string;
   /** Section id → its entries in the order the page draws them. */
   order: Record<string, string[]>;
+  /** The skills block as `[label, skills]` lines, before any skill was left out. */
+  skills: [string, string[]][];
 }
 
 export interface ResumeVariant {

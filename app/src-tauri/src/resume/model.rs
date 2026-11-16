@@ -208,6 +208,32 @@ impl Resume {
     }
 }
 
+/// An entry's detail line as separate items — a project's stack, "GPA 3.9 ·
+/// Dean's List" — and the separator to join them back with.
+///
+/// The separator is whichever of `·`, `|`, `;` or `,` the line uses first, in
+/// that order of preference, so a line written "Rust · SQLite, bundled" splits
+/// on the dots it was laid out with. A line with none is one item.
+pub fn detail_items(detail: &str) -> (Vec<&str>, &'static str) {
+    for (sep, joiner) in [("·", " · "), ("|", " | "), (";", "; "), (",", ", ")] {
+        if detail.contains(sep) {
+            let items = detail
+                .split(sep)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .collect();
+            return (items, joiner);
+        }
+    }
+    let one = detail.trim();
+    (if one.is_empty() { vec![] } else { vec![one] }, ", ")
+}
+
+/// The `include` key that leaves one item of an entry's detail line out.
+pub fn detail_key(entry_id: &str, item: &str) -> String {
+    format!("{entry_id}/detail:{item}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

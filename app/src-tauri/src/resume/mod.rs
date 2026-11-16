@@ -50,11 +50,47 @@ pub fn tailored(
     variant: &Variant,
     theme: &Theme,
 ) -> (layout::LaidOut, Selection) {
-    let reordered = in_section_order(resume, &variant.section_order);
-    let resume = reordered.as_ref().unwrap_or(resume);
+    let prepared = prepare(resume, variant);
+    let resume = prepared.as_ref().unwrap_or(resume);
     let selection = tailor::tailor(resume, target, have, variant, theme);
     let laid_out = layout::lay_out(resume, &selection, theme);
     (laid_out, selection)
+}
+
+/// The résumé as this variant shows it before any choosing: sections in the
+/// reader's order, and the detail items they left out (a technology in a
+/// project's stack, say) gone from the line. `None` when the variant changes
+/// neither, so the common case costs no copy.
+fn prepare(resume: &Resume, variant: &Variant) -> Option<Resume> {
+    let leaves_out_details = variant
+        .include
+        .iter()
+        .any(|(key, on)| !on && key.contains("/detail:"));
+    let mut out = in_section_order(resume, &variant.section_order);
+    if leaves_out_details {
+        let doc = out.get_or_insert_with(|| resume.clone());
+        for section in &mut doc.sections {
+            // A skills line's run is filtered by skill name in the tailoring,
+            // the same whether the line was written or generated.
+            if section.kind == model::SectionKind::Skills {
+                continue;
+            }
+            for entry in &mut section.entries {
+                let Some(detail) = entry.detail.as_deref() else {
+                    continue;
+                };
+                let (items, joiner) = model::detail_items(detail);
+                let kept: Vec<&str> = items
+                    .into_iter()
+                    .filter(|item| {
+                        variant.include.get(&model::detail_key(&entry.id, item)) != Some(&false)
+                    })
+                    .collect();
+                entry.detail = (!kept.is_empty()).then(|| kept.join(joiner));
+            }
+        }
+    }
+    out
 }
 
 /// The résumé with its sections in the order a variant asked for, or `None`
@@ -125,6 +161,57 @@ mod tests {
             "Ada Lovelace - Resume.pdf"
         );
         assert_eq!(suggested_filename("", None), "Resume - Resume.pdf");
+    }
+
+    #[test]
+    fn a_left_out_detail_item_leaves_the_line() {
+        let entry = model::Entry {
+            id: "p1".into(),
+            org: "Fretnote".into(),
+            detail: Some("Svelte · TypeScript · Rust".into()),
+            ..Default::default()
+        };
+        let resume = Resume {
+            sections: vec![model::Section {
+                id: "proj".into(),
+                kind: model::SectionKind::Projects,
+                entries: vec![entry],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let mut variant = Variant::default();
+        assert!(prepare(&resume, &variant).is_none());
+        variant
+            .include
+            .insert(model::detail_key("p1", "TypeScript"), false);
+        let out = prepare(&resume, &variant).expect("an item was left out");
+        assert_eq!(
+            out.sections[0].entries[0].detail.as_deref(),
+            Some("Svelte · Rust")
+        );
+        for item in ["Svelte", "Rust"] {
+            variant.include.insert(model::detail_key("p1", item), false);
+        }
+        let out = prepare(&resume, &variant).unwrap();
+        assert_eq!(
+            out.sections[0].entries[0].detail, None,
+            "an emptied line goes"
+        );
+    }
+
+    #[test]
+    fn detail_lines_split_on_what_they_were_written_with() {
+        assert_eq!(
+            model::detail_items("Rust · SQLite, bundled"),
+            (vec!["Rust", "SQLite, bundled"], " · ")
+        );
+        assert_eq!(model::detail_items("a, b"), (vec!["a", "b"], ", "));
+        assert_eq!(
+            model::detail_items("GPA 3.9/4.0"),
+            (vec!["GPA 3.9/4.0"], ", ")
+        );
+        assert_eq!(model::detail_items("  "), (vec![], ", "));
     }
 
     #[test]

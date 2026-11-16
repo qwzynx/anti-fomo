@@ -1974,6 +1974,9 @@ pub struct ResumeView {
     /// it — the reader's drag or the tailoring's own lead-with-the-relevant —
     /// so the outline lists them the way the page does.
     order: std::collections::BTreeMap<String, Vec<String>>,
+    /// The skills block as `[label, skills]` lines, before the skills the
+    /// reader left out — so the outline can offer them back.
+    skills: Vec<(String, Vec<String>)>,
 }
 
 fn now_rfc3339() -> String {
@@ -2343,6 +2346,7 @@ fn view_of(
         theme,
         filename: resume::suggested_filename(&doc.contact.name, company),
         order,
+        skills: selection.skill_lines,
     }
 }
 
