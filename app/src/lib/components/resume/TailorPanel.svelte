@@ -161,6 +161,10 @@
     total: number;
   }
 
+  /** The reader has taken over: nothing is trimmed or moved automatically. */
+  const frozen = $derived(variant.frozen);
+  const over = $derived(view.pages.length > view.theme.max_pages);
+
   const narrowing = $derived(filter !== "all" || skill !== null);
 
   function passes(row: Row): boolean {
@@ -472,8 +476,8 @@
     {#if byHand}
       <p class="flex items-start gap-2 rounded-md bg-line-soft px-3 py-2.5 text-[12.5px] text-muted">
         <ListChecks size={14} class="mt-0.5 shrink-0 text-subtle" />
-        No job behind this version — untick what you don't want on it. If it still runs past the
-        page limit, the last bullets of each entry are cut first; tick one to keep it.
+        No job behind this version — tick what you want on it. Nothing is cut or moved for you; if
+        it runs past the page limit, the preview says so.
       </p>
     {:else if view.required.length === 0}
       <p class="flex items-start gap-2 rounded-md bg-line-soft px-3 py-2.5 text-[12.5px] text-muted">
@@ -562,7 +566,24 @@
       />
     </label>
 
-    {#if view.dropped.length > 0 && filter !== "off"}
+    {#if frozen && over}
+      <div class="flex items-start gap-2 rounded-md border border-star/30 bg-star-soft/50 px-3 py-2 text-[12px]">
+        <CircleAlert size={13} class="mt-0.5 shrink-0 text-star" />
+        <p class="min-w-0 flex-1 text-muted">
+          <span class="font-semibold text-foreground">
+            Runs to {view.pages.length} pages — the limit is {view.theme.max_pages}.
+          </span>
+          Untick a bullet or two, or raise the limit under Design. Nothing is cut for you.
+        </p>
+      </div>
+    {:else if frozen && !byHand}
+      <p class="px-1 text-[11.5px] text-subtle">
+        The app picked these the first time you opened this posting. From now on only your ticks
+        change the page — Start over in the toolbar lets it pick again.
+      </p>
+    {/if}
+
+    {#if !frozen && view.dropped.length > 0 && filter !== "off"}
       <div class="flex items-start gap-2 rounded-md border border-star/30 bg-star-soft/50 px-3 py-2 text-[12px]">
         <CircleAlert size={13} class="mt-0.5 shrink-0 text-star" />
         <p class="min-w-0 flex-1 text-muted">
@@ -738,7 +759,8 @@
                 <ul class="pb-1.5 {e.off ? 'opacity-50' : ''}">
                   {#each e.visible as row (row.bullet.id)}
                     {@const id = row.bullet.id}
-                    {@const reworded = variant.text[id] !== undefined}
+                    {@const reworded =
+                      variant.text[id] !== undefined && variant.text[id].trim() !== row.bullet.text.trim()}
                     <li class="group flex items-start gap-2.5 py-1.5 pr-2 pl-[3.625rem] hover:bg-hover/60">
                       {#if editing === id}
                         <div class="min-w-0 flex-1">
@@ -790,7 +812,9 @@
                           aria-label={row.shown ? "Leave this bullet off" : "Keep this bullet on the page"}
                           title={row.shown
                             ? "Leave this bullet off"
-                            : "Keep this bullet — it will not be cut to fit"}
+                            : frozen
+                              ? "Put this bullet on the page"
+                              : "Keep this bullet — it will not be cut to fit"}
                           class="group/box mt-[3px] shrink-0 disabled:opacity-40"
                         >
                           {@render box(row.shown)}
@@ -799,12 +823,15 @@
                           <p class="text-[13px] leading-snug {row.shown ? 'text-foreground' : 'text-subtle'}">
                             {variant.text[id] ?? row.bullet.text}
                           </p>
-                          {#if row.state !== "auto" || reworded || row.why.length > 0 || row.echo.length > 0 || droppedIds.has(id)}
+                          {#if (!frozen && row.state !== "auto") || reworded || row.why.length > 0 || row.echo.length > 0 || droppedIds.has(id)}
                             <!-- Two kinds of evidence, drawn apart: a skill the
                                  posting named, and the posting's own words the
                                  bullet happens to echo — weaker, and not coverage. -->
                             <p class="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px]">
-                              {#if row.state === "in"}
+                              {#if frozen}
+                                <!-- Every tick is the reader's own now; a label
+                                     on each would only repeat the checkbox. -->
+                              {:else if row.state === "in"}
                                 <span class="inline-flex items-center gap-0.5 font-semibold text-brand">
                                   <Pin size={10} /> Pinned
                                 </span>
@@ -850,7 +877,7 @@
                               <Save size={13} />
                             </button>
                           {/if}
-                          {#if row.state !== "auto"}
+                          {#if !frozen && row.state !== "auto"}
                             <button
                               onclick={() => setInclude(id, "auto")}
                               aria-label="Let the app decide this bullet"

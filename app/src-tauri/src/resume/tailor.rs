@@ -61,6 +61,14 @@ pub struct Variant {
     pub text: BTreeMap<String, String>,
     /// Skills to put first in the skills block, whatever the match says.
     pub skills_lead: Vec<String>,
+    /// The reader has taken over. The app chooses once — the first time a
+    /// posting is tailored, which bullets fit and which project leads — and
+    /// the screen then writes that choice down (`include` and `order`) and
+    /// sets this. From then on nothing is trimmed or reordered behind the
+    /// reader's back: unticking two bullets to keep an entry to its title must
+    /// not make room for the pass to bring back two others. Running over the
+    /// page limit is shown, not fixed.
+    pub frozen: bool,
 }
 
 /// The posting a résumé is being tailored to, as everything the choosing needs
@@ -348,8 +356,10 @@ pub fn tailor(
         }
     }
 
-    promote(resume, &mut selection, target, variant, &relevance);
-    fit(resume, &mut selection, variant, theme, target, &relevance);
+    if !variant.frozen {
+        promote(resume, &mut selection, target, variant, &relevance);
+        fit(resume, &mut selection, variant, theme, target, &relevance);
+    }
 
     // Coverage is reported over what survived the trim, because that is what
     // the reader of the PDF will actually see.
@@ -855,6 +865,48 @@ mod tests {
         let offered: Vec<&String> = s.skill_lines.iter().flat_map(|(_, i)| i).collect();
         assert!(offered.iter().any(|s| *s == "TypeScript"));
         assert!(offered.iter().any(|s| *s == "Figma"));
+    }
+
+    /// The bug this exists for: an entry cut down to its title by hand kept
+    /// sprouting bullets, because each one unticked freed room for the trim
+    /// to bring back another it had cut.
+    #[test]
+    fn a_frozen_variant_trims_and_reorders_nothing() {
+        // Far more than a page, so the auto pass has to cut.
+        let ids: Vec<String> = (0..80).map(|i| format!("b{i}")).collect();
+        let r = resume_with(
+            ids.iter()
+                .map(|id| {
+                    bullet(
+                        id,
+                        "Rebuilt the deployment pipeline so releases went out daily instead of weekly",
+                        &[],
+                    )
+                })
+                .collect(),
+        );
+        let auto = tailor(
+            &r,
+            &Target::none(),
+            &[],
+            &Variant::default(),
+            &Theme::default(),
+        );
+        assert!(!auto.dropped.is_empty(), "the fixture must overflow a page");
+
+        let mut variant = Variant {
+            frozen: true,
+            ..Variant::default()
+        };
+        variant.include.insert("b0".into(), false);
+        let frozen = tailor(&r, &Target::none(), &[], &variant, &Theme::default());
+        assert!(frozen.dropped.is_empty(), "a frozen variant trimmed");
+        assert!(!frozen.bullets.contains("b0"));
+        assert_eq!(
+            frozen.bullets.len(),
+            ids.len() - 1,
+            "every other bullet stays"
+        );
     }
 
     #[test]

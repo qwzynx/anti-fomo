@@ -129,7 +129,13 @@ Everything ships from `/app`:
     reorder anything by hand (drag in the tailor outline, `lib/sortable.ts`):
     `Variant::order` per section's entries and `Variant::section_order`,
     which `resume::tailored` applies before the pass — only the reader ever
-    moves a section. Single items leave a version through `include` too:
+    moves a section. **The app chooses once per posting**: after the first
+    layout the tailor screen writes the pass's choice down (cut bullets as
+    `include: false`, project order into `order`) and sets
+    `Variant::frozen`, after which `tailor` neither trims nor reorders —
+    unticking bullets must not make room for the pass to bring others back.
+    Over the page limit is reported, not fixed; Start over clears the variant
+    and lets it choose once more. Single items leave a version through `include` too:
     `skill:<name>` drops a skill from every skills line (`Selection::skills`
     is what prints, `skill_lines` what the outline offers back), and
     `<entry>/detail:<item>` drops one item of a detail line, split by

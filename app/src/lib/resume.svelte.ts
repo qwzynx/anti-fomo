@@ -215,7 +215,9 @@ export const resume = {
     edits++;
     dirty = true;
     await resume.flush();
-    return !dirty;
+    // The write carried this text whether or not something else was typed
+    // while it was in flight, so success is "no error", not "nothing dirty".
+    return error === null;
   },
 
   /** Writes any pending edit now and resolves once nothing is left unsaved. */

@@ -80,7 +80,80 @@
     section_order: [],
     text: {},
     skills_lead: [],
+    frozen: false,
   });
+
+  /** Sections whose entry order the app may choose; the rest keep the reader's. */
+  const REORDERABLE = new Set(["projects", "leadership", "awards", "custom"]);
+
+  /**
+   * Writes the app's choice down, once.
+   *
+   * The first time a posting is tailored the app picks which bullets fit and
+   * which project leads; after that the reader is in charge. Every bullet the
+   * pass left off becomes an explicit "off", its project order an explicit
+   * order, and the variant is marked frozen — Rust then trims and reorders
+   * nothing, so unticking a bullet can no longer make room for the pass to
+   * bring a different one back. Only bullets inside entries that are on are
+   * written, so switching an entry back on later brings its bullets with it.
+   */
+  function frozenFrom(v: ResumeVariant, laid: ResumeView): ResumeVariant {
+    const doc = resume.doc;
+    if (!doc) return { ...v, frozen: true };
+    const onPage = new Set(laid.bullets);
+    const include = { ...v.include };
+    for (const section of doc.sections) {
+      if (include[section.id] === false) continue;
+      for (const entry of section.entries) {
+        if (include[entry.id] === false) continue;
+        for (const b of entry.bullets) {
+          if (include[b.id] === undefined && b.text.trim() && !onPage.has(b.id)) include[b.id] = false;
+        }
+      }
+    }
+    const order = { ...v.order };
+    for (const section of doc.sections) {
+      const drawn = laid.order[section.id];
+      if (REORDERABLE.has(section.kind) && !order[section.id] && drawn && drawn.length > 1) {
+        order[section.id] = drawn;
+      }
+    }
+    return { ...v, include, order, frozen: true };
+  }
+
+  /**
+   * Drops rewordings that no longer reword anything: the bullet is gone, or
+   * the résumé now says exactly that (a rewording saved to the résumé). Left
+   * in, they would keep a bullet marked "Reworded" over its own words.
+   */
+  function tidied(v: ResumeVariant): ResumeVariant | null {
+    const doc = resume.doc;
+    if (!doc) return null;
+    const master = new Map(
+      doc.sections.flatMap((s) => s.entries.flatMap((e) => e.bullets.map((b) => [b.id, b.text.trim()] as const))),
+    );
+    const text = { ...v.text };
+    let changed = false;
+    for (const [id, words] of Object.entries(v.text)) {
+      if (master.get(id) === undefined || master.get(id) === words.trim()) {
+        delete text[id];
+        changed = true;
+      }
+    }
+    return changed ? { ...v, text } : null;
+  }
+
+  /** After a layout of a variant the app still chooses for: freeze it. */
+  async function settle() {
+    if (!variant) return;
+    const clean = tidied(variant);
+    if (variant.frozen) {
+      if (clean) await applyVariant(clean);
+      return;
+    }
+    if (!view) return;
+    await applyVariant(frozenFrom(clean ?? variant, view));
+  }
 
   async function load() {
     if (!url) {
@@ -97,10 +170,11 @@
         resume.id ? api.getResumeVariant(url, resume.id) : Promise.resolve(null),
         api.getItemDetail(url),
       ]);
-      variant = stored ?? emptyVariant();
+      variant = { ...emptyVariant(), ...(stored ?? {}) };
       saved = variant;
       item = posting;
       await relayout();
+      await settle();
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
     } finally {
@@ -180,9 +254,12 @@
       toast.error("save that wording to your résumé", resume.error ?? "the bullet is no longer there");
       return;
     }
+    // The override now repeats the résumé word for word: drop it, and any
+    // other this posting holds that has gone the same way.
     const rest = { ...variant.text };
     delete rest[bulletId];
-    await applyVariant({ ...variant, text: rest });
+    const next = { ...variant, text: rest };
+    await applyVariant(tidied(next) ?? next);
     toast.success(`Saved to “${resume.name}” — every version now starts from this wording`);
   }
 
@@ -199,9 +276,9 @@
   async function reset() {
     if (!resume.id) return;
     const ok = await confirm({
-      title: "Reset this tailoring?",
-      body: "Pins, items you left off, rewordings, the headline and the design chosen for this posting all go back to automatic. Your résumé itself is not touched.",
-      confirmLabel: "Reset",
+      title: "Start this tailoring over?",
+      body: "Everything you chose for this posting — what is on the page, the order, rewordings, the headline and the design — is cleared, and the app picks once more. Your résumé itself is not touched.",
+      confirmLabel: "Start over",
       danger: true,
     });
     if (!ok) return;
@@ -215,6 +292,8 @@
     variant = emptyVariant();
     saved = variant;
     await relayout();
+    // The one fresh choice a reset asks for, written down again at once.
+    await settle();
   }
 
   async function download() {
@@ -269,8 +348,8 @@
         </button>
       {/if}
       {#if hasOverrides}
-        <button onclick={reset} class="tool" title="Undo every choice made for this posting">
-          <RotateCcw size={14} /><span class="hidden sm:inline">Reset</span>
+        <button onclick={reset} class="tool" title="Clear every choice made for this posting and let the app pick once more">
+          <RotateCcw size={14} /><span class="hidden sm:inline">Start over</span>
         </button>
       {/if}
       {#if view}

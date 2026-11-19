@@ -509,6 +509,11 @@ export interface ResumeVariant {
   section_order: string[];
   text: Record<string, string>;
   skills_lead: string[];
+  /**
+   * The app has made its one choice for this posting and written it down;
+   * from now on nothing is trimmed or reordered automatically.
+   */
+  frozen: boolean;
 }
 
 export interface ResumeThemeOption {
